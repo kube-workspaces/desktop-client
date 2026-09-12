@@ -142,11 +142,97 @@ jobs:
       - name: Build all targets
         run: make build-all VERSION=${{ github.ref_name }}
 
+      # Notes are assembled here rather than left to --generate-notes alone:
+      # a desktop binary needs download links and install steps, and these
+      # builds are unsigned, which users must be told before macOS or Windows
+      # tells them in a more alarming way.
+      - name: Compose release notes
+        env:
+          VERSION: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/$REPO/releases/download/$VERSION"
+          {
+            echo "Native desktop client for Kube Workspaces: sign in to an instance, browse your"
+            echo "workspaces, and open a VM workspace's display in a real window."
+            echo
+            echo "## Download"
+            echo
+            echo "| Platform | Architecture | File |"
+            echo "|---|---|---|"
+            echo "| Linux | x86_64 | [\`kube-workspaces-$VERSION-linux-amd64.tar.gz\`]($base/kube-workspaces-$VERSION-linux-amd64.tar.gz) |"
+            echo "| Linux | arm64 | [\`kube-workspaces-$VERSION-linux-arm64.tar.gz\`]($base/kube-workspaces-$VERSION-linux-arm64.tar.gz) |"
+            echo "| macOS | Apple silicon | [\`kube-workspaces-$VERSION-darwin-arm64.tar.gz\`]($base/kube-workspaces-$VERSION-darwin-arm64.tar.gz) |"
+            echo "| macOS | Intel | [\`kube-workspaces-$VERSION-darwin-amd64.tar.gz\`]($base/kube-workspaces-$VERSION-darwin-amd64.tar.gz) |"
+            echo "| Windows | x86_64 | [\`kube-workspaces-$VERSION-windows-amd64.zip\`]($base/kube-workspaces-$VERSION-windows-amd64.zip) |"
+            echo "| Windows | arm64 | [\`kube-workspaces-$VERSION-windows-arm64.zip\`]($base/kube-workspaces-$VERSION-windows-arm64.zip) |"
+            echo
+            echo "Verify with [\`SHA256SUMS\`]($base/SHA256SUMS): \`sha256sum -c SHA256SUMS\`"
+            echo
+            echo "## Install"
+            echo
+            echo '**Linux / macOS**'
+            echo
+            echo '```bash'
+            echo "tar -xzf kube-workspaces-$VERSION-<platform>.tar.gz"
+            echo "cd kube-workspaces-<platform>"
+            echo "./kube-workspaces --help"
+            echo '```'
+            echo
+            echo '**Windows** — unzip and run `kube-workspaces.exe`.'
+            echo
+            echo "> **These binaries are not code-signed.** macOS Gatekeeper will refuse to run"
+            echo "> the first time: clear the quarantine attribute with"
+            echo "> \`xattr -d com.apple.quarantine ./kube-workspaces\`, or open it once via"
+            echo "> Finder → right-click → Open. Windows SmartScreen will warn: choose"
+            echo "> \"More info\" → \"Run anyway\". Signing and notarisation are not yet set up."
+            echo
+            echo "No runtime dependencies: SDL is bundled into the binary and there is no cgo,"
+            echo "so nothing needs installing on the target machine."
+            echo
+            echo "## Getting started"
+            echo
+            echo '```bash'
+            echo "kube-workspaces login --server https://workspaces.example.com  # opens your browser"
+            echo "kube-workspaces list --running"
+            echo "kube-workspaces                                                # graphical shell"
+            echo '```'
+            echo
+            echo "If browser login gives trouble, \`--token <session-token>\` bypasses it."
+            echo "On a machine with no OS keychain, set"
+            echo "\`KUBE_WORKSPACES_INSECURE_TOKEN_FILE=1\` to fall back to a 0600 file."
+            echo
+            echo "## What works"
+            echo
+            echo "Sign-in (browser OIDC via RFC 8252 loopback + PKCE, or local accounts),"
+            echo "workspace discovery, and VM display sessions over the KubeVirt console:"
+            echo "Raw/CopyRect/RRE/Hextile/Zlib/Tight/ZRLE decoding, keyboard and mouse"
+            echo "including the scroll wheel, bidirectional clipboard, guest display resize,"
+            echo "fullscreen, and automatic reconnect that keeps the last frame on screen."
+            echo
+            echo "## What does not"
+            echo
+            echo "- **No audio.** The transport exists server-side but nothing plays it yet."
+            echo "- **No adaptive quality.** Encoding quality is fixed, not bandwidth-driven."
+            echo "- **No in-guest agent (Tier 1).** Sessions use the hypervisor console, which"
+            echo "  has no video codec — fine for desktops and text, poor for full-motion video."
+            echo "- **Container workspaces open in a browser**, not in the client."
+            echo "- One session at a time; the display is single-session server-side."
+            echo "- No HiDPI scaling, no text selection in input fields, ASCII-only text."
+            echo
+            echo "## Known caveats"
+            echo
+            echo "This is an early release. The UI has had limited validation on real displays,"
+            echo "so expect rough edges in layout and scaling. Please report what you find."
+          } > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
-            --generate-notes \
+            --notes-file /tmp/release-notes.md \
             dist/*.tar.gz dist/*.zip dist/SHA256SUMS

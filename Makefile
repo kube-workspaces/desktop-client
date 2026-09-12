@@ -61,6 +61,9 @@ clean: ## Remove build output and coverage artefacts
 # likely cause), this target breaks loudly and release builds move to per-OS
 # runners.
 build-all: ## Cross-build and package all 6 targets into dist/
+	@# Start from an empty dist/: a leftover archive from an earlier build
+	@# would otherwise be picked up by the checksum glob and published.
+	@rm -rf $(DIST_DIR)
 	@mkdir -p $(DIST_DIR)
 	@set -e; for target in \
 		linux/amd64 linux/arm64 \
