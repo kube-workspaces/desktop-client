@@ -54,6 +54,15 @@ type Config struct {
 	// OnBell is called when the server rings the bell.
 	OnBell func()
 
+	// OnLEDState is called when the guest's keyboard lock indicators change.
+	OnLEDState func(state LEDState)
+
+	// OnRect, when set, is called for every rectangle after it is decoded.
+	// This is a diagnostic hook: it is how the probe tool reports what the
+	// server actually sent, which is the only way to discover a server's real
+	// capabilities.
+	OnRect func(enc Encoding, r Rect, bytes uint64)
+
 	// OnCursor is called when the server sends a new cursor shape via the
 	// Cursor pseudo-encoding. image is RGBA of size w*h*4; hotX/hotY are the
 	// hotspot. A zero-sized cursor means "hide the pointer".
@@ -673,6 +682,10 @@ func (c *Conn) readFramebufferUpdate() error {
 			return err
 		}
 
+		if c.cfg.OnRect != nil {
+			c.cfg.OnRect(enc, r, c.counting.Count()-before)
+		}
+
 		c.statsMu.Lock()
 		c.stats.Rects++
 		c.stats.RectsByEncoding[enc]++
@@ -724,6 +737,20 @@ func (c *Conn) decodeRect(enc Encoding, r Rect) (stop bool, err error) {
 		// Position-only update; nothing to read and nothing we act on yet.
 		c.noteAck(enc)
 		return false, nil
+
+	case EncodingQEMULEDState:
+		// QEMU reports the guest's keyboard LEDs as a 1x1 rectangle followed by
+		// a single state byte. The payload MUST be consumed: leaving it in the
+		// stream desynchronises everything after it.
+		c.noteAck(enc)
+		state, err := c.r.ReadByte()
+		if err != nil {
+			return false, fmt.Errorf("rfb: read LED state: %w", err)
+		}
+		if c.cfg.OnLEDState != nil {
+			c.cfg.OnLEDState(LEDState(state))
+		}
+		return false, nil
 	}
 
 	if d, ok := c.decoders[enc]; ok {
@@ -735,15 +762,35 @@ func (c *Conn) decodeRect(enc Encoding, r Rect) (stop bool, err error) {
 		return false, nil
 	}
 
-	// A zero-sized rectangle carrying a pseudo-encoding is an acknowledgement
-	// that the server accepted the extension (this is how QEMU confirms, for
-	// example, audio support). Record it; there is no payload to read.
-	if enc < 0 && r.Empty() {
+	// Some pseudo-encodings arrive purely as an acknowledgement that the server
+	// accepted an extension, with no payload at all. Those are safe to skip.
+	//
+	// Note the rectangle is NOT necessarily zero-sized: QEMU's
+	// send_ext_key_event_ack and send_ext_audio_ack both report the full client
+	// width and height, so the size tells us nothing and the encoding number
+	// alone decides.
+	//
+	// This is an explicit allowlist rather than "anything negative has no
+	// payload". That blanket assumption is how a client silently desynchronises:
+	// a pseudo-encoding that does carry data (QEMU's LED state, for one) leaves
+	// its bytes in the stream to be misread as the next message type. Failing
+	// loudly on an unrecognised encoding is far easier to diagnose.
+	if zeroPayloadPseudoEncodings[enc] {
 		c.noteAck(enc)
 		return false, nil
 	}
 
 	return false, fmt.Errorf("rfb: no decoder for encoding %s (rect %s)", enc, r)
+}
+
+// zeroPayloadPseudoEncodings lists pseudo-encodings whose rectangles carry no
+// bytes after the rectangle header, so they can be skipped safely.
+var zeroPayloadPseudoEncodings = map[Encoding]bool{
+	EncodingQEMUExtendedKeyEvent:    true,
+	EncodingQEMUPointerMotionChange: true,
+	// The audio acknowledgement is payload-free; actual audio data arrives as
+	// a separate server message type, not as a rectangle.
+	EncodingQEMUAudio: true,
 }
 
 func (c *Conn) noteAck(enc Encoding) {

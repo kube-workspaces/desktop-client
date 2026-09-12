@@ -22,6 +22,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // ProtocolVersion is the RFB version this client speaks. 3.8 is the version
@@ -333,4 +334,39 @@ func readFull(r io.Reader, buf []byte) error {
 		return err
 	}
 	return nil
+}
+
+// LEDState is the guest's keyboard lock indicator state, reported by QEMU
+// through the LED state pseudo-encoding. A viewer uses it to keep the host's
+// lock keys visually in step with the guest.
+type LEDState uint8
+
+const (
+	// LEDScrollLock is set when the guest's scroll lock is on.
+	LEDScrollLock LEDState = 1 << 0
+	// LEDNumLock is set when the guest's num lock is on.
+	LEDNumLock LEDState = 1 << 1
+	// LEDCapsLock is set when the guest's caps lock is on.
+	LEDCapsLock LEDState = 1 << 2
+)
+
+// Has reports whether a given indicator is lit.
+func (s LEDState) Has(f LEDState) bool { return s&f != 0 }
+
+// String renders the lit indicators, for logs and status bars.
+func (s LEDState) String() string {
+	var on []string
+	if s.Has(LEDCapsLock) {
+		on = append(on, "caps")
+	}
+	if s.Has(LEDNumLock) {
+		on = append(on, "num")
+	}
+	if s.Has(LEDScrollLock) {
+		on = append(on, "scroll")
+	}
+	if len(on) == 0 {
+		return "none"
+	}
+	return strings.Join(on, "+")
 }

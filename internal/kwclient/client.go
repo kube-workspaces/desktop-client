@@ -228,14 +228,28 @@ func insecureTLSConfig() *tls.Config {
 
 // tlsConfig returns the TLS settings the WebSocket dialer should use so that
 // WS connections trust exactly what REST calls trust.
+//
+// ALPN is deliberately forced back to HTTP/1.1. Go's default transport
+// advertises "h2", and a server that accepts it (as an nginx ingress does)
+// will speak HTTP/2 — in which the HTTP/1.1 Upgrade handshake that WebSocket
+// relies on does not exist. Sharing the REST transport's tls.Config verbatim
+// therefore makes every WebSocket dial fail with a malformed-response error
+// containing a raw HTTP/2 settings frame.
 func (c *Client) tlsConfig() *tls.Config {
-	if c.insecure {
-		return insecureTLSConfig()
+	var cfg *tls.Config
+	switch {
+	case c.insecure:
+		cfg = insecureTLSConfig()
+	default:
+		if tr, ok := c.httpc.Transport.(*http.Transport); ok && tr.TLSClientConfig != nil {
+			cfg = tr.TLSClientConfig.Clone()
+		}
 	}
-	if tr, ok := c.httpc.Transport.(*http.Transport); ok && tr.TLSClientConfig != nil {
-		return tr.TLSClientConfig.Clone()
+	if cfg == nil {
+		cfg = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
-	return nil
+	cfg.NextProtos = []string{"http/1.1"}
+	return cfg
 }
 
 // resolve builds an absolute URL for an API path plus query.
