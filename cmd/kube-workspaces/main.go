@@ -1,8 +1,9 @@
 // Command kube-workspaces is the Kube Workspaces desktop client.
 //
-// The graphical shell is still being built; today the binary exposes the
-// command-line surface used to drive and diagnose the underlying client
-// libraries against a real instance.
+// Run with no arguments it opens the graphical shell, which is what a desktop
+// application does when it is launched from a menu or a dock. The subcommands
+// remain for scripting and for diagnosing the client libraries against a real
+// instance; `kube-workspaces shell` names the default explicitly.
 package main
 
 import (
@@ -28,6 +29,7 @@ type command struct {
 
 func main() {
 	commands := []command{
+		shellCommand(),
 		{"login", "Authenticate against a kube-workspaces instance", runLogin},
 		{"logout", "Forget the stored session token for a profile", runLogout},
 		{"profile", "List, select and remove instance profiles", runProfile},
@@ -45,21 +47,30 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if len(os.Args) < 2 {
-		usage(commands)
-		os.Exit(2)
+	// No arguments opens the shell. This is a desktop application: launched
+	// from a menu, a dock or a .desktop file it gets no argv, and printing a
+	// usage message to a stderr nobody is reading would look like a crash.
+	name, args := "shell", []string(nil)
+	if len(os.Args) > 1 {
+		name, args = os.Args[1], os.Args[2:]
 	}
-	name := os.Args[1]
 	if name == "-h" || name == "--help" || name == "help" {
 		usage(commands)
 		return
+	}
+	// A leading flag belongs to the default command, so `kube-workspaces -v`
+	// means what it looks like rather than "unknown command -v". An unknown
+	// flag is still rejected — by the shell's own flag set, which can say
+	// which flag it was.
+	if strings.HasPrefix(name, "-") {
+		name, args = "shell", os.Args[1:]
 	}
 
 	for _, c := range commands {
 		if c.name != name {
 			continue
 		}
-		if err := c.run(ctx, os.Args[2:]); err != nil {
+		if err := c.run(ctx, args); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return
 			}
@@ -76,7 +87,8 @@ func main() {
 
 func usage(commands []command) {
 	fmt.Fprintf(os.Stderr, "Kube Workspaces desktop client %s\n\n", version)
-	fmt.Fprintf(os.Stderr, "Usage:\n  kube-workspaces <command> [flags]\n\nCommands:\n")
+	fmt.Fprintf(os.Stderr, "Usage:\n  kube-workspaces [<command>] [flags]\n\n"+
+		"With no command it opens the graphical shell.\n\nCommands:\n")
 	w := tabwriter.NewWriter(os.Stderr, 0, 0, 2, ' ', 0)
 	for _, c := range commands {
 		fmt.Fprintf(w, "  %s\t%s\n", c.name, c.summary)

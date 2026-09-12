@@ -1,0 +1,407 @@
+// Copyright The kube-workspaces Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package ui
+
+import (
+	"image"
+	"testing"
+	"time"
+
+	"github.com/kube-workspaces/desktop-client/internal/keysym"
+)
+
+// harness drives a context over a real canvas, the way the shell does, so that
+// the widgets are exercised through the code path that actually runs rather
+// than through a headless shortcut that could drift away from it.
+type harness struct {
+	ctx *Context
+	in  Input
+	now time.Time
+}
+
+func newHarness(w, h int) *harness {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	return &harness{ctx: &Context{Theme: DefaultTheme(), Canvas: NewCanvas(img)}, now: epoch}
+}
+
+// frame folds a batch of events and runs one layout pass.
+func (h *harness) frame(events []Event, body func(*Context)) {
+	h.now = h.now.Add(16 * time.Millisecond)
+	h.in = h.in.Fold(h.now, events)
+	h.ctx.Begin(h.ctx.Canvas, h.in)
+	body(h.ctx)
+	h.ctx.End()
+}
+
+// click sends a complete press and release at (x, y) as two frames, which is
+// how a real backend delivers one.
+func (h *harness) click(x, y int, body func(*Context)) {
+	h.frame([]Event{pointer(x, y, true)}, body)
+	h.frame([]Event{pointer(x, y, false)}, body)
+}
+
+var buttonRect = Rect{X: 10, Y: 10, W: 120, H: 34}
+
+func TestButtonHitTesting(t *testing.T) {
+	h := newHarness(200, 100)
+	b := &Button{Text: "Connect", Variant: ButtonPrimary}
+
+	fired := 0
+	body := func(ctx *Context) {
+		if b.Layout(ctx, buttonRect) {
+			fired++
+		}
+	}
+
+	h.click(50, 20, body)
+	if fired != 1 {
+		t.Fatalf("a click inside the button fired %d times, want 1", fired)
+	}
+
+	// Outside on both axes, and on the exclusive edges.
+	fired = 0
+	for _, p := range [][2]int{{5, 20}, {50, 5}, {135, 20}, {50, 50}, {130, 44}} {
+		h.click(p[0], p[1], body)
+	}
+	if fired != 0 {
+		t.Fatalf("clicks outside the button fired %d times", fired)
+	}
+
+	// Press inside, release outside: not an activation.
+	fired = 0
+	h.frame([]Event{pointer(50, 20, true)}, body)
+	h.frame([]Event{pointer(180, 90, false)}, body)
+	if fired != 0 {
+		t.Fatal("sliding off a button before releasing still activated it")
+	}
+}
+
+func TestButtonKeyboardActivation(t *testing.T) {
+	h := newHarness(200, 100)
+	b := &Button{ID: "go", Text: "Connect"}
+
+	fired := 0
+	body := func(ctx *Context) {
+		if b.Layout(ctx, buttonRect) {
+			fired++
+		}
+	}
+
+	// The first frame registers the button; End gives it the focus because
+	// nothing else has it.
+	h.frame(nil, body)
+	if !h.ctx.Focused("go") {
+		t.Fatal("the only focusable widget did not receive the focus")
+	}
+
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	h.frame([]Event{runeDown(' ', keysym.ModNone)}, body)
+	if fired != 2 {
+		t.Fatalf("Enter and Space fired %d activations, want 2", fired)
+	}
+
+	// A focused button does not answer to somebody else's shortcut.
+	fired = 0
+	h.frame([]Event{runeDown('r', keysym.ModControl)}, body)
+	if fired != 0 {
+		t.Fatal("Ctrl-R activated a button")
+	}
+}
+
+func TestButtonDisabled(t *testing.T) {
+	h := newHarness(200, 100)
+	b := &Button{ID: "go", Text: "Open", Disabled: true}
+
+	fired := 0
+	body := func(ctx *Context) {
+		if b.Layout(ctx, buttonRect) {
+			fired++
+		}
+	}
+	h.click(50, 20, body)
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if fired != 0 {
+		t.Fatal("a disabled button activated")
+	}
+	if h.ctx.Focused("go") {
+		t.Fatal("a disabled button took the keyboard focus")
+	}
+}
+
+func TestButtonWidthFitsItsLabel(t *testing.T) {
+	h := newHarness(400, 100)
+	short := &Button{Text: "Go"}
+	long := &Button{Text: "Open in browser"}
+	if long.Width(h.ctx) <= short.Width(h.ctx) {
+		t.Fatal("intrinsic width does not follow the label")
+	}
+	if short.Width(h.ctx) <= TextWidth("Go", h.ctx.Theme.Body) {
+		t.Fatal("intrinsic width leaves no padding")
+	}
+}
+
+func TestTextInputEditing(t *testing.T) {
+	var f TextInput
+
+	f.Insert([]rune("hello")...)
+	if f.Value() != "hello" || f.Cursor() != 5 {
+		t.Fatalf("after insert: %q cursor %d", f.Value(), f.Cursor())
+	}
+
+	f.MoveCursor(-2)
+	f.Insert('X')
+	if f.Value() != "helXlo" || f.Cursor() != 4 {
+		t.Fatalf("insert at the cursor: %q cursor %d", f.Value(), f.Cursor())
+	}
+
+	if !f.Backspace() || f.Value() != "hello" || f.Cursor() != 3 {
+		t.Fatalf("after backspace: %q cursor %d", f.Value(), f.Cursor())
+	}
+	if !f.DeleteForward() || f.Value() != "helo" || f.Cursor() != 3 {
+		t.Fatalf("after delete: %q cursor %d", f.Value(), f.Cursor())
+	}
+
+	f.MoveHome()
+	if f.Cursor() != 0 {
+		t.Fatal("Home did not reach the start")
+	}
+	if f.Backspace() {
+		t.Fatal("backspace at the start deleted something")
+	}
+	f.MoveEnd()
+	if f.Cursor() != 4 {
+		t.Fatal("End did not reach the end")
+	}
+	if f.DeleteForward() {
+		t.Fatal("delete at the end deleted something")
+	}
+
+	// The cursor clamps rather than wraps: holding an arrow key down should
+	// settle at the edge, not jump to the other one.
+	f.MoveCursor(-100)
+	if f.Cursor() != 0 {
+		t.Fatalf("cursor ran past the start to %d", f.Cursor())
+	}
+	f.MoveCursor(100)
+	if f.Cursor() != f.Len() {
+		t.Fatalf("cursor ran past the end to %d", f.Cursor())
+	}
+	f.SetCursor(-5)
+	if f.Cursor() != 0 {
+		t.Fatal("SetCursor did not clamp below zero")
+	}
+
+	f.KillToEnd()
+	if f.Value() != "" {
+		t.Fatalf("Ctrl-K from the start left %q", f.Value())
+	}
+
+	// Non-printable input is dropped rather than stored and drawn as a box.
+	f.Insert('\n', '\t', 0x7f, 'o', 'k')
+	if f.Value() != "ok" {
+		t.Fatalf("control characters were inserted: %q", f.Value())
+	}
+
+	f.Clear()
+	if f.Value() != "" || f.Cursor() != 0 {
+		t.Fatal("Clear left something behind")
+	}
+}
+
+func TestTextInputHandlesMultiByteRunes(t *testing.T) {
+	// Rune positions, not byte positions: a field holding a non-ASCII
+	// character must still delete one character per backspace.
+	var f TextInput
+	f.SetValue("naïve")
+	if f.Len() != 5 {
+		t.Fatalf("length in runes = %d, want 5", f.Len())
+	}
+	// Cursor after "naï"; one backspace removes the whole two-byte rune. A
+	// byte-indexed field would leave half of it behind.
+	f.MoveCursor(-2)
+	f.Backspace()
+	if f.Value() != "nave" {
+		t.Fatalf("backspace over a multi-byte rune gave %q", f.Value())
+	}
+	if f.Cursor() != 2 {
+		t.Fatalf("the cursor is at %d, want 2", f.Cursor())
+	}
+}
+
+func TestTextInputMaxLen(t *testing.T) {
+	f := TextInput{MaxLen: 4}
+	f.Insert([]rune("abcdef")...)
+	if f.Value() != "abcd" {
+		t.Fatalf("MaxLen not enforced on insert: %q", f.Value())
+	}
+	f.SetValue("123456789")
+	if f.Value() != "1234" {
+		t.Fatalf("MaxLen not enforced on SetValue: %q", f.Value())
+	}
+}
+
+func TestTextInputKeyboard(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+
+	submitted := 0
+	body := func(ctx *Context) {
+		if f.Layout(ctx, rect) {
+			submitted++
+		}
+	}
+	h.frame(nil, body)
+
+	h.frame([]Event{
+		runeDown('h', keysym.ModNone),
+		runeDown('i', keysym.ModNone),
+	}, body)
+	if f.Value() != "hi" {
+		t.Fatalf("typing produced %q", f.Value())
+	}
+
+	h.frame([]Event{keyDown(keysym.KeyLeft, keysym.ModNone), keyDown(keysym.KeyBackSpace, keysym.ModNone)}, body)
+	if f.Value() != "i" {
+		t.Fatalf("left then backspace produced %q", f.Value())
+	}
+
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if submitted != 1 {
+		t.Fatalf("Enter produced %d submissions, want 1", submitted)
+	}
+	if f.Value() != "i" {
+		t.Fatal("Enter was inserted as text")
+	}
+
+	// Ctrl-U clears, which is the readline binding this field offers instead
+	// of a selection.
+	h.frame([]Event{runeDown('u', keysym.ModControl)}, body)
+	if f.Value() != "" {
+		t.Fatalf("Ctrl-U left %q", f.Value())
+	}
+
+	// An unfocused field ignores the keyboard entirely.
+	h.ctx.Focus().Set("somebody-else")
+	h.frame([]Event{runeDown('x', keysym.ModNone)}, func(ctx *Context) {
+		ctx.Focus().Register("somebody-else")
+		f.Layout(ctx, rect)
+	})
+	if f.Value() != "" {
+		t.Fatalf("an unfocused field accepted input: %q", f.Value())
+	}
+}
+
+func TestTextInputPastesFromTheClipboard(t *testing.T) {
+	h := newHarness(400, 100)
+	h.ctx.Clipboard = func() (string, error) { return "https://kw.example.com\nsecond line", nil }
+	f := &TextInput{ID: "field"}
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+	h.frame([]Event{runeDown('v', keysym.ModControl)}, body)
+
+	if f.Value() != "https://kw.example.com" {
+		t.Fatalf("paste produced %q; a single-line field must take the first line only", f.Value())
+	}
+}
+
+func TestTextInputPasswordMasking(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "pw", Password: true}
+	f.SetValue("hunter2")
+	h.frame(nil, func(ctx *Context) { f.Layout(ctx, Rect{X: 10, Y: 10, W: 300, H: 34}) })
+
+	// The value is intact...
+	if f.Value() != "hunter2" {
+		t.Fatalf("masking changed the value to %q", f.Value())
+	}
+	// ...and what was drawn is not it. Comparing the canvas against the same
+	// field unmasked is the only way to assert this from outside.
+	masked := h.ctx.Canvas.Image().Pix
+	plain := newHarness(400, 100)
+	f2 := &TextInput{ID: "pw"}
+	f2.SetValue("hunter2")
+	plain.frame(nil, func(ctx *Context) { f2.Layout(ctx, Rect{X: 10, Y: 10, W: 300, H: 34}) })
+	if string(masked) == string(plain.ctx.Canvas.Image().Pix) {
+		t.Fatal("a password field drew its contents in the clear")
+	}
+}
+
+func TestTextInputPointerPlacesTheCursor(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	f.SetValue("abcdefgh")
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+
+	h.frame(nil, body)
+	if f.Cursor() != 8 {
+		t.Fatalf("SetValue left the cursor at %d, want the end", f.Cursor())
+	}
+
+	// Click near the left edge of the text.
+	cell := GlyphAdvance * h.ctx.Theme.Body
+	h.frame([]Event{pointer(rect.X+h.ctx.Theme.Gap+cell+1, 20, true)}, body)
+	if f.Cursor() != 1 {
+		t.Fatalf("clicking after the first glyph put the cursor at %d, want 1", f.Cursor())
+	}
+}
+
+func TestCheckboxToggles(t *testing.T) {
+	h := newHarness(400, 100)
+	c := &Checkbox{ID: "tls", Label: "Ignore TLS certificate errors"}
+	rect := Rect{X: 10, Y: 10, W: 360, H: 34}
+	body := func(ctx *Context) { c.Layout(ctx, rect) }
+
+	h.click(20, 20, body)
+	if !c.Checked {
+		t.Fatal("clicking did not check the box")
+	}
+	h.click(20, 20, body)
+	if c.Checked {
+		t.Fatal("clicking again did not uncheck the box")
+	}
+
+	h.frame(nil, body)
+	h.frame([]Event{runeDown(' ', keysym.ModNone)}, body)
+	if !c.Checked {
+		t.Fatal("Space did not toggle the focused checkbox")
+	}
+}
+
+func TestSpinnerAsksForAnotherFrame(t *testing.T) {
+	h := newHarness(100, 100)
+	h.frame(nil, func(ctx *Context) { Spinner(ctx, Rect{X: 10, Y: 10, W: 40, H: 40}, Transparent) })
+	d, ok := h.ctx.RepaintDelay()
+	if !ok || d <= 0 {
+		t.Fatal("a busy indicator that never asks to be redrawn is a still image")
+	}
+	if d > time.Second {
+		t.Fatalf("the spinner asked for a frame in %v; it would look stopped", d)
+	}
+}
+
+func TestBannerReportsItsHeight(t *testing.T) {
+	h := newHarness(400, 200)
+	var short, long int
+	h.frame(nil, func(ctx *Context) {
+		short = Banner(ctx, Rect{X: 0, Y: 0, W: 380, H: 100}, BannerError, "Nope.")
+		long = Banner(ctx, Rect{X: 0, Y: 100, W: 380, H: 100}, BannerError,
+			"The server's TLS certificate was not accepted: it was not issued by a trusted authority. "+
+				"If this is a development instance, enable the option below.")
+	})
+	if short <= 0 {
+		t.Fatal("a banner with text reported no height")
+	}
+	if long <= short {
+		t.Fatalf("a wrapped banner (%d) is not taller than a one-line one (%d)", long, short)
+	}
+	h.frame(nil, func(ctx *Context) {
+		if got := Banner(ctx, Rect{X: 0, Y: 0, W: 380, H: 100}, BannerInfo, ""); got != 0 {
+			t.Fatalf("an empty banner took %d pixels", got)
+		}
+	})
+}

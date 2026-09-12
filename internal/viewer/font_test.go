@@ -43,6 +43,7 @@ func TestGlyphsRasteriseToTheirBitmap(t *testing.T) {
 		want []string
 	}{
 		{
+			// A capital fills rows 0 to 6 and leaves the descender row clear.
 			"uppercase A",
 			'A',
 			[]string{
@@ -53,21 +54,55 @@ func TestGlyphsRasteriseToTheirBitmap(t *testing.T) {
 				"#...#",
 				"#...#",
 				"#...#",
+				".....",
 			},
 		},
 		{
-			// Lowercase folds to the uppercase glyph rather than doubling the
-			// table; the overlay is short status text drawn large.
-			"lowercase a folds to A",
+			// Lowercase has its own glyphs now: a workspace list that folded
+			// to uppercase would shout every name back at the user.
+			"lowercase a",
 			'a',
 			[]string{
+				".....",
+				".....",
 				".###.",
+				"....#",
+				".####",
+				"#...#",
+				".####",
+				".....",
+			},
+		},
+		{
+			// The point of the eight-row cell: g descends past the baseline
+			// on row 7 instead of being squashed into the body.
+			"lowercase g descends",
+			'g',
+			[]string{
+				".....",
+				".....",
+				".####",
 				"#...#",
 				"#...#",
-				"#####",
+				".####",
+				"....#",
+				".###.",
+			},
+		},
+		{
+			// g and y share a descender and must not share a glyph: the
+			// closed bowl is the only thing telling them apart.
+			"lowercase y",
+			'y',
+			[]string{
+				".....",
+				".....",
 				"#...#",
 				"#...#",
 				"#...#",
+				".####",
+				"....#",
+				".###.",
 			},
 		},
 		{
@@ -81,6 +116,7 @@ func TestGlyphsRasteriseToTheirBitmap(t *testing.T) {
 				"..#..",
 				"..#..",
 				".###.",
+				".....",
 			},
 		},
 		{
@@ -94,12 +130,14 @@ func TestGlyphsRasteriseToTheirBitmap(t *testing.T) {
 				".....",
 				".##..",
 				".##..",
+				".....",
 			},
 		},
 		{
 			"space is blank",
 			' ',
 			[]string{
+				".....",
 				".....",
 				".....",
 				".....",
@@ -130,9 +168,9 @@ func TestGlyphsRasteriseToTheirBitmap(t *testing.T) {
 // text, so a rune the table does not cover must draw the missing-glyph box —
 // not panic, and not silently vanish.
 func TestUnknownRunesDegradeGracefully(t *testing.T) {
-	for _, r := range []rune{'€', '☃', 0, 0x10FFFF, '\n', '\t', 0x7f, '{', '~'} {
+	for _, r := range []rune{'€', '☃', 0, 0x10FFFF, '\n', '\t', 0x7f, 0x80} {
 		got := glyphFor(r)
-		if got == (glyph{}) && r != ' ' {
+		if got == (glyph{}) {
 			t.Fatalf("rune %q rendered as blank; a missing glyph must be visible", r)
 		}
 	}
@@ -147,12 +185,82 @@ func TestUnknownRunesDegradeGracefully(t *testing.T) {
 		if glyphFor(r) == (glyph{}) {
 			t.Fatalf("rune %q has an empty glyph", r)
 		}
+		if glyphFor(r) == missingGlyph {
+			t.Fatalf("rune %q fell back to the missing-glyph box", r)
+		}
 	}
 
 	// And the layout path survives whatever it is handed.
 	img := renderOverlay([]string{"☃ 500 Internal Server Error ☃", "\x00\x01"}, 1024, 768)
 	if img.w <= 0 || img.h <= 0 {
 		t.Fatal("an overlay of unmappable text rendered nothing")
+	}
+}
+
+// TestFontCoversPrintableASCII is the property the shell depends on: a
+// workspace name, a namespace or an error message is arbitrary printable
+// ASCII, and every one of those runes must have a distinct glyph.
+func TestFontCoversPrintableASCII(t *testing.T) {
+	if glyphFirst != 0x20 || glyphLast != 0x7e {
+		t.Fatalf("font covers %#x..%#x, want 0x20..0x7e", glyphFirst, glyphLast)
+	}
+	if got, want := len(glyphs), 0x7f-0x20; got != want {
+		t.Fatalf("table holds %d glyphs, want %d", got, want)
+	}
+
+	// Case must be distinguishable: the fold to uppercase is gone.
+	for r := 'a'; r <= 'z'; r++ {
+		upper := r - ('a' - 'A')
+		if glyphFor(r) == glyphFor(upper) {
+			t.Fatalf("%q and %q share a glyph; lowercase is no longer folded", r, upper)
+		}
+	}
+
+	// Descenders are what the eighth row is for.
+	for _, r := range []rune{'g', 'j', 'p', 'q', 'y', ','} {
+		if glyphFor(r)[glyphHeight-1] == 0 {
+			t.Fatalf("%q does not use the descender row", r)
+		}
+	}
+	// And nothing else may, or a line of capitals would sit unevenly.
+	for r := 'A'; r <= 'Z'; r++ {
+		if glyphFor(r)[glyphHeight-1] != 0 {
+			t.Fatalf("capital %q draws on the descender row", r)
+		}
+	}
+	for r := '0'; r <= '9'; r++ {
+		if glyphFor(r)[glyphHeight-1] != 0 {
+			t.Fatalf("digit %q draws on the descender row", r)
+		}
+	}
+
+	// No glyph may spill outside the cell.
+	for r := rune(glyphFirst); r <= glyphLast; r++ {
+		for row, bits := range glyphFor(r) {
+			if bits>>glyphWidth != 0 {
+				t.Fatalf("glyph %q row %d has bits outside the %d-pixel cell", r, row, glyphWidth)
+			}
+		}
+	}
+}
+
+// TestExportedFontMatchesTheTable guards the accessors internal/ui draws
+// through: they must be the same font, not a copy that can drift.
+func TestExportedFontMatchesTheTable(t *testing.T) {
+	if GlyphWidth != glyphWidth || GlyphHeight != glyphHeight ||
+		GlyphAdvance != glyphAdvance || LineAdvance != lineAdvance {
+		t.Fatal("the exported metrics disagree with the table's own")
+	}
+	if Baseline >= GlyphHeight {
+		t.Fatalf("baseline row %d is outside a %d-row cell", Baseline, GlyphHeight)
+	}
+	for r := rune(0); r < 0x100; r++ {
+		if GlyphFor(r) != glyphFor(r) {
+			t.Fatalf("GlyphFor(%q) does not match the table", r)
+		}
+	}
+	if got := FoldToFont("Reconnecting…"); got != "Reconnecting..." {
+		t.Fatalf("FoldToFont = %q", got)
 	}
 }
 
