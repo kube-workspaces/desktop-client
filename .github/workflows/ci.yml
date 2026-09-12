@@ -32,6 +32,9 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Test
+        run: go test ./...
+
       - name: Vet
         run: go vet ./...
 
@@ -51,17 +54,17 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  # This client grows cgo dependencies (SDL3 for the session viewer, later
-  # libavcodec for H.264), which cannot be cross-compiled from a single host.
-  # So every OS gets its own runner from day one, before those packages land —
-  # it is far cheaper to keep this green than to retrofit it later.
+  # The premise this job was written under turned out to be wrong: the SDL3
+  # binding is purego, so the whole tree — session viewer included — is cgo-free
+  # and cross-builds from one Linux host (see the Build workflow, which produces
+  # the release archives that way).
   #
-  # Deliberately just `go build ./...` for now: no system libraries are
-  # installed on the runners yet, and none are needed while the tree is
-  # cgo-free. Add the SDL3 install steps (and build tags) in the same change
-  # that introduces internal/session.
+  # It is kept because compiling and testing natively still catches things a
+  # cross-build cannot: platform-specific behaviour in path handling, the OS
+  # keychain, and anything guarded by build tags. That is a different question
+  # from "does it link", and worth a runner.
   cross:
-    name: Cross build (${{ matrix.os }})
+    name: Native build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -79,3 +82,6 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      - name: Test
+        run: go test ./...

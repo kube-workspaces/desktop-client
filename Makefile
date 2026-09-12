@@ -8,6 +8,12 @@ CMD     ?= ./cmd/kube-workspaces
 BIN_DIR ?= bin
 DIST_DIR?= dist
 
+# VERSION is stamped into the binary. A tagged build gets the tag; anything
+# else gets `<last-tag>-<n>-g<sha>[-dirty]`, or the bare sha in a shallow
+# checkout with no tags.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS ?= -s -w -X main.version=$(VERSION)
+
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
@@ -18,7 +24,7 @@ help: ## Show this help message
 
 build: ## Build the kube-workspaces binary into bin/
 	@mkdir -p $(BIN_DIR)
-	go build -o $(BIN_DIR)/$(BINARY) $(CMD)
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) $(CMD)
 
 run: ## Run the client from source (make run ARGS="--help")
 	go run $(CMD) $(ARGS)
@@ -49,13 +55,12 @@ cover: ## Run tests with coverage and print a per-function summary
 clean: ## Remove build output and coverage artefacts
 	rm -rf $(BIN_DIR) $(DIST_DIR) coverage.out coverage.html
 
-# NOTE: these are pure-Go cross builds and they only work while the tree stays
-# cgo-free. The session viewer (SDL3) and, later, H.264 decode (libavcodec) are
-# cgo; those targets cannot be cross-compiled from one host and are built by CI
-# on per-OS runners instead (see .github/workflows/ci.yml, the `cross` job).
-# Keep this target as a fast smoke test of the portable packages, not as the
-# release mechanism.
-build-all: ## Cross-build the 6 targets into dist/ (pure-Go packages only)
+# The whole binary, viewer included, cross-builds from any one host: the SDL3
+# binding is purego and bundles the library, so there is no cgo anywhere in the
+# tree. If that ever stops being true (H.264 decode via libavcodec is the
+# likely cause), this target breaks loudly and release builds move to per-OS
+# runners.
+build-all: ## Cross-build and package all 6 targets into dist/
 	@mkdir -p $(DIST_DIR)
 	@set -e; for target in \
 		linux/amd64 linux/arm64 \
@@ -63,7 +68,19 @@ build-all: ## Cross-build the 6 targets into dist/ (pure-Go packages only)
 		windows/amd64 windows/arm64; do \
 		os=$${target%/*}; arch=$${target#*/}; \
 		ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
+		stage="$(DIST_DIR)/$(BINARY)-$$os-$$arch"; \
 		echo "building $$os/$$arch"; \
+		rm -rf "$$stage"; mkdir -p "$$stage"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
-			go build -o $(DIST_DIR)/$(BINARY)-$$os-$$arch$$ext $(CMD); \
+			go build -trimpath -ldflags "$(LDFLAGS)" -o "$$stage/$(BINARY)$$ext" $(CMD); \
+		cp README.md LICENSE "$$stage/"; \
+		if [ "$$os" = "windows" ]; then \
+			(cd $(DIST_DIR) && zip -qr "$(BINARY)-$(VERSION)-$$os-$$arch.zip" "$(BINARY)-$$os-$$arch"); \
+		else \
+			tar -czf "$(DIST_DIR)/$(BINARY)-$(VERSION)-$$os-$$arch.tar.gz" \
+				-C $(DIST_DIR) "$(BINARY)-$$os-$$arch"; \
+		fi; \
+		rm -rf "$$stage"; \
 	done
+	@cd $(DIST_DIR) && sha256sum *.tar.gz *.zip > SHA256SUMS 2>/dev/null || true
+	@echo; echo "$(DIST_DIR)/ ($(VERSION)):"; ls -1 $(DIST_DIR)
