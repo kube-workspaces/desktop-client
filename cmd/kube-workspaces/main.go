@@ -33,6 +33,7 @@ func main() {
 		{"profile", "List, select and remove instance profiles", runProfile},
 		{"whoami", "Show the authenticated identity", runWhoAmI},
 		{"list", "List workspaces", runList},
+		connectCommand(),
 		{"probe", "Probe a VM workspace's display capabilities and bandwidth", runProbe},
 		{"screenshot", "Capture a VM workspace's display to a PNG file", runScreenshot},
 		{"version", "Print the client version", runVersion},

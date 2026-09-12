@@ -3,10 +3,16 @@ module github.com/kube-workspaces/desktop-client
 go 1.26.0
 
 require (
+	github.com/Zyko0/go-sdl3 v0.1.1
+	github.com/gorilla/websocket v1.5.3
+	github.com/zalando/go-keyring v0.2.8
+	golang.org/x/term v0.46.0
+)
+
+require (
+	github.com/Zyko0/purego-gen v0.0.0-20250727121216-3bcd331a1e0c // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
+	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/zalando/go-keyring v0.2.8 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/term v0.46.0 // indirect
 )

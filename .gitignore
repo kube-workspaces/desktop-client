@@ -39,3 +39,6 @@ coverage.html
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Screenshots captured by `kube-workspaces screenshot` during development.
+*.png

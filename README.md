@@ -14,10 +14,6 @@ connect.
 > API client and RFB (VNC) protocol code. **There is no GUI, no working session
 > viewer, and no released build.** Nothing below describes a shipping product —
 > it describes what is being built. Do not expect any of it to work yet.
->
-> The authoritative plan, phase breakdown and progress log live in
-> [kube-workspaces/tracking](https://github.com/kube-workspaces/tracking) →
-> `desktop-client-tracker.md`.
 
 ## Why
 

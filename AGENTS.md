@@ -9,12 +9,24 @@ accessing workspaces on a kube-workspaces platform instance. Go, targeting
 **Early development.** Only scaffolding and the first protocol packages exist.
 Nothing in this repo is a shipping feature; do not describe it as one.
 
-## Tracking
+## Roadmap
 
-`kube-workspaces/tracking` → **`desktop-client-tracker.md`** is the source of
-truth for the plan, the locked-in decisions, the phase breakdown and the
-progress log. Read it before starting work, and update it there (not here) when
-a decision changes or a phase item completes.
+Work is phased. Phase 1 is an MVP: authenticate, list workspaces, and open a
+VM's display in a window. Later phases add an adaptive-quality controller,
+audio, a Gio shell, and a high-performance in-guest transport.
+
+Locked-in architecture decisions:
+
+| Decision | Choice |
+|---|---|
+| Display, universal path | RFB over the API's `/vnc` bridge, no guest agent |
+| Display, premium path | In-guest agent (H.264 + Opus), auto-negotiated, later phase |
+| Session window | SDL3 via `Zyko0/go-sdl3` (purego, no cgo) |
+| Shell UI | Gio or Fyne, separate process from the session viewer |
+| Auth | System browser + loopback + PKCE (RFC 8252); no embedded webview |
+| Audio | Playback only |
+
+Detailed planning and cross-repo coordination happen outside this repository.
 
 ## Structure
 
