@@ -38,10 +38,23 @@ type fakeBackend struct {
 	uploads        int
 	presents       int
 	clipboard      string
+	sized          [][2]int
+
+	// wake stands in for SDL's event queue as far as WaitEvents is concerned:
+	// a buffered slot, so that a wake delivered while nobody is waiting is
+	// still there for the next wait. That is the property the real backend
+	// gets from pushing a user event, and the property the shell's loop rests
+	// on — a result that lands a microsecond before the wait begins must not
+	// sit there until the timeout.
+	wake  chan struct{}
+	wakes int
+	// polls counts drains of the event queue, which is how a test measures
+	// how hard the loop is spinning.
+	polls int
 }
 
 func newFakeBackend(w, h int) *fakeBackend {
-	return &fakeBackend{w: w, h: h}
+	return &fakeBackend{w: w, h: h, wake: make(chan struct{}, 1)}
 }
 
 func (f *fakeBackend) Open(opts viewer.WindowOptions) error {
@@ -100,6 +113,49 @@ func (f *fakeBackend) PollEvents(dst []viewer.Event) []viewer.Event { return f.d
 func (f *fakeBackend) Size() (int, int)                             { return f.size() }
 func (f *fakeBackend) Fullscreen() bool                             { return f.isFullscreen() }
 
+// WaitEvents blocks until an event is queued, a wake arrives, or the timeout
+// expires, then drains like PollEvents.
+func (f *fakeBackend) WaitEvents(dst []viewer.Event, timeout time.Duration) []viewer.Event {
+	if timeout > 0 && !f.queued() {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-f.wake:
+		case <-timer.C:
+		}
+	}
+	return f.drain(dst)
+}
+
+func (f *fakeBackend) Wake() {
+	f.mu.Lock()
+	f.wakes++
+	f.mu.Unlock()
+	f.nudge()
+}
+
+// nudge fills the wake slot if it is empty, which is what both Wake and a
+// pushed event do to a real event queue.
+func (f *fakeBackend) nudge() {
+	select {
+	case f.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (f *fakeBackend) queued() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.queue) > 0
+}
+
+// wakeCount reports how many times the loop has been nudged from off-thread.
+func (f *fakeBackend) wakeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.wakes
+}
+
 func (f *fakeBackend) count() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -110,6 +166,16 @@ func (f *fakeBackend) resize(w, h int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.w, f.h = w, h
+	f.sized = append(f.sized, [2]int{w, h})
+}
+
+// userResize simulates the user dragging the window frame: the size changes
+// and the window manager reports it.
+func (f *fakeBackend) userResize(w, h int) {
+	f.mu.Lock()
+	f.w, f.h = w, h
+	f.mu.Unlock()
+	f.send(viewer.EventResize{W: w, H: h})
 }
 
 func (f *fakeBackend) setTitle(title string) {
@@ -151,16 +217,33 @@ func (f *fakeBackend) size() (int, int) {
 func (f *fakeBackend) drain(dst []viewer.Event) []viewer.Event {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.polls++
 	dst = append(dst, f.queue...)
 	f.queue = f.queue[:0]
 	return dst
 }
 
+// pollCount reports how many times the event queue has been drained.
+func (f *fakeBackend) pollCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.polls
+}
+
+// presentCount reports how many frames have been shown.
+func (f *fakeBackend) presentCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.presents
+}
+
 // send queues events for the next poll.
 func (f *fakeBackend) send(events ...viewer.Event) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.queue = append(f.queue, events...)
+	f.mu.Unlock()
+	// A real backend's queue ends a blocking wait; this one has to say so.
+	f.nudge()
 }
 
 var _ viewer.Backend = (*fakeBackend)(nil)

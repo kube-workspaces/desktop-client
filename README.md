@@ -8,12 +8,18 @@ A native desktop client for accessing workspaces on a [Kube Workspaces](https://
 platform instance. Point it at your instance, sign in, pick a running workspace,
 connect.
 
-> ## Status: early development — not yet usable
+> ## Status: early development — unreleased
 >
-> This repo currently contains scaffolding and the beginnings of the platform
-> API client and RFB (VNC) protocol code. **There is no GUI, no working session
-> viewer, and no released build.** Nothing below describes a shipping product —
-> it describes what is being built. Do not expect any of it to work yet.
+> There is a working graphical shell and a working RFB (VNC) session viewer: you
+> can build the binary, run it, sign in against a real instance, browse your
+> workspaces and open a VM's display in a window, with clipboard, guest resize
+> and automatic reconnect.
+>
+> What that is **not**: released, packaged or signed. **No binaries are
+> published** — you build it yourself. Nothing is versioned, nothing is
+> supported, and the CLI surface still changes without notice. Several things
+> named on this page (the in-guest Tier 1 transport, audio, adaptive quality)
+> are explicitly **not implemented**; they are marked as such where they appear.
 
 ## Why
 
@@ -25,73 +31,284 @@ WorkSpaces client — for `spec.type: vm` workspaces in particular.
 
 ## Supported platforms
 
-Six targets are planned: **linux, macOS and Windows** × **amd64 and arm64**.
+Six targets: **linux, macOS and Windows** × **amd64 and arm64**.
 
-Because the session viewer will depend on SDL3 (and later libavcodec) through
-cgo, builds are produced per-OS on CI runners rather than cross-compiled from a
-single host. While the tree is still cgo-free, `make build-all` will cross-build
-all six.
+All six cross-build from a single machine with `CGO_ENABLED=0`. The client has
+**no cgo and no system library dependencies**: the SDL3 binding
+([`Zyko0/go-sdl3`](https://github.com/Zyko0/go-sdl3)) is pure Go over
+[purego](https://github.com/ebitengine/purego), and the SDL3 library itself is
+bundled with the binding and unpacked to a temporary directory at startup. You
+do not need SDL, X11 or Wayland development packages to build, and the target
+machine does not need SDL installed to run.
+
+A Linux desktop session (X11 or Wayland) is of course still needed at *runtime*
+for the shell and the session viewer. The CLI subcommands that do not open a
+window — `login`, `list`, `probe`, `screenshot` — run fine headless.
+
+## Building
+
+Requires Go 1.26+. No code generation, no container image, no system packages.
+
+```bash
+make build          # -> bin/kube-workspaces
+make build-all      # cross-build all six targets into dist/
+make test           # go test -race ./...
+make lint           # golangci-lint, skipped if not installed
+make help           # all targets
+```
+
+## Getting started
+
+### The graphical shell
+
+Running the binary with **no arguments** opens the graphical shell — this is a
+desktop application, and that is what it does when launched from a menu, a dock
+or a `.desktop` file:
+
+```bash
+./bin/kube-workspaces
+```
+
+`kube-workspaces shell` names the same thing explicitly and takes flags
+(`--profile`, `--width`, `--height`, `--refresh`, `--quality`, `--scale-quality`,
+`--interval`, `-v`).
+
+The shell walks through three screens — instance URL, sign-in, workspace list —
+and then opens a display session **in the same window**. There is no second
+process and no second window: the shell hands the window over to the session
+viewer for the duration and takes it back when the session ends.
+
+On the workspace list:
+
+| Key | Action |
+|---|---|
+| `Enter` | Open the selected workspace |
+| `F5` | Refresh the list now (it also polls every 5s) |
+| `Ctrl-F` | Filter by name, namespace or type |
+| `Tab` | Move focus |
+
+Opening a **VM** workspace starts a display session in the window. Opening a
+**container** workspace opens its proxy URL in your system browser, because
+those are web applications.
+
+### The CLI
+
+The subcommands remain for scripting and for diagnosing the client libraries
+against a real instance. Treat `--help` on the binary as authoritative; the
+surface is not stable.
+
+```
+kube-workspaces [<command>] [flags]
+
+shell       Open the graphical workspace browser (the default)
+login       Authenticate against a kube-workspaces instance
+logout      Forget the stored session token for a profile
+profile     List, select and remove instance profiles
+whoami      Show the authenticated identity
+list        List workspaces
+connect     Open a graphical session to a VM workspace
+probe       Probe a VM workspace's display capabilities and bandwidth
+screenshot  Capture a VM workspace's display to a PNG file
+version     Print the client version
+```
+
+#### `login`
+
+Authenticates and saves a named profile. The system browser (RFC 8252 loopback
+redirect + PKCE) is used automatically when the instance is backed by an
+identity provider; local email/password accounts are prompted for in the
+terminal. `--browser` forces the browser flow either way.
+
+```bash
+# OIDC instance: opens your browser, prints the URL as a fallback
+kube-workspaces login --server https://workspaces.example.com
+
+# Local account: prompts for email and password
+kube-workspaces login --server https://workspaces.example.com --email me@example.com
+
+# Non-interactive: use a session token you already have
+kube-workspaces login --server https://workspaces.example.com --token "$KW_TOKEN"
+KUBE_WORKSPACES_TOKEN="$KW_TOKEN" kube-workspaces login --server https://workspaces.example.com
+
+# Second instance, kept under its own profile name
+kube-workspaces login --server https://dev.example.com --name dev --insecure
+```
+
+Flags: `--server`, `--email`, `--token`, `--browser`, `--name`, `--namespace`,
+`--insecure`. `--server` is only required the first time; re-running `login`
+with no `--server` re-authenticates the active profile. `--insecure` skips TLS
+verification and is for self-signed dev clusters and nothing else.
+
+The token is verified against the server before it is saved, so a bad token
+fails here rather than mysteriously on the next command.
+
+#### `list`
+
+```bash
+kube-workspaces list                       # every namespace you can see
+kube-workspaces list --running             # only what can be connected to
+kube-workspaces list --wide                # adds image, cpu and memory columns
+kube-workspaces list --namespace team-a
+```
+
+Connectable workspaces sort to the top. Status is derived, not reported by the
+platform: `stopped`, then `running` once a replica is ready, otherwise
+`starting` with the container's reason when there is one.
+
+#### `connect`
+
+Opens a display session for one VM workspace in its own window, without the
+shell. `--namespace` is optional — the workspace is looked up across namespaces
+when it is unambiguous.
+
+```bash
+kube-workspaces connect my-vm
+kube-workspaces connect my-vm --fullscreen
+kube-workspaces connect my-vm --namespace team-a --quality 6 --compress 9
+kube-workspaces connect my-vm --no-resize --scale-quality pixelart
+kube-workspaces connect my-vm --reconnect=false -v
+```
+
+Flags: `--profile`, `--namespace`, `--fullscreen`, `--quality` (JPEG level 0-9,
+default 8, `-1` to omit), `--compress` (zlib level 0-9, default `-1` = omit),
+`--scale-quality` (`nearest`, `linear` (default) or `pixelart`), `--interval`
+(update request interval, default 16ms), `--reconnect` (default true),
+`--width`, `--height` (0 = match the guest), `--no-resize`, `--no-vsync`, `-v`.
+
+By default the guest's display is resized to match the window. `--no-resize`
+keeps the guest resolution fixed and scales it into the window instead.
+
+#### `probe`
+
+Connects, drives real framebuffer updates, and reports what the server actually
+did — which encodings it chose, which pseudo-encodings it acknowledged, and how
+many bytes per second that cost. There is no way to *ask* an RFB server what it
+supports; the only signal is behavioural.
+
+```bash
+kube-workspaces probe my-vm
+kube-workspaces probe my-vm --duration 30s --quality 8
+kube-workspaces probe my-vm --audio          # does this VM have a sound device?
+kube-workspaces probe my-vm --encodings tight,copyrect,raw -v
+```
+
+Flags: `--profile`, `--namespace`, `--duration` (default 10s), `--interval`
+(default 33ms), `--quality`, `--compress`, `--audio`, `--encodings`, `-v`.
+
+#### `screenshot`
+
+Captures one frame to a PNG. It is also the end-to-end proof that the whole
+chain works: auth, WebSocket bridge, RFB handshake, encoding negotiation and
+pixel decoding all have to be right to produce a recognisable image.
+
+```bash
+kube-workspaces screenshot my-vm
+kube-workspaces screenshot my-vm -o /tmp/vm.png
+kube-workspaces screenshot my-vm --wake      # idle guests blank via DPMS
+kube-workspaces screenshot my-vm --wake --wake-key return --timeout 60s
+```
+
+Flags: `--profile`, `--namespace`, `-o`, `--timeout` (default 30s), `--settle`
+(default 750ms), `--quality`, `--wake`, `--wake-key` (default `shift_l`).
+
+If you get a black image, the guest has almost certainly blanked its display.
+`--wake` taps a modifier key first, which cannot type anything into the session.
+
+#### `profile`, `whoami`, `logout`
+
+```bash
+kube-workspaces profile list          # * marks the active profile
+kube-workspaces profile use dev
+kube-workspaces profile remove dev
+kube-workspaces whoami                # identity, role, namespaces, token expiry
+kube-workspaces logout                # forgets the stored token
+```
+
+Every other subcommand takes `--profile <name>` to act on a non-active profile.
+
+## Keyboard shortcuts in a session
+
+| Shortcut | Action |
+|---|---|
+| `F11` | Toggle fullscreen |
+| `Ctrl+Alt+End` | Send Ctrl-Alt-Del to the guest |
+| `Ctrl+Alt+Del` | Same, where the host lets it through (X11 and most Wayland compositors; never Windows) |
+| `Ctrl+Alt+Q` | Disconnect |
+
+These are host hotkeys: they are acted on locally and never forwarded to the
+guest. They work while disconnected too, so a session stuck behind a
+"Reconnecting…" overlay can still be left without reaching for the terminal.
+
+The clipboard is synchronised in both directions. Host-to-guest is polled twice
+a second, because no windowing system offers a reliable cross-platform
+"clipboard changed" signal.
 
 ## The display model — two tiers
 
-Two transports, chosen automatically from the workspace's image; never a user
-setting.
+Two transports, chosen from the workspace's image; never a user setting.
 
 | | **Tier 0 — RFB/VNC** | **Tier 1 — in-guest agent** |
 |---|---|---|
-| Status | **being implemented** | **not implemented** (planned) |
+| Status | **implemented** — this is what the client uses today | **NOT IMPLEMENTED** (planned; no code exists) |
 | Path | the platform API's `/v1/workspaces/{name}/vnc` WebSocket bridge | [Selkies](https://github.com/selkies-project/selkies) agent in the guest, via `kube-workspaces/proxy` |
 | Needs an agent in the guest? | No — works on any image | Yes — only on images that ship it |
-| Video | Tight/JPEG rectangles, no interframe coding | H.264 |
-| Audio | none (a QEMU PCM extension exists; unverified) | Opus |
+| Video | Tight/JPEG, ZRLE, Hextile, CopyRect, Raw rectangles; no interframe coding | H.264 |
+| Audio | none — a QEMU PCM extension exists and `probe --audio` can detect it, but nothing plays it | Opus |
 | Works when | always: pre-boot, BIOS/GRUB, login screen, dead guest network | only after the guest has booted |
 
 Tier 0 is the universal floor and is never going away — it is the out-of-band
 console. Tier 1 is the premium path and also keeps pixel traffic off the
 Kubernetes control plane, which Tier 0 unavoidably transits.
 
+An **adaptive-quality controller** that retunes the encoding by measured
+bandwidth is also **not implemented**. `--quality` and `--compress` are set once
+at connect time and stay put.
+
 Tier 0 has one sharp edge worth knowing about: the VNC bridge is
 **single-session**. If someone else (or the web UI) already holds the console,
-connecting returns HTTP 409 and there is no takeover endpoint yet.
+connecting returns HTTP 409 and there is **no takeover endpoint** for the
+display. The client treats this as "busy, not broken": it says so on screen and
+polls gently until the slot is released, rather than failing or climbing a
+backoff curve. `connect --reconnect=false` reports it and exits instead.
 
 ## Architecture
 
-Two processes:
+One process, one window, one OS thread.
 
-- **Shell** (Gio or Fyne) — instance profiles, login, workspace list, settings.
-  REST only; it never touches pixels.
-- **Session viewer** (SDL3), one per connection, spawned by the shell — window,
-  GPU texture upload, input, audio.
+- `internal/shell` — the graphical front door (profiles, login, workspace list),
+  drawn with the software widget layer in `internal/ui`.
+- `internal/viewer` — the session viewer: SDL3 window, texture upload, input,
+  overlays.
 
-A hung or crashing session must not take down the app, each windowing stack
-wants its own main thread, and multiple concurrent sessions then come for free.
+The shell lends its SDL backend to the viewer for the length of a session and
+picks the window back up afterwards. There is no shell/session process split, no
+IPC, and no orphan to clean up after a crash — see `AGENTS.md` for why that
+decision was made this way.
 
-## Building
+## Where your session token is stored
 
-Requires Go 1.26+.
+Session tokens are bearer credentials, so they go in the OS keychain: Keychain
+on macOS, Credential Manager on Windows, Secret Service on Linux. Instance
+profiles (URL, email, namespace) are ordinary config and live in a JSON file
+under your user config directory.
 
-```bash
-make build          # -> bin/kube-workspaces
-make test           # go test -race ./...
-make lint           # golangci-lint, skipped if not installed
-make help           # all targets
-```
-
-## Running
-
-**The CLI surface is in flux and changes without notice.** It exists to drive
-the protocol code during development; it is not a stable interface and it will
-be largely replaced by the GUI shell. Treat `--help` on the binary as the only
-authoritative list:
+Headless Linux boxes, containers and CI runners frequently have no Secret
+Service. Rather than fail, the client can fall back to a `0600` file in the
+config directory — but **only if you opt in**:
 
 ```bash
-./bin/kube-workspaces --help
+export KUBE_WORKSPACES_INSECURE_TOKEN_FILE=1
 ```
 
-The shape being built towards (per the tracker) is a small set of subcommands
-for authenticating against an instance, listing connectable workspaces, and
-launching a session viewer for one of them — with the session viewer itself
-spawned as a subcommand of the same binary.
+**Security caveat:** this writes a bearer credential to disk in plaintext.
+Anyone who can read that file can act as you on the instance until the token
+expires (24 hours, with no refresh). File permissions are the only protection —
+there is no encryption at rest, and backups, snapshots and shared home
+directories will happily copy it. Use it on machines you control, and prefer
+`logout` to leaving a stale file behind. The client tells you when the fallback
+was used rather than silently degrading.
+
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## Related repositories
 

@@ -25,6 +25,7 @@ package viewer
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 )
@@ -217,7 +218,8 @@ type WindowOptions struct {
 // Implementations are not required to be safe for concurrent use, and the
 // viewer does not use them concurrently: every call is made from the goroutine
 // that ran [Backend.Open]. That is a hard requirement of most windowing
-// libraries (SDL included), not a simplification.
+// libraries (SDL included), not a simplification. [Backend.Wake] is the single
+// exception, and exists precisely because that rule is otherwise absolute.
 type Backend interface {
 	// Open creates the window, renderer and any other resources. It must be
 	// called from the OS thread that will own the event loop.
@@ -262,6 +264,41 @@ type Backend interface {
 	// returning the extended slice. It must not block. The append-style
 	// signature lets the caller reuse one buffer for the life of the session.
 	PollEvents(dst []Event) []Event
+
+	// WaitEvents blocks until at least one event is available or timeout
+	// elapses, then drains the queue exactly as [Backend.PollEvents] does. A
+	// timeout of zero or less means "do not block", making it equivalent to
+	// PollEvents.
+	//
+	// It exists because a loop built on PollEvents alone has to choose a
+	// polling period, and every choice is wrong: short enough for input to
+	// feel immediate is also often enough to keep a core awake for a window
+	// that is showing a static list. A loop that waits here instead costs
+	// nothing while nothing is happening and still reacts to the first event
+	// on the same millisecond it arrives.
+	//
+	// The returned slice may be empty even after the full timeout, and may be
+	// empty after returning early: a wake (see [Backend.Wake]) ends the wait
+	// without producing an event.
+	WaitEvents(dst []Event, timeout time.Duration) []Event
+
+	// Wake causes a [Backend.WaitEvents] call to return promptly. It is the
+	// only method here that may be called from a goroutine other than the one
+	// that owns the window, and the only one a backend must make safe for
+	// concurrent use.
+	//
+	// It is what makes a blocking wait usable in a program whose interesting
+	// events do not come from the window at all: a decoded frame, a finished
+	// HTTP request, a cancelled context. Each of those happens on some other
+	// goroutine, which calls Wake so that the loop looks again immediately
+	// rather than when its timeout happens to expire.
+	//
+	// A wake must not be lost when no wait is in progress: the next
+	// WaitEvents has to return at once. Queuing an event that the translation
+	// layer then discards has that property for nothing; a condition variable
+	// does not, and would drop exactly the wakes that matter — the ones that
+	// race the loop into its wait.
+	Wake()
 
 	// Size returns the current drawable size in pixels.
 	Size() (w, h int)

@@ -107,17 +107,23 @@ func (v *Viewer) pump(ctx context.Context, src ConnSource) {
 // top of its next iteration.
 func (v *Viewer) offer(conn *rfb.Conn, connCtx context.Context) {
 	v.inbox.Lock()
-	defer v.inbox.Unlock()
 	v.inbox.nextConn, v.inbox.nextCtx, v.inbox.hasNext = conn, connCtx, true
 	v.inbox.needsPresent = true
+	v.inbox.Unlock()
+	// The render loop may be parked in a blocking event wait; a connection
+	// that took a minute to establish must not then wait on a timer.
+	v.wake()
 }
 
 // offerErr reports that the source has given up for good.
 func (v *Viewer) offerErr(err error) {
 	v.inbox.Lock()
-	defer v.inbox.Unlock()
-	if !v.inbox.hasErr {
-		v.inbox.srcErr, v.inbox.hasErr = err, true
-		v.inbox.needsPresent = true
+	if v.inbox.hasErr {
+		v.inbox.Unlock()
+		return
 	}
+	v.inbox.srcErr, v.inbox.hasErr = err, true
+	v.inbox.needsPresent = true
+	v.inbox.Unlock()
+	v.wake()
 }

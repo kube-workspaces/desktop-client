@@ -9,11 +9,25 @@ package viewer
 
 import (
 	"fmt"
+	"math"
+	"sync"
+	"time"
 
 	"github.com/Zyko0/go-sdl3/bin/binsdl"
 	"github.com/Zyko0/go-sdl3/sdl"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 )
+
+// wakeEventType is the event [SDLBackend.Wake] pushes.
+//
+// SDL_EVENT_USER is the first type reserved for the application, and SDL's own
+// advice is to claim types with SDL_RegisterEvents rather than hard-coding it.
+// The binding does not expose that function, and this process is the only
+// thing pushing user events into its own queue, so the fixed type is
+// unambiguous here. If a library that pushes its own user events is ever
+// linked in, this becomes a registered type instead — the only cost is that
+// the constant stops being a constant.
+const wakeEventType = sdl.EVENT_USER
 
 // SDLBackend implements [Backend] on SDL3 through the purego binding
 // github.com/Zyko0/go-sdl3, which needs no cgo.
@@ -71,6 +85,17 @@ type SDLBackend struct {
 	pressed map[sdl.Scancode]EventKey
 
 	event sdl.Event
+
+	// wakeMu guards wakeOK, which is the only state [SDLBackend.Wake] may
+	// touch. Wake is the one method callable from another goroutine, and it
+	// reaches into the SDL library; Close unloads that library out from under
+	// it. A read lock held across the push, and the write lock taken by Close
+	// before anything is destroyed, is what stops a wake landing in a library
+	// that has already been dlclose'd — which is a segfault, not an error.
+	// The lock is uncontended in the steady state and never held across
+	// anything that blocks.
+	wakeMu sync.RWMutex
+	wakeOK bool
 }
 
 // NewSDLBackend returns an unopened SDL backend.
@@ -134,12 +159,23 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 	}
 	b.fullscreen = opts.Fullscreen
 	b.refreshMetrics()
+
+	// Only now may another goroutine push into the event queue.
+	b.wakeMu.Lock()
+	b.wakeOK = true
+	b.wakeMu.Unlock()
 	return nil
 }
 
 // Close destroys everything Open created, in reverse order, and unloads the
 // library. It is safe to call more than once.
 func (b *SDLBackend) Close() {
+	// Shut the door on Wake first: everything below this line invalidates the
+	// library a concurrent wake would be calling into.
+	b.wakeMu.Lock()
+	b.wakeOK = false
+	b.wakeMu.Unlock()
+
 	if b.overlay != nil {
 		b.overlay.Destroy()
 		b.overlay = nil
@@ -408,69 +444,130 @@ func (b *SDLBackend) SetClipboard(text string) error {
 // leaking an SDL concept into the viewer.
 func (b *SDLBackend) PollEvents(dst []Event) []Event {
 	for sdl.PollEvent(&b.event) {
-		switch b.event.Type {
-		case sdl.EVENT_QUIT, sdl.EVENT_WINDOW_CLOSE_REQUESTED:
-			dst = append(dst, EventQuit{})
+		dst = b.translate(dst)
+	}
+	return dst
+}
 
-		case sdl.EVENT_KEY_DOWN, sdl.EVENT_KEY_UP:
-			if ev, ok := b.translateKey(b.event.KeyboardEvent()); ok {
-				dst = append(dst, ev)
-			}
+// WaitEvents blocks for up to timeout waiting for the first event, then drains
+// whatever else is queued behind it.
+//
+// On a real video driver SDL_WaitEventTimeout sleeps on the platform's event
+// source — the X11 or Wayland connection — so a loop parked here costs nothing
+// at all until the compositor, the keyboard or [SDLBackend.Wake] has something
+// for it. Drivers with no waitable source, which in practice means the dummy
+// driver used in headless tests, fall back inside SDL to polling every
+// millisecond; a headless measurement of this therefore shows SDL's floor, not
+// the application's.
+func (b *SDLBackend) WaitEvents(dst []Event, timeout time.Duration) []Event {
+	if timeout <= 0 {
+		return b.PollEvents(dst)
+	}
+	// Round up rather than down: SDL's resolution is a millisecond, and a
+	// sub-millisecond timeout truncated to zero would turn this into a spin.
+	ms := (timeout + time.Millisecond - 1) / time.Millisecond
+	if ms > math.MaxInt32 {
+		ms = math.MaxInt32
+	}
+	if sdl.WaitEventTimeout(&b.event, int32(ms)) {
+		dst = b.translate(dst)
+	}
+	// One event woke the wait; anything that arrived with it (a resize is
+	// usually three) is still queued, and taking it now keeps the batching
+	// behaviour identical to PollEvents.
+	return b.PollEvents(dst)
+}
 
-		case sdl.EVENT_MOUSE_MOTION:
-			m := b.event.MouseMotionEvent()
-			b.buttons = buttonsFromState(m.State)
-			x, y := b.toSurface(m.X, m.Y)
-			dst = append(dst, EventPointer{X: x, Y: y, Buttons: b.buttons})
+// Wake pushes a user event, which ends any [SDLBackend.WaitEvents] in progress
+// and, because it goes on the queue like any other event, is not lost if the
+// wait has not started yet.
+//
+// SDL_PushEvent is documented as safe from any thread, which is the whole
+// reason this is the one method another goroutine may call. See wakeMu for
+// what happens when that goroutine races Close.
+func (b *SDLBackend) Wake() {
+	b.wakeMu.RLock()
+	defer b.wakeMu.RUnlock()
+	if !b.wakeOK {
+		return
+	}
+	event := sdl.Event{Type: wakeEventType}
+	// A queue so full that the push fails is a queue that is about to wake
+	// the loop anyway, so there is nothing useful to do with the error.
+	_ = sdl.PushEvent(&event)
+}
 
-		case sdl.EVENT_MOUSE_BUTTON_DOWN, sdl.EVENT_MOUSE_BUTTON_UP:
-			m := b.event.MouseButtonEvent()
-			if bit, ok := buttonBit(m.Button); ok {
-				if m.Down {
-					b.buttons |= bit
-				} else {
-					b.buttons &^= bit
-				}
-			}
-			x, y := b.toSurface(m.X, m.Y)
-			dst = append(dst, EventPointer{X: x, Y: y, Buttons: b.buttons})
+// translate converts the event most recently read into b.event, appending the
+// backend-neutral form to dst. Events with no equivalent are dropped here
+// rather than leaking an SDL concept into the viewer.
+func (b *SDLBackend) translate(dst []Event) []Event {
+	switch b.event.Type {
+	case sdl.EVENT_QUIT, sdl.EVENT_WINDOW_CLOSE_REQUESTED:
+		dst = append(dst, EventQuit{})
 
-		case sdl.EVENT_MOUSE_WHEEL:
-			w := b.event.MouseWheelEvent()
-			dx, dy := w.X, w.Y
-			if w.Direction == sdl.MOUSEWHEEL_FLIPPED {
-				dx, dy = -dx, -dy
-			}
-			var ticksX, ticksY int
-			ticksX, b.wheelX = wheelTicks(b.wheelX, dx)
-			ticksY, b.wheelY = wheelTicks(b.wheelY, dy)
-			if ticksX != 0 || ticksY != 0 {
-				dst = append(dst, EventWheel{DX: ticksX, DY: ticksY})
-			}
-
-		case sdl.EVENT_WINDOW_RESIZED, sdl.EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-			b.refreshMetrics()
-			dst = append(dst, EventResize{W: b.outW, H: b.outH})
-
-		case sdl.EVENT_WINDOW_ENTER_FULLSCREEN:
-			b.fullscreen = true
-
-		case sdl.EVENT_WINDOW_LEAVE_FULLSCREEN:
-			b.fullscreen = false
-
-		case sdl.EVENT_WINDOW_FOCUS_GAINED:
-			dst = append(dst, EventFocus{Gained: true})
-
-		case sdl.EVENT_WINDOW_FOCUS_LOST:
-			// SDL stops delivering key events once focus is gone, so anything
-			// still held is never released; the viewer reacts to this.
-			b.pressed = make(map[sdl.Scancode]EventKey)
-			b.buttons = 0
-			dst = append(dst, EventFocus{Gained: false})
-
-		case sdl.EVENT_CLIPBOARD_UPDATE:
-			dst = append(dst, EventClipboard{})
+	case sdl.EVENT_KEY_DOWN, sdl.EVENT_KEY_UP:
+		if ev, ok := b.translateKey(b.event.KeyboardEvent()); ok {
+			dst = append(dst, ev)
 		}
+
+	case sdl.EVENT_MOUSE_MOTION:
+		m := b.event.MouseMotionEvent()
+		b.buttons = buttonsFromState(m.State)
+		x, y := b.toSurface(m.X, m.Y)
+		dst = append(dst, EventPointer{X: x, Y: y, Buttons: b.buttons})
+
+	case sdl.EVENT_MOUSE_BUTTON_DOWN, sdl.EVENT_MOUSE_BUTTON_UP:
+		m := b.event.MouseButtonEvent()
+		if bit, ok := buttonBit(m.Button); ok {
+			if m.Down {
+				b.buttons |= bit
+			} else {
+				b.buttons &^= bit
+			}
+		}
+		x, y := b.toSurface(m.X, m.Y)
+		dst = append(dst, EventPointer{X: x, Y: y, Buttons: b.buttons})
+
+	case sdl.EVENT_MOUSE_WHEEL:
+		w := b.event.MouseWheelEvent()
+		dx, dy := w.X, w.Y
+		if w.Direction == sdl.MOUSEWHEEL_FLIPPED {
+			dx, dy = -dx, -dy
+		}
+		var ticksX, ticksY int
+		ticksX, b.wheelX = wheelTicks(b.wheelX, dx)
+		ticksY, b.wheelY = wheelTicks(b.wheelY, dy)
+		if ticksX != 0 || ticksY != 0 {
+			dst = append(dst, EventWheel{DX: ticksX, DY: ticksY})
+		}
+
+	case sdl.EVENT_WINDOW_RESIZED, sdl.EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+		b.refreshMetrics()
+		dst = append(dst, EventResize{W: b.outW, H: b.outH})
+
+	case sdl.EVENT_WINDOW_ENTER_FULLSCREEN:
+		b.fullscreen = true
+
+	case sdl.EVENT_WINDOW_LEAVE_FULLSCREEN:
+		b.fullscreen = false
+
+	case sdl.EVENT_WINDOW_FOCUS_GAINED:
+		dst = append(dst, EventFocus{Gained: true})
+
+	case sdl.EVENT_WINDOW_FOCUS_LOST:
+		// SDL stops delivering key events once focus is gone, so anything
+		// still held is never released; the viewer reacts to this.
+		b.pressed = make(map[sdl.Scancode]EventKey)
+		b.buttons = 0
+		dst = append(dst, EventFocus{Gained: false})
+
+	case sdl.EVENT_CLIPBOARD_UPDATE:
+		dst = append(dst, EventClipboard{})
+
+	case wakeEventType:
+		// A wake from another goroutine. Its only job was to end the wait it
+		// was pushed for; there is nothing here for the viewer, and turning
+		// it into an event would make every wake look like user input.
 	}
 	return dst
 }

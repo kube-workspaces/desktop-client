@@ -54,16 +54,24 @@ const (
 	// every namespace the user can see.
 	DefaultRefreshInterval = 5 * time.Second
 
-	// DefaultWidth and DefaultHeight size the window at startup. It is the
-	// same default the session viewer uses, so opening a session does not
-	// resize the window before the guest's resolution is known.
+	// DefaultWidth and DefaultHeight size the window at startup.
+	//
+	// It is also the size the window keeps: sessions are not allowed to
+	// resize it (see borrowedBackend.SetSize) and are given it back at the
+	// end, so the only thing that changes it is the user.
 	DefaultWidth  = 1280
 	DefaultHeight = 800
 
-	// pollInterval is how often the event queue is drained. It bounds input
-	// latency and is not a frame rate: a frame is only drawn when something
-	// changed.
-	pollInterval = 8 * time.Millisecond
+	// maxIdleWait bounds how long the loop will sleep in one blocking wait.
+	//
+	// It is not a poll interval and not a frame rate: the loop is woken by
+	// input, by finished background work and by cancellation, so in the
+	// steady state this timeout is what expires, does nothing, and goes back
+	// to sleep. It exists only as a backstop — a missed wake should cost a
+	// beat, not hang the window — and one second is short enough that nobody
+	// would notice such a bug as anything but a stutter, and long enough that
+	// a shell nobody is touching costs no measurable CPU.
+	maxIdleWait = time.Second
 
 	// resultQueue is how many completed background operations may be waiting
 	// to be applied. The shell never has more than a handful in flight, so
@@ -234,6 +242,14 @@ func (a *App) Run(ctx context.Context) error {
 	// still trying to deliver a result into a queue nobody is draining.
 	defer close(a.done)
 
+	// The loop below blocks in the backend rather than in a select, so
+	// cancellation has to arrive as an event like everything else. Registered
+	// after the defers above so that it is stopped before the window closes,
+	// and safe regardless: Wake is the one backend method a foreign goroutine
+	// may call.
+	stopWake := context.AfterFunc(ctx, a.be.Wake)
+	defer stopWake()
+
 	a.Start(ctx)
 
 	for {
@@ -246,12 +262,56 @@ func (a *App) Run(ctx context.Context) error {
 		if a.quit {
 			return nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(pollInterval):
+		// Sleep until there is something to do. A shell sitting on the
+		// workspace list has no animation and no frame rate — it repaints
+		// when the user acts or when data arrives — so polling it every 8ms
+		// was 125 wakeups a second to discover, 125 times, that nothing had
+		// changed. Input ends the wait by itself; background work and
+		// cancellation end it through Wake.
+		a.events = a.be.WaitEvents(a.events[:0], a.idleTimeout(time.Now()))
+	}
+}
+
+// idleTimeout is how long the loop may block before it has work to do anyway.
+func (a *App) idleTimeout(now time.Time) time.Duration {
+	switch {
+	case a.quit || a.dirty:
+		// A frame is owed; drawing it is the next thing that happens.
+		return 0
+	case a.m.State == StateSession:
+		// The next Step hands the window to the session viewer. Waiting first
+		// would add this timeout to the time-to-first-pixel of every session.
+		return 0
+	case len(a.results) > 0:
+		// Background work finished after this iteration drained the queue.
+		// The Wake that came with it may already have been consumed by this
+		// iteration's PollEvents, so the queue itself is what is trusted here
+		// — the wake is an optimisation, not the mechanism.
+		return 0
+	}
+
+	var due time.Time
+	earlier := func(t time.Time) {
+		if !t.IsZero() && (due.IsZero() || t.Before(due)) {
+			due = t
 		}
 	}
+	// A deferred repaint is a widget that asked to be drawn again (a caret
+	// blinking, a spinner turning), so it is a real deadline.
+	earlier(a.repaintAt)
+	if a.m.State == StateWorkspaces && a.opts.RefreshInterval > 0 {
+		if a.nextRefresh.IsZero() {
+			return 0
+		}
+		earlier(a.nextRefresh)
+	}
+	if due.IsZero() {
+		return maxIdleWait
+	}
+	if d := due.Sub(now); d > 0 {
+		return min(d, maxIdleWait)
+	}
+	return 0
 }
 
 // Start restores the stored profile and decides which screen to open on.
@@ -302,9 +362,15 @@ func (a *App) Start(ctx context.Context) {
 func (a *App) Step(ctx context.Context, now time.Time) error {
 	a.drainResults()
 
-	a.events = a.be.PollEvents(a.events[:0])
-	a.in = a.in.Fold(now, a.events)
-	if len(a.events) > 0 {
+	// a.events arrives holding whatever the wait at the bottom of [App.Run]
+	// harvested — that wait consumes events, it does not merely observe them —
+	// and PollEvents appends anything that has landed since. The buffer is
+	// handed back to the field empty immediately, so an early return below
+	// cannot leave an event to be folded in twice.
+	events := a.be.PollEvents(a.events)
+	a.events = events[:0]
+	a.in = a.in.Fold(now, events)
+	if len(events) > 0 {
 		a.dirty = true
 	}
 	if a.in.Quit {
@@ -462,6 +528,11 @@ func (a *App) background(fn func() func()) {
 		}
 		select {
 		case a.results <- apply:
+			// The loop is very likely parked in a blocking event wait, and
+			// this result is the only thing that has happened. Nudge it, or
+			// the answer to a click sits in the queue until the wait times
+			// out.
+			a.be.Wake()
 		case <-a.done:
 			// The window is going away; there is nobody to tell.
 		}

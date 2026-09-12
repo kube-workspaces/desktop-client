@@ -50,11 +50,6 @@ const (
 	// client does not feel stuck; the user can also close the window at once.
 	DefaultFailureLinger = 4 * time.Second
 
-	// idlePoll is how long the loop sleeps when there is nothing to draw. It
-	// bounds input latency for a session that is otherwise idle, so it wants
-	// to stay well under one frame at 60Hz.
-	idlePoll = 2 * time.Millisecond
-
 	// forcedPresentInterval bounds how long the window can go without being
 	// redrawn. Nothing in the RFB stream tells a client that the host
 	// compositor lost the window contents, so a slow heartbeat repaint is the
@@ -356,7 +351,6 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 			prevUpdate(fb, damage)
 		}
 		v.inbox.Lock()
-		defer v.inbox.Unlock()
 		// The framebuffer's damage slice is reused by the connection, so the
 		// rectangles are copied rather than retained.
 		v.inbox.damage = append(v.inbox.damage, damage...)
@@ -372,6 +366,12 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 		// connection now holds pixels of its own.
 		v.inbox.gotUpdate = true
 		v.inbox.needsPresent = true
+		v.inbox.Unlock()
+		// This runs on the RFB read loop's goroutine, and the render loop is
+		// very likely parked in a blocking event wait with nothing to show
+		// for it. Waking it here is what keeps frame latency at the decode
+		// time rather than at the heartbeat interval.
+		v.wake()
 	}
 
 	prevResize := base.OnResize
@@ -380,12 +380,13 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 			prevResize(w, h)
 		}
 		v.inbox.Lock()
-		defer v.inbox.Unlock()
 		// The texture is reallocated by the render loop, which is the only
 		// goroutine allowed to talk to the backend.
 		v.inbox.resized = true
 		v.inbox.fullRepaint = true
 		v.inbox.needsPresent = true
+		v.inbox.Unlock()
+		v.wake()
 	}
 
 	prevCut := base.OnCutText
@@ -394,9 +395,10 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 			prevCut(text)
 		}
 		v.inbox.Lock()
-		defer v.inbox.Unlock()
 		v.inbox.cutText = text
 		v.inbox.hasCutText = true
+		v.inbox.Unlock()
+		v.wake()
 	}
 
 	return cfg
@@ -410,12 +412,14 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 // flattened to a single line and truncated to fit.
 func (v *Viewer) SetStatus(status Status, detail string) {
 	v.inbox.Lock()
-	defer v.inbox.Unlock()
 	if v.inbox.status == status && v.inbox.detail == detail {
+		v.inbox.Unlock()
 		return
 	}
 	v.inbox.status, v.inbox.detail = status, detail
 	v.inbox.needsPresent = true
+	v.inbox.Unlock()
+	v.wake()
 }
 
 // Status returns the status the overlay is currently showing.
@@ -430,12 +434,14 @@ func (v *Viewer) Status() (Status, string) {
 // the viewer's own generic "reconnecting".
 func (v *Viewer) setStatusIfLive(status Status, detail string) {
 	v.inbox.Lock()
-	defer v.inbox.Unlock()
 	if v.inbox.status != StatusLive {
+		v.inbox.Unlock()
 		return
 	}
 	v.inbox.status, v.inbox.detail = status, detail
 	v.inbox.needsPresent = true
+	v.inbox.Unlock()
+	v.wake()
 }
 
 // Run opens the window and drives it until the context is cancelled, the user
@@ -471,6 +477,14 @@ func (v *Viewer) Run(ctx context.Context, src ConnSource) error {
 		<-done
 	}()
 
+	// The loop below blocks in the backend rather than in a select, so
+	// cancellation has to arrive as an event like everything else. Registered
+	// after the defers above so that it is cancelled before the window is
+	// closed, and safe regardless: Wake is the one method a foreign goroutine
+	// may call.
+	stopWake := context.AfterFunc(ctx, v.be.Wake)
+	defer stopWake()
+
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -481,11 +495,13 @@ func (v *Viewer) Run(ctx context.Context, src ConnSource) error {
 		if v.quit {
 			return v.srcErr
 		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(idlePoll):
-		}
+		// Sleep until something needs doing instead of spinning on a 2ms
+		// timer. Input ends the wait by itself; a decoded frame, a new
+		// connection or a status change ends it through [Viewer.wake], which
+		// every writer to the inbox calls. The timeout is only the loop's own
+		// next deadline — the heartbeat repaint, the stats tick — so nothing
+		// depends on it being short.
+		v.events = v.be.WaitEvents(v.events[:0], v.idleTimeout(time.Now()))
 	}
 }
 
@@ -497,6 +513,61 @@ func (v *Viewer) RunConn(ctx context.Context, conn *rfb.Conn) error {
 	}
 	return v.Run(ctx, SingleConn(conn))
 }
+
+// idleTimeout is how long the loop may block waiting for input before it has
+// work to do anyway.
+//
+// It is deliberately computed from the deadlines the loop already keeps rather
+// than being a constant: a constant that is short wastes the wait, and one
+// that is long silently delays whichever timer it overshoots.
+func (v *Viewer) idleTimeout(now time.Time) time.Duration {
+	// Anything already in the inbox is work in hand. Checking it here rather
+	// than trusting the wake is what makes the wake an optimisation instead of
+	// a correctness requirement: a frame that lands between this iteration's
+	// redraw and its wait would otherwise sit undrawn until the heartbeat.
+	v.inbox.Lock()
+	pending := v.inbox.needsPresent || v.inbox.hasNext || v.inbox.hasErr || v.inbox.hasCutText
+	v.inbox.Unlock()
+	if pending {
+		return 0
+	}
+
+	// presentDue is always set and never further away than
+	// forcedPresentInterval, so it is the natural upper bound; every other
+	// deadline can only pull it earlier.
+	due := v.presentDue
+	earlier := func(t time.Time) {
+		if !t.IsZero() && t.Before(due) {
+			due = t
+		}
+	}
+	earlier(v.statsDue)
+	if v.conn != nil {
+		if v.cfg.ClipboardInterval >= 0 {
+			earlier(v.clipDue)
+		}
+		if v.resizePending {
+			earlier(v.resizeDue)
+		}
+	}
+	if v.failed && v.cfg.FailureLinger > 0 {
+		earlier(v.failedAt.Add(v.cfg.FailureLinger))
+	}
+
+	if d := due.Sub(now); d > 0 {
+		return d
+	}
+	return 0
+}
+
+// wake nudges the render loop out of a blocking [Backend.WaitEvents].
+//
+// Every goroutine that writes to the inbox calls it, because the loop's
+// timeout is measured in hundreds of milliseconds and a frame that arrived a
+// moment after the wait began must not wait that long to be drawn. It is
+// harmless — one dropped event — when called from the render loop itself,
+// which is why the writers do not have to know which goroutine they are on.
+func (v *Viewer) wake() { v.be.Wake() }
 
 // start opens the window. It is separate from Run so that tests can drive the
 // loop a step at a time with a controlled clock.
@@ -561,8 +632,14 @@ func (v *Viewer) initialSize(fbW, fbH int) (int, int) {
 func (v *Viewer) step(now time.Time) error {
 	v.syncConn(now)
 
-	v.events = v.be.PollEvents(v.events[:0])
-	for _, ev := range v.events {
+	// v.events arrives holding whatever the wait at the bottom of [Viewer.Run]
+	// harvested — that wait consumes events, it does not merely observe them —
+	// and PollEvents appends anything that has landed since. The buffer is
+	// handed back to the field empty before any of it is handled, so an early
+	// return cannot leave an event to be handled twice.
+	events := v.be.PollEvents(v.events)
+	v.events = events[:0]
+	for _, ev := range events {
 		if err := v.handleEvent(now, ev); err != nil {
 			return err
 		}

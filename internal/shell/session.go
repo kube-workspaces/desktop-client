@@ -197,8 +197,8 @@ func reasonOrClosed(err error) string {
 // was open before the session and has to survive it, and destroying it would
 // unload SDL and take the shell's surface with it.
 //
-// So Open and Close are intercepted. Everything else — textures, uploads,
-// presentation, input, clipboard, resizing, fullscreen — is forwarded
+// So Open, Close and SetSize are intercepted. Everything else — textures,
+// uploads, presentation, input, clipboard, fullscreen — is forwarded
 // untouched, because all of it is per-session state the viewer is entitled to
 // manage. The shell repairs what it cares about afterwards; see
 // [App.afterSession].
@@ -206,19 +206,35 @@ type borrowedBackend struct {
 	viewer.Backend
 	// title is the shell's own window title, restored on the way out.
 	title string
+
+	// restoreW/restoreH is the window size the shell was using when the
+	// session borrowed the window, and restore says whether it was captured.
+	restoreW, restoreH int
+	restore            bool
+
+	// userSized records that the window changed size during the session for a
+	// reason this wrapper did not cause. Since SetSize is refused outright,
+	// the only things left are the user dragging the frame, the window
+	// manager, and fullscreen transitions — and in every one of those cases
+	// the size on screen at the end is the one to keep.
+	userSized bool
 }
 
-// Open configures the existing window instead of creating one.
+// Open configures the existing window instead of creating one, and remembers
+// the size to give back at the end.
 //
 // The requested size is ignored: the window is already on screen at a size the
 // user chose, and resizing it to the viewer's default would make every session
-// jump. The viewer reads the real size back from Size and letterboxes into it,
-// and asks for a resize of its own once it knows the guest's resolution.
+// jump. The viewer reads the real size back from Size and letterboxes into it.
 func (b *borrowedBackend) Open(opts viewer.WindowOptions) error {
 	// Through the embedded value, not through b: the point of this type is
 	// that some of these calls are overridden, and a reader should be able to
 	// see at a glance which window each one reaches.
 	be := b.Backend
+	b.restoreW, b.restoreH = be.Size()
+	b.restore = b.restoreW > 0 && b.restoreH > 0
+	b.userSized = false
+
 	if opts.Fullscreen && !be.Fullscreen() {
 		if err := be.SetFullscreen(true); err != nil {
 			return err
@@ -227,13 +243,81 @@ func (b *borrowedBackend) Open(opts viewer.WindowOptions) error {
 	return be.SetTitle(opts.Title)
 }
 
-// Close returns the window to the shell rather than destroying it.
+// SetSize refuses, because the shell's window is not the session's to resize.
+//
+// The viewer calls this once per session, to fit the window to the guest's
+// resolution. That is right when the session is the whole application — the
+// window was created for it a moment earlier — and wrong here: this window was
+// already on screen, at a size the user chose, showing a list they were
+// reading. Following the guest would resize it out from under them on connect,
+// and again for every workspace they open, none of which they asked for.
+//
+// Refusing is not a hack around the interface, it is the documented behaviour
+// of one: [viewer.Backend.SetSize] says a backend whose size is not its own to
+// choose may ignore the request, and that the viewer reads the size back
+// rather than assuming. It does, and letterboxes the guest into the window
+// instead — which is the same thing it does for a fullscreen session or a
+// tiling window manager, and is already the well-trodden path.
+//
+// The cost is that a guest whose resolution differs from the window is scaled
+// rather than shown 1:1 until the user resizes the window, at which point the
+// viewer's normal debounce asks the guest to match. That is a fair trade for a
+// window that never moves on its own.
+func (b *borrowedBackend) SetSize(int, int) error { return nil }
+
+// PollEvents forwards the session's input, watching it for resizes.
+func (b *borrowedBackend) PollEvents(dst []viewer.Event) []viewer.Event {
+	return b.noteResizes(b.Backend.PollEvents(dst))
+}
+
+// WaitEvents forwards the session's blocking wait, watching it for resizes.
+func (b *borrowedBackend) WaitEvents(dst []viewer.Event, timeout time.Duration) []viewer.Event {
+	return b.noteResizes(b.Backend.WaitEvents(dst, timeout))
+}
+
+// noteResizes records that the window changed size while the session had it.
+//
+// Watching the event stream is the only way to tell: a resize the user
+// performs is reported, not requested, and by the time [borrowedBackend.Close]
+// runs the two possible sizes are indistinguishable. Reading the events on
+// their way past costs a type switch over a batch that is almost always empty.
+func (b *borrowedBackend) noteResizes(events []viewer.Event) []viewer.Event {
+	if !b.restore || b.userSized {
+		return events
+	}
+	for _, ev := range events {
+		if r, ok := ev.(viewer.EventResize); ok && (r.W != b.restoreW || r.H != b.restoreH) {
+			b.userSized = true
+			return events
+		}
+	}
+	return events
+}
+
+// Close returns the window to the shell rather than destroying it, at the size
+// the shell was using.
+//
+// Restoring the size is the other half of refusing to change it: whatever did
+// change it — a fullscreen toggle, a window manager with opinions — belongs to
+// the session that has just ended, and the user's mental model is that they
+// left a list open and are coming back to it. The exception is a resize the
+// user performed themselves during the session: that was a deliberate act
+// about this window, not about this session, so it survives it.
+//
+// A fullscreen session that the user never resized comes back through the
+// leave-fullscreen path, which restores the pre-fullscreen size anyway; the
+// explicit restore below then finds nothing to do.
 func (b *borrowedBackend) Close() {
 	be := b.Backend
 	if be.Fullscreen() {
 		// The shell is not a fullscreen application; leaving it fullscreen
 		// because the last session was would be a surprising inheritance.
 		_ = be.SetFullscreen(false)
+	}
+	if b.restore && !b.userSized {
+		if w, h := be.Size(); w != b.restoreW || h != b.restoreH {
+			_ = be.SetSize(b.restoreW, b.restoreH)
+		}
 	}
 	_ = be.SetTitle(b.title)
 }
