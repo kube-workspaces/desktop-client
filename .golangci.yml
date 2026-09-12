@@ -1,0 +1,54 @@
+# golangci-lint v2 configuration.
+#
+# Deliberately modest: the default set plus a few that catch real bugs. No
+# style-police linters (lll, dupl, gocyclo, goconst) — protocol code such as
+# internal/rfb is naturally long, repetitive and full of magic numbers, and
+# fighting that produces worse code, not better.
+version: "2"
+
+run:
+  allow-parallel-runners: true
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unused
+
+  settings:
+    revive:
+      rules:
+        - name: comment-spacings
+        - name: import-shadowing
+    misspell:
+      locale: US
+
+  exclusions:
+    generated: lax
+    rules:
+      # Tests are allowed to ignore errors from helpers and to shadow names for
+      # table-driven readability.
+      - linters:
+          - errcheck
+          - revive
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

@@ -1,0 +1,29 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Run on Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # NOTE: golangci-lint refuses to load a config when the Go version it was
+      # built with is older than the module's target version. go.mod targets
+      # 1.26.0, so the controller repo's v2.1.6 pin (built with go1.24) will not
+      # work here — keep this at a release built with go1.26 or newer.
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2

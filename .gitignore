@@ -1,0 +1,41 @@
+# Binaries
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/kube-workspaces
+
+# Test binary
+*.test
+
+# Coverage
+*.out
+coverage.html
+
+# Desktop build artefacts
+*.app/
+*.dmg
+*.msi
+*.pkg
+*.deb
+*.rpm
+*.AppImage
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

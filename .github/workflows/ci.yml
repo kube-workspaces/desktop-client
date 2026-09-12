@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build, Vet and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt'd; run 'make fmt'"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f coverage.out ]; then
+            {
+              echo '### Coverage'
+              echo
+              echo '```'
+              go tool cover -func=coverage.out | tail -20
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # This client grows cgo dependencies (SDL3 for the session viewer, later
+  # libavcodec for H.264), which cannot be cross-compiled from a single host.
+  # So every OS gets its own runner from day one, before those packages land —
+  # it is far cheaper to keep this green than to retrofit it later.
+  #
+  # Deliberately just `go build ./...` for now: no system libraries are
+  # installed on the runners yet, and none are needed while the tree is
+  # cgo-free. Add the SDL3 install steps (and build tags) in the same change
+  # that introduces internal/session.
+  cross:
+    name: Cross build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Build
+        run: go build ./...
