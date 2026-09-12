@@ -335,7 +335,7 @@ func (c *Client) do(ctx context.Context, spec requestSpec) (*http.Response, erro
 		return nil, fmt.Errorf("kwclient: %s: %w", spec.op(), err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		return nil, newAPIError(spec.op(), resp, sentinelForStatus)
 	}
 	return resp, nil
@@ -348,7 +348,7 @@ func (c *Client) doJSON(ctx context.Context, spec requestSpec, out any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(spec.op(), resp, out)
 }
 

@@ -6,6 +6,10 @@ import (
 
 // zrleRunLen encodes a run length the way ZRLE does: 255s until the remainder
 // fits, then a final byte one less than what is left.
+// zrlePaletteRun builds a palette-RLE index byte. The top bit tells the decoder
+// that a run length follows; without it the byte is a single pixel.
+func zrlePaletteRun(index byte) byte { return 0x80 | index }
+
 func zrleRunLen(n int) []byte {
 	if n < 1 {
 		panic("run length must be at least 1")
@@ -192,9 +196,9 @@ func TestZRLEPaletteRLE(t *testing.T) {
 	for _, p := range palette {
 		tile.raw(tPixel(pf, p[0], p[1], p[2]))
 	}
-	tile.u8(0x80 | 0).raw(zrleRunLen(5))
+	tile.u8(zrlePaletteRun(0)).raw(zrleRunLen(5))
 	tile.u8(1)
-	tile.u8(0x80 | 2).raw(zrleRunLen(4))
+	tile.u8(zrlePaletteRun(2)).raw(zrleRunLen(4))
 	tile.u8(0)
 	tile.u8(1)
 

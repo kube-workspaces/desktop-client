@@ -122,7 +122,7 @@ func (c *Client) LoginLocal(ctx context.Context, email, password string) (token 
 	if err != nil {
 		return "", false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var out loginResponse
 	if err := decodeJSON(spec.op(), resp, &out); err != nil {

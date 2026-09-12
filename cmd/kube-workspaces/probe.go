@@ -109,7 +109,7 @@ func runProbe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	handshake := time.Since(start)
 	conn := sess.Conn()
 

@@ -69,6 +69,16 @@ func (s *Session) Run(ctx context.Context) error {
 // Close tears down the session, releasing the server's single-session slot.
 func (s *Session) Close() error { return s.transport.Close() }
 
+// RequestUpdate asks for one framebuffer update covering the whole screen.
+//
+// Pass incremental=false to force a full repaint. That is what a freshly
+// established connection needs: the server tracks what it has already sent per
+// connection, so an incremental request on a new link describes changes to a
+// framebuffer we do not have.
+func (s *Session) RequestUpdate(incremental bool) error {
+	return s.conn.RequestUpdate(incremental)
+}
+
 // RequestUpdates starts a goroutine that keeps asking for incremental
 // framebuffer updates.
 //

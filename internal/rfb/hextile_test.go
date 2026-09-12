@@ -151,7 +151,7 @@ func TestHextileClampsOversizedSubrect(t *testing.T) {
 	s.raw(wirePixel(pf, 0, 0, 0))
 	s.raw(wirePixel(pf, 255, 0, 0))
 	s.u8(1)
-	s.raw([]byte{15 << 4, 15<<4 | 0}) // x=15,y=0,w=16,h=1
+	s.raw(hextileSubrect(15, 0, 16, 1)) // runs one pixel past the tile edge
 	// Tile 1: solid white background.
 	s.u8(hextileBackgroundSpecified)
 	s.raw(wirePixel(pf, 255, 255, 255))

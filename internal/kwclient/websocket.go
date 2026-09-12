@@ -73,7 +73,7 @@ func (c *Client) DialWS(ctx context.Context, path string, query url.Values, subp
 // gorilla has already replaced resp.Body with an in-memory reader holding the
 // first 1 KiB of the body, so reading it here cannot block.
 func wsHandshakeError(op string, resp *http.Response) error {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	// Re-arm the body so callers inspecting the response still see it.
 	resp.Body = io.NopCloser(strings.NewReader(string(raw)))

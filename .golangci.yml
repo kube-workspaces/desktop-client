@@ -26,7 +26,24 @@ linters:
         - name: comment-spacings
         - name: import-shadowing
     misspell:
-      locale: US
+      # No locale is set deliberately. With one, misspell enforces a dialect and
+      # then fights the code: Go identifiers must use the standard library's US
+      # spelling (image/color) and CSS keywords are US ("center"), while the
+      # prose here is British. Locale-less, misspell still catches genuine
+      # typos, which is the part with actual value.
+      ignore-rules:
+        - color
+        - colors
+    errcheck:
+      # Writes to an already-buffered writer (tabwriter, stdout) and deferred
+      # Close calls on things being torn down cannot be meaningfully handled in
+      # a CLI: the error surfaces from the subsequent Flush, or the process is
+      # exiting anyway. Checking them adds noise without adding correctness.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*text/tabwriter.Writer).Flush
 
   exclusions:
     generated: lax

@@ -4,7 +4,6 @@
 package viewer
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -232,7 +231,9 @@ func TestButtonsHas(t *testing.T) {
 // TestEventsImplementEvent keeps the closed event set honest: a new type that
 // forgets the marker method would silently never be deliverable.
 func TestEventsImplementEvent(t *testing.T) {
-	events := []Event{
+	// Deliberately []any, not []Event: assigning to []Event would make the
+	// assertion below a tautology the compiler has already proved.
+	events := []any{
 		EventQuit{},
 		EventKey{},
 		EventPointer{},
@@ -246,7 +247,7 @@ func TestEventsImplementEvent(t *testing.T) {
 	}
 	for _, e := range events {
 		if _, ok := e.(Event); !ok {
-			t.Fatalf("%s does not implement Event", fmt.Sprintf("%T", e))
+			t.Fatalf("%T does not implement Event", e)
 		}
 	}
 }

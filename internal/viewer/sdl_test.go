@@ -430,10 +430,14 @@ func TestSDLBackendToSurface(t *testing.T) {
 // in sdl.go, but it fails with a clearer message when someone changes the
 // interface.
 func TestSDLBackendImplementsBackend(t *testing.T) {
-	var b Backend = NewSDLBackend()
-	if b == nil {
+	concrete := NewSDLBackend()
+	if concrete == nil {
 		t.Fatal("NewSDLBackend returned nil")
 	}
+	// The interface variable is the point of the test: it will not compile if
+	// SDLBackend stops satisfying Backend. Comparing it to nil would be
+	// meaningless, since an interface holding a typed nil is itself non-nil.
+	var b Backend = concrete
 	if b.Fullscreen() {
 		t.Fatal("an unopened backend should not report fullscreen")
 	}

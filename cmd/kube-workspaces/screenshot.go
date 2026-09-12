@@ -78,7 +78,7 @@ func runScreenshot(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	runCtx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
@@ -147,7 +147,7 @@ func runScreenshot(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := png.Encode(f, snapshot.RGBA()); err != nil {
 		return fmt.Errorf("encode png: %w", err)
 	}
