@@ -71,49 +71,49 @@ jobs:
       # One artifact per platform, so testers download only what they need
       # rather than a 40MB bundle of six.
       - name: Upload linux/amd64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: kube-workspaces-linux-amd64
           path: dist/*-linux-amd64.tar.gz
           if-no-files-found: error
 
       - name: Upload linux/arm64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: kube-workspaces-linux-arm64
           path: dist/*-linux-arm64.tar.gz
           if-no-files-found: error
 
       - name: Upload darwin/amd64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: kube-workspaces-darwin-amd64
           path: dist/*-darwin-amd64.tar.gz
           if-no-files-found: error
 
       - name: Upload darwin/arm64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: kube-workspaces-darwin-arm64
           path: dist/*-darwin-arm64.tar.gz
           if-no-files-found: error
 
       - name: Upload windows/amd64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: kube-workspaces-windows-amd64
           path: dist/*-windows-amd64.zip
           if-no-files-found: error
 
       - name: Upload windows/arm64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: kube-workspaces-windows-arm64
           path: dist/*-windows-arm64.zip
           if-no-files-found: error
 
       - name: Upload checksums
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: SHA256SUMS
           path: dist/SHA256SUMS
