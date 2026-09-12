@@ -172,6 +172,25 @@ func ParseScaleQuality(s string) (ScaleQuality, error) {
 	return "", fmt.Errorf("unknown scale quality %q (want one of nearest, linear, pixelart)", s)
 }
 
+// Overlay describes the modal status layer drawn on top of the guest frame.
+//
+// It is a value rather than a callback so that the whole frame — guest pixels,
+// dim, status text — is one [Backend.Present] call: a backend that presented
+// the frame and then the overlay separately would flash the undimmed frame for
+// one refresh on any renderer that does not batch.
+type Overlay struct {
+	// Dim is the alpha of a black rectangle covering the whole surface, drawn
+	// under the overlay texture. Zero draws nothing.
+	Dim uint8
+
+	// Rect is where the overlay texture is drawn, in surface pixels. An empty
+	// rectangle draws no text.
+	Rect Rect
+}
+
+// Empty reports whether o would draw nothing at all.
+func (o Overlay) Empty() bool { return o.Dim == 0 && o.Rect.Empty() }
+
 // WindowOptions describes the window a [Backend] should create.
 type WindowOptions struct {
 	// Title is the initial window title.
@@ -221,10 +240,23 @@ type Backend interface {
 	// the single biggest cost saving in the render path.
 	Upload(r Rect, pix []byte, stride int) error
 
-	// Present clears the surface and draws the whole texture into dst, then
-	// shows the result. dst is normally the letterboxed rectangle from
-	// [FitLetterbox].
-	Present(dst Rect) error
+	// SetOverlaySize (re)allocates the overlay texture: a second, small,
+	// alpha-blended RGBA texture that holds the status plate. It is separate
+	// from the framebuffer texture because the two change on completely
+	// different schedules — the frame every few milliseconds, the overlay only
+	// when the status or the window size does — and because the overlay must
+	// survive being drawn over a frame that is no longer being updated.
+	SetOverlaySize(w, h int) error
+
+	// UploadOverlay copies RGBA pixels into the overlay texture, with the same
+	// contract as [Backend.Upload].
+	UploadOverlay(r Rect, pix []byte, stride int) error
+
+	// Present clears the surface, draws the whole framebuffer texture into
+	// frame, applies ov, and shows the result. frame is normally the
+	// letterboxed rectangle from [FitLetterbox]; an empty frame draws no
+	// guest pixels, which is what the viewer asks for before it has any.
+	Present(frame Rect, ov Overlay) error
 
 	// PollEvents drains all pending input events, appending them to dst and
 	// returning the extended slice. It must not block. The append-style
@@ -233,6 +265,16 @@ type Backend interface {
 
 	// Size returns the current drawable size in pixels.
 	Size() (w, h int)
+
+	// SetSize resizes the window.
+	//
+	// The viewer calls it at most once per session: the window now opens
+	// before the first connection exists — so that a session waiting for a
+	// busy display is visible and closable — and the guest's resolution is
+	// only learned when that connection arrives. A backend whose size is not
+	// its own to choose (fullscreen, a tiling compositor) may ignore the
+	// request; the viewer reads [Backend.Size] back rather than assuming.
+	SetSize(w, h int) error
 
 	// SetTitle updates the window title.
 	SetTitle(title string) error

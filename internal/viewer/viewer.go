@@ -41,6 +41,15 @@ const (
 	// recomputed. Faster looks jittery and reads worse.
 	DefaultStatsInterval = time.Second
 
+	// DefaultFailureLinger is how long a terminal failure stays on screen
+	// before the viewer exits.
+	//
+	// Exiting the instant a session fails takes the window — and the only
+	// place the reason was written — away before anybody can read it. A few
+	// seconds is long enough to read one line and short enough that the
+	// client does not feel stuck; the user can also close the window at once.
+	DefaultFailureLinger = 4 * time.Second
+
 	// idlePoll is how long the loop sleeps when there is nothing to draw. It
 	// bounds input latency for a session that is otherwise idle, so it wants
 	// to stay well under one frame at 60Hz.
@@ -50,7 +59,8 @@ const (
 	// redrawn. Nothing in the RFB stream tells a client that the host
 	// compositor lost the window contents, so a slow heartbeat repaint is the
 	// portable defence against a window that comes back from an occlusion or
-	// a workspace switch showing garbage.
+	// a workspace switch showing garbage. It is also what keeps the frozen
+	// frame and its overlay on screen while there is no connection at all.
 	forcedPresentInterval = 500 * time.Millisecond
 
 	// maxPendingDamage bounds the damage list the RFB goroutine hands to the
@@ -62,6 +72,12 @@ const (
 	// A high-resolution trackpad can report a large accumulated delta, and
 	// each tick costs two RFB messages.
 	maxWheelTicks = 16
+
+	// fallbackWidth/fallbackHeight size the window when it opens before any
+	// connection has revealed the guest's resolution and the caller did not
+	// ask for a size.
+	fallbackWidth  = 1280
+	fallbackHeight = 800
 )
 
 // Config configures a [Viewer]. The zero value is usable: every field has a
@@ -102,6 +118,11 @@ type Config struct {
 	// [DefaultStatsInterval].
 	StatsInterval time.Duration
 
+	// FailureLinger is how long a terminal failure is shown before the viewer
+	// exits. Zero means [DefaultFailureLinger]; a negative value exits as soon
+	// as the failure is known.
+	FailureLinger time.Duration
+
 	// FullscreenKey toggles fullscreen with no modifier. Zero means F11.
 	FullscreenKey keysym.Key
 
@@ -141,6 +162,9 @@ func (c *Config) applyDefaults() {
 	if c.StatsInterval <= 0 {
 		c.StatsInterval = DefaultStatsInterval
 	}
+	if c.FailureLinger == 0 {
+		c.FailureLinger = DefaultFailureLinger
+	}
 	if c.FullscreenKey == keysym.KeyUnknown {
 		c.FullscreenKey = keysym.KeyF11
 	}
@@ -171,27 +195,53 @@ func (c *Config) Hotkeys() []string {
 	}
 }
 
-// Viewer couples an [rfb.Conn] to a [Backend].
+// Viewer owns a window and presents a succession of [rfb.Conn] connections in
+// it.
 //
-// The RFB read loop runs on its own goroutine and the windowing library
-// demands to be driven from one specific thread, so the two halves communicate
-// through the small mutex-guarded inbox below rather than by sharing state.
-// Nothing in [Viewer.Run]'s call graph is reachable from the RFB goroutine,
-// and nothing in the callbacks touches the backend.
+// The window, the renderer and the textures belong to the viewer for its whole
+// lifetime; connections come and go underneath it, supplied by a [ConnSource].
+// That asymmetry is the entire design. A reconnect produces a new *rfb.Conn,
+// and a viewer that owned one for its lifetime would have to be rebuilt — and
+// the window destroyed and recreated, and SDL loaded and unloaded — once per
+// connection generation, so the user would watch their desktop vanish and
+// reappear on every blip. A real VDI client freezes the last frame under a
+// status overlay instead, which is what this does.
+//
+// The RFB read loop runs on its own goroutine, the connection pump on another,
+// and the windowing library demands to be driven from one specific thread, so
+// all three communicate through the small mutex-guarded inbox below rather
+// than by sharing state. Nothing in [Viewer.Run]'s call graph is reachable
+// from the RFB goroutine, and nothing in the callbacks touches the backend.
 type Viewer struct {
-	cfg  Config
-	be   Backend
-	conn *rfb.Conn
+	cfg Config
+	be  Backend
 
-	// inbox is written by the RFB read loop and drained by the render loop.
+	// inbox is written by the RFB read loop and the connection pump, and
+	// drained by the render loop.
 	inbox struct {
 		sync.Mutex
 		damage       []rfb.Rect
 		fullRepaint  bool
 		needsPresent bool
 		resized      bool
+		gotUpdate    bool
 		cutText      string
 		hasCutText   bool
+
+		// status and detail drive the overlay. They are in the inbox because
+		// the session supervisor sets them from its own goroutine.
+		status Status
+		detail string
+
+		// nextConn/nextCtx is a connection the pump has taken out and not yet
+		// handed over.
+		nextConn *rfb.Conn
+		nextCtx  context.Context
+		hasNext  bool
+
+		// srcErr is a terminal failure reported by the connection source.
+		srcErr error
+		hasErr bool
 	}
 
 	// Everything below is owned by the render loop and must not be touched
@@ -200,6 +250,31 @@ type Viewer struct {
 	mods    keysym.Tracker
 	held    []keysym.Keysym
 	swallow map[hotkeyID]bool
+
+	// conn is the connection being displayed, or nil while there is none.
+	// connCtx bounds it: the render loop notices a drop by watching it rather
+	// than by being told, which removes a whole class of ordering bug.
+	conn    *rfb.Conn
+	connCtx context.Context
+
+	// fresh is true from the moment a connection is installed until it has
+	// decoded its first framebuffer update. Until then the texture still holds
+	// the previous connection's last frame, and a new connection's framebuffer
+	// is all zeroes: uploading it would blank the screen, which is exactly
+	// what freezing the frame exists to avoid.
+	fresh bool
+
+	// haveFrame reports whether the texture holds a real image, and
+	// frameW/frameH is its size. They are the geometry the frozen frame is
+	// presented with, so a reconnect at a different guest resolution cannot
+	// stretch the old frame into the new one's aspect ratio.
+	haveFrame      bool
+	frameW, frameH int
+
+	// fitted records that the window has already been sized to a guest, and
+	// generation counts the connections this window has shown.
+	fitted     bool
+	generation int
 
 	buttons  Buttons
 	present  Rect // last presented rectangle, in surface pixels
@@ -230,8 +305,21 @@ type Viewer struct {
 	lastStatsAt time.Time
 	title       string
 
+	// overlayKey, ovW and ovH track the rasterised overlay so that it is
+	// rebuilt only when the text or the window size changes — a reconnect can
+	// last minutes and re-rasterising a glyph plate 500 times a second for it
+	// would be absurd.
+	overlayKey overlayKey
+	ovW, ovH   int
+
 	presentDue time.Time
 	quit       bool
+
+	// srcErr and failedAt implement the linger: a terminal failure is shown
+	// for a moment before the window closes.
+	srcErr   error
+	failedAt time.Time
+	failed   bool
 }
 
 // hotkeyID identifies a key for the purpose of suppressing its release event.
@@ -253,9 +341,12 @@ func New(be Backend, cfg Config) *Viewer {
 
 // RFBConfig returns base with the viewer's callbacks installed.
 //
-// It must be used when the connection is created, because rfb.Config is read
-// once at handshake time. Any callbacks already set on base are preserved and
-// called first, so a caller can still observe the stream for diagnostics.
+// It must be used when a connection is created, because rfb.Config is read
+// once at handshake time. A reconnecting caller therefore calls this once per
+// connection — the callbacks are stable and all point at this one viewer, so
+// they can be installed on every generation without the viewer knowing.
+// Any callbacks already set on base are preserved and called first, so a
+// caller can still observe the stream for diagnostics.
 func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 	cfg := base
 
@@ -277,6 +368,9 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 			v.inbox.damage = v.inbox.damage[:0]
 			v.inbox.fullRepaint = true
 		}
+		// gotUpdate is what releases the frozen frame: it says that the
+		// connection now holds pixels of its own.
+		v.inbox.gotUpdate = true
 		v.inbox.needsPresent = true
 	}
 
@@ -308,18 +402,74 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 	return cfg
 }
 
-// Run opens the window and drives the session until the context is cancelled,
-// the user quits, or the connection fails.
+// SetStatus updates the modal overlay drawn over the frame.
+//
+// It is safe to call from any goroutine and never blocks, so it can be wired
+// straight to a session supervisor's state callback. Passing [StatusLive]
+// removes the overlay. The detail is the reason, if there is one; it is
+// flattened to a single line and truncated to fit.
+func (v *Viewer) SetStatus(status Status, detail string) {
+	v.inbox.Lock()
+	defer v.inbox.Unlock()
+	if v.inbox.status == status && v.inbox.detail == detail {
+		return
+	}
+	v.inbox.status, v.inbox.detail = status, detail
+	v.inbox.needsPresent = true
+}
+
+// Status returns the status the overlay is currently showing.
+func (v *Viewer) Status() (Status, string) {
+	v.inbox.Lock()
+	defer v.inbox.Unlock()
+	return v.inbox.status, v.inbox.detail
+}
+
+// setStatusIfLive raises a status only when nothing more specific has been
+// reported, so that a supervisor's "display in use" is never overwritten by
+// the viewer's own generic "reconnecting".
+func (v *Viewer) setStatusIfLive(status Status, detail string) {
+	v.inbox.Lock()
+	defer v.inbox.Unlock()
+	if v.inbox.status != StatusLive {
+		return
+	}
+	v.inbox.status, v.inbox.detail = status, detail
+	v.inbox.needsPresent = true
+}
+
+// Run opens the window and drives it until the context is cancelled, the user
+// quits, or the connection source gives up.
+//
+// The window is opened before the first connection and closed only on the way
+// out: a session that is waiting for a busy display, or reconnecting over a
+// flaky link, must still be visible and closable. Connections are taken from
+// src as they become available and swapped in underneath the window.
 //
 // It must be called from the goroutine that owns the main OS thread; see
-// [Backend]. It closes the window before returning but does not close the
-// connection: the caller owns the session, and the server's single VNC slot is
-// released by closing it.
-func (v *Viewer) Run(ctx context.Context, conn *rfb.Conn) error {
-	if err := v.start(conn, time.Now()); err != nil {
+// [Backend]. It does not close any connection: the caller owns the session,
+// and the server's single VNC slot is released by closing it.
+func (v *Viewer) Run(ctx context.Context, src ConnSource) error {
+	if src == nil {
+		return fmt.Errorf("viewer: nil connection source")
+	}
+	if err := v.start(time.Now()); err != nil {
 		return err
 	}
 	defer v.stop()
+
+	pumpCtx, stopPump := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		v.pump(pumpCtx, src)
+	}()
+	// The pump writes to the inbox, so it must be stopped and drained before
+	// the viewer goes away. Deferred after v.stop so that it runs first.
+	defer func() {
+		stopPump()
+		<-done
+	}()
 
 	for {
 		if ctx.Err() != nil {
@@ -329,7 +479,7 @@ func (v *Viewer) Run(ctx context.Context, conn *rfb.Conn) error {
 			return err
 		}
 		if v.quit {
-			return nil
+			return v.srcErr
 		}
 		select {
 		case <-ctx.Done():
@@ -339,16 +489,19 @@ func (v *Viewer) Run(ctx context.Context, conn *rfb.Conn) error {
 	}
 }
 
-// start opens the window and prepares the first frame. It is separate from Run
-// so that tests can drive the loop a step at a time with a controlled clock.
-func (v *Viewer) start(conn *rfb.Conn, now time.Time) error {
+// RunConn drives the viewer against a single connection, for callers that do
+// not supervise reconnection. See [SingleConn] for the lifetime rules.
+func (v *Viewer) RunConn(ctx context.Context, conn *rfb.Conn) error {
 	if conn == nil {
 		return fmt.Errorf("viewer: nil connection")
 	}
-	v.conn = conn
+	return v.Run(ctx, SingleConn(conn))
+}
 
-	fbW, fbH := conn.Size()
-	winW, winH := v.initialSize(fbW, fbH)
+// start opens the window. It is separate from Run so that tests can drive the
+// loop a step at a time with a controlled clock.
+func (v *Viewer) start(now time.Time) error {
+	winW, winH := v.initialSize(0, 0)
 	opts := WindowOptions{
 		Title:        v.cfg.Title,
 		Width:        winW,
@@ -360,23 +513,15 @@ func (v *Viewer) start(conn *rfb.Conn, now time.Time) error {
 	if err := v.be.Open(opts); err != nil {
 		return fmt.Errorf("viewer: open window: %w", err)
 	}
-
 	v.winW, v.winH = v.be.Size()
-	if err := v.resizeTexture(fbW, fbH); err != nil {
-		v.be.Close()
-		return err
-	}
-	v.updatePresent(fbW, fbH)
+	// A caller that pinned a size gets it; nothing later resizes the window
+	// out from under them.
+	v.fitted = v.cfg.Width > 0 && v.cfg.Height > 0
 
-	// The texture starts undefined, so the first frame must be a full one.
 	v.inbox.Lock()
-	v.inbox.fullRepaint = true
+	v.inbox.status = StatusConnecting
 	v.inbox.needsPresent = true
 	v.inbox.Unlock()
-	if err := conn.RequestUpdate(false); err != nil {
-		v.be.Close()
-		return fmt.Errorf("viewer: request initial update: %w", err)
-	}
 
 	v.statsDue = now.Add(v.cfg.StatsInterval)
 	v.lastStatsAt = now
@@ -394,14 +539,15 @@ func (v *Viewer) stop() {
 }
 
 // initialSize picks the window size, preferring the guest's own resolution but
-// refusing to open a window larger than most desktops can show.
+// refusing to open a window larger than most desktops can show. A zero guest
+// size means the window is opening before any connection.
 func (v *Viewer) initialSize(fbW, fbH int) (int, int) {
 	w, h := v.cfg.Width, v.cfg.Height
 	if w <= 0 || h <= 0 {
 		w, h = fbW, fbH
 	}
 	if w <= 0 || h <= 0 {
-		w, h = 1280, 800
+		w, h = fallbackWidth, fallbackHeight
 	}
 	if w > v.cfg.MaxInitialWidth || h > v.cfg.MaxInitialHeight {
 		fit := FitLetterbox(w, h, v.cfg.MaxInitialWidth, v.cfg.MaxInitialHeight)
@@ -413,6 +559,8 @@ func (v *Viewer) initialSize(fbW, fbH int) (int, int) {
 // step runs one iteration of the render loop. It is separate from Run so that
 // tests can drive the loop with a controlled clock instead of racing it.
 func (v *Viewer) step(now time.Time) error {
+	v.syncConn(now)
+
 	v.events = v.be.PollEvents(v.events[:0])
 	for _, ev := range v.events {
 		if err := v.handleEvent(now, ev); err != nil {
@@ -423,22 +571,170 @@ func (v *Viewer) step(now time.Time) error {
 		return nil
 	}
 
-	// Pointer motion is coalesced to at most one message per iteration: a
-	// 1000Hz mouse would otherwise put 1000 messages a second on a link whose
-	// whole point is to carry pixels.
-	if err := v.flushPointer(false); err != nil {
-		return err
-	}
-	if err := v.applyGuestResize(now); err != nil {
-		return err
-	}
-	if err := v.syncClipboard(now); err != nil {
-		return err
+	if v.conn != nil {
+		// Pointer motion is coalesced to at most one message per iteration: a
+		// 1000Hz mouse would otherwise put 1000 messages a second on a link
+		// whose whole point is to carry pixels.
+		if err := v.flushPointer(false); err != nil {
+			return err
+		}
+		if err := v.applyGuestResize(now); err != nil {
+			return err
+		}
+		if err := v.syncClipboard(now); err != nil {
+			return err
+		}
 	}
 	if err := v.redraw(now); err != nil {
 		return err
 	}
-	return v.updateTitle(now)
+	if err := v.updateTitle(now); err != nil {
+		return err
+	}
+	v.checkFailure(now)
+	return nil
+}
+
+// syncConn installs a connection the pump has taken out, and notices when the
+// current one has ended.
+func (v *Viewer) syncConn(now time.Time) {
+	if v.conn != nil && v.connCtx != nil && v.connCtx.Err() != nil {
+		v.dropConn(nil)
+	}
+
+	v.inbox.Lock()
+	next, nextCtx, hasNext := v.inbox.nextConn, v.inbox.nextCtx, v.inbox.hasNext
+	v.inbox.nextConn, v.inbox.nextCtx, v.inbox.hasNext = nil, nil, false
+	srcErr, hasErr := v.inbox.srcErr, v.inbox.hasErr
+	v.inbox.hasErr = false
+	v.inbox.Unlock()
+
+	if hasNext {
+		v.attach(next, nextCtx, now)
+	}
+	if hasErr && !v.failed {
+		v.failed, v.srcErr, v.failedAt = true, srcErr, now
+		v.dropConn(srcErr)
+		v.SetStatus(StatusFailed, errText(srcErr))
+	}
+}
+
+// attach installs a new connection under the existing window.
+func (v *Viewer) attach(conn *rfb.Conn, connCtx context.Context, now time.Time) {
+	if v.conn != nil {
+		v.dropConn(nil)
+	}
+	v.conn, v.connCtx = conn, connCtx
+	v.fresh = true
+	v.sentAny = false
+	v.generation++
+	v.forgetInput()
+
+	fbW, fbH := conn.Size()
+	v.fitWindow(fbW, fbH)
+
+	// A guest that has been rebooted, or a QEMU process that has been
+	// restarted, comes back at its default resolution with no memory of the
+	// size this client asked for. On any connection but the first, ask again
+	// when the two disagree — through the normal debounce, so that a caller
+	// who disabled guest resizing still gets nothing.
+	if v.generation > 1 && (fbW != v.winW || fbH != v.winH) {
+		v.scheduleGuestResize(now, v.winW, v.winH)
+	}
+
+	// Everything still in the inbox describes the previous connection's
+	// framebuffer, down to its dimensions, and is meaningless against this
+	// one. That includes gotUpdate: the cost of clearing it is that an update
+	// this connection decoded before the render loop got here is not counted,
+	// so the frame stays frozen for one more update interval, and the benefit
+	// is that a leftover flag from the old connection can never unfreeze the
+	// screen onto a framebuffer that is still all zeroes.
+	v.inbox.Lock()
+	v.inbox.damage = v.inbox.damage[:0]
+	v.inbox.gotUpdate = false
+	v.inbox.resized = false
+	v.inbox.hasCutText, v.inbox.cutText = false, ""
+	v.inbox.fullRepaint = true
+	v.inbox.needsPresent = true
+	v.inbox.Unlock()
+
+	v.SetStatus(StatusLive, "")
+	v.clipDue = now.Add(v.cfg.ClipboardInterval)
+	v.logf("attached to a new connection (%dx%d)", fbW, fbH)
+
+	// The texture holds the previous connection's last frame, or nothing at
+	// all; either way this connection has to send a complete one. The session
+	// supervisor asks too, and a duplicate request costs one frame.
+	if err := v.conn.RequestUpdate(false); err != nil {
+		v.dropConn(err)
+	}
+}
+
+// dropConn detaches the current connection, leaving the last frame on screen.
+//
+// A dead connection is not a dead session: the supervisor will bring another
+// one, and the window has to stay up in the meantime — with the last frame
+// still showing, because a user watching their desktop go black assumes they
+// have lost their work, while a user watching it freeze under "Reconnecting…"
+// knows exactly what is happening.
+func (v *Viewer) dropConn(cause error) {
+	if v.conn == nil {
+		return
+	}
+	if cause != nil {
+		v.logf("connection ended: %v", cause)
+	}
+	v.conn, v.connCtx = nil, nil
+	v.fresh = false
+	v.forgetInput()
+	v.setStatusIfLive(StatusReconnecting, "")
+	v.markPresent()
+}
+
+// connWrite handles the failure of a write to the guest.
+//
+// Writing to a connection that has just dropped is expected, not exceptional,
+// so it ends the connection rather than the session: returning the error would
+// take the window down with the link.
+func (v *Viewer) connWrite(err error) error {
+	if err != nil {
+		v.dropConn(err)
+	}
+	return nil
+}
+
+// fitWindow sizes the window to the first guest that connects.
+func (v *Viewer) fitWindow(fbW, fbH int) {
+	if v.fitted || fbW <= 0 || fbH <= 0 {
+		return
+	}
+	v.fitted = true
+	if v.be.Fullscreen() {
+		return
+	}
+	w, h := v.initialSize(fbW, fbH)
+	if w == v.winW && h == v.winH {
+		return
+	}
+	if err := v.be.SetSize(w, h); err != nil {
+		// A window manager that refuses a resize is not a reason to end a
+		// session; the guest is scaled into whatever size the window is.
+		v.logf("resize window to %dx%d: %v", w, h, err)
+		return
+	}
+	v.winW, v.winH = v.be.Size()
+	v.updatePresent()
+}
+
+// checkFailure ends the loop once a terminal failure has been on screen long
+// enough to read.
+func (v *Viewer) checkFailure(now time.Time) {
+	if !v.failed {
+		return
+	}
+	if v.cfg.FailureLinger < 0 || !now.Before(v.failedAt.Add(v.cfg.FailureLinger)) {
+		v.quit = true
+	}
 }
 
 func (v *Viewer) handleEvent(now time.Time, ev Event) error {
@@ -449,9 +745,11 @@ func (v *Viewer) handleEvent(now time.Time, ev Event) error {
 
 	case EventResize:
 		v.winW, v.winH = e.W, e.H
-		fbW, fbH := v.conn.Size()
-		v.updatePresent(fbW, fbH)
+		v.updatePresent()
 		v.markPresent()
+		// The request is scheduled even with no connection to send it on: a
+		// window resized during an outage would otherwise stay letterboxed
+		// after the reconnect, until the user happened to resize it again.
 		v.scheduleGuestResize(now, e.W, e.H)
 		return nil
 
@@ -484,6 +782,10 @@ func (v *Viewer) handleEvent(now time.Time, ev Event) error {
 
 // handleKey translates one key event and forwards it, unless it is a host
 // hotkey.
+//
+// Hotkeys are handled whether or not a connection is live: the fullscreen and
+// quit bindings belong to the window, and a user staring at a "Reconnecting…"
+// overlay must be able to leave without reaching for the terminal.
 func (v *Viewer) handleKey(e EventKey) error {
 	id := hotkeyID{key: e.Key, r: e.Rune}
 
@@ -505,6 +807,9 @@ func (v *Viewer) handleKey(e EventKey) error {
 		return v.runHotkey(e)
 	}
 
+	if v.conn == nil {
+		return nil
+	}
 	sym := symbolFor(e)
 	if sym == keysym.NoSymbol {
 		return nil
@@ -515,7 +820,7 @@ func (v *Viewer) handleKey(e EventKey) error {
 		v.forgetHeld(sym)
 	}
 	v.mods.Track(sym, e.Down)
-	return v.conn.KeyEvent(uint32(sym), e.Down)
+	return v.connWrite(v.conn.KeyEvent(uint32(sym), e.Down))
 }
 
 // symbolFor resolves an event to the keysym to put on the wire. Named keys win
@@ -557,6 +862,9 @@ func (v *Viewer) runHotkey(e EventKey) error {
 		return v.toggleFullscreen()
 
 	case e.Key == v.cfg.SendCtrlAltDelKey || e.Key == keysym.KeyDelete:
+		if v.conn == nil {
+			return nil
+		}
 		return v.sendChord(keysym.ChordCtrlAltDel)
 
 	default:
@@ -570,8 +878,7 @@ func (v *Viewer) toggleFullscreen() error {
 		return fmt.Errorf("viewer: toggle fullscreen: %w", err)
 	}
 	v.winW, v.winH = v.be.Size()
-	fbW, fbH := v.conn.Size()
-	v.updatePresent(fbW, fbH)
+	v.updatePresent()
 	v.markPresent()
 	return nil
 }
@@ -581,7 +888,7 @@ func (v *Viewer) toggleFullscreen() error {
 func (v *Viewer) sendChord(c keysym.Chord) error {
 	for _, a := range c.Sequence() {
 		if err := v.conn.KeyEvent(uint32(a.Sym), a.Down); err != nil {
-			return err
+			return v.connWrite(err)
 		}
 		// The chord's own releases tell the guest those modifiers are up, so
 		// the tracker must forget them or it would later send a second
@@ -592,8 +899,11 @@ func (v *Viewer) sendChord(c keysym.Chord) error {
 }
 
 func (v *Viewer) handlePointer(e EventPointer) error {
-	fbW, fbH := v.conn.Size()
-	x, y, _ := MapToSource(e.X, e.Y, v.present, fbW, fbH)
+	if v.conn == nil {
+		return nil
+	}
+	srcW, srcH := v.sourceSize()
+	x, y, _ := MapToSource(e.X, e.Y, v.present, srcW, srcH)
 	v.ptrX, v.ptrY = x, y
 	v.ptrKnown = true
 
@@ -607,7 +917,7 @@ func (v *Viewer) handlePointer(e EventPointer) error {
 }
 
 func (v *Viewer) handleWheel(e EventWheel) error {
-	if !v.ptrKnown {
+	if v.conn == nil || !v.ptrKnown {
 		return nil
 	}
 	// The wheel is reported at the current pointer position, so make sure the
@@ -615,15 +925,18 @@ func (v *Viewer) handleWheel(e EventWheel) error {
 	if err := v.flushPointer(false); err != nil {
 		return err
 	}
+	if v.conn == nil {
+		return nil
+	}
 	base := rfbMask(v.buttons)
 	for _, bit := range wheelBits(e.DX, e.DY) {
 		// RFB has no wheel axis: a click is a press of one of the wheel bits
 		// followed immediately by its release.
 		if err := v.conn.PointerEvent(uint16(v.ptrX), uint16(v.ptrY), base|bit); err != nil {
-			return err
+			return v.connWrite(err)
 		}
 		if err := v.conn.PointerEvent(uint16(v.ptrX), uint16(v.ptrY), base); err != nil {
-			return err
+			return v.connWrite(err)
 		}
 	}
 	return nil
@@ -675,7 +988,7 @@ func rfbMask(b Buttons) rfb.ButtonMask {
 }
 
 func (v *Viewer) flushPointer(force bool) error {
-	if !v.ptrKnown {
+	if v.conn == nil || !v.ptrKnown {
 		return nil
 	}
 	mask := rfbMask(v.buttons)
@@ -684,7 +997,7 @@ func (v *Viewer) flushPointer(force bool) error {
 		return nil
 	}
 	if err := v.conn.PointerEvent(uint16(v.ptrX), uint16(v.ptrY), mask); err != nil {
-		return err
+		return v.connWrite(err)
 	}
 	v.sentX, v.sentY, v.sentMask, v.sentAny = v.ptrX, v.ptrY, mask, true
 	return nil
@@ -721,6 +1034,7 @@ func (v *Viewer) forgetHeld(sym keysym.Keysym) {
 // do about it.
 func (v *Viewer) releaseInput() {
 	if v.conn == nil {
+		v.forgetInput()
 		return
 	}
 	for i := len(v.held) - 1; i >= 0; i-- {
@@ -739,6 +1053,20 @@ func (v *Viewer) releaseInput() {
 			v.sentMask = 0
 		}
 	}
+	v.swallow = make(map[hotkeyID]bool)
+}
+
+// forgetInput discards the local record of what is held without telling
+// anybody.
+//
+// It is what a connection change needs: the old connection cannot be told and
+// the new one never knew, so carrying the state across would leave the fresh
+// guest holding modifiers the user released during the outage.
+func (v *Viewer) forgetInput() {
+	v.held = v.held[:0]
+	v.mods.Reset()
+	v.buttons = 0
+	v.sentMask = 0
 	v.swallow = make(map[hotkeyID]bool)
 }
 
@@ -769,10 +1097,7 @@ func (v *Viewer) applyGuestResize(now time.Time) error {
 		return nil
 	}
 	v.logf("resizing guest display to %dx%d", v.resizeW, v.resizeH)
-	if err := v.conn.SetDesktopSize(uint16(v.resizeW), uint16(v.resizeH)); err != nil {
-		return fmt.Errorf("viewer: set desktop size: %w", err)
-	}
-	return nil
+	return v.connWrite(v.conn.SetDesktopSize(uint16(v.resizeW), uint16(v.resizeH)))
 }
 
 func (v *Viewer) syncClipboard(now time.Time) error {
@@ -809,12 +1134,16 @@ func (v *Viewer) syncClipboard(now time.Time) error {
 		return nil
 	}
 	v.hostClip = text
-	if err := v.conn.CutText(text); err != nil {
-		return fmt.Errorf("viewer: send clipboard: %w", err)
-	}
-	return nil
+	return v.connWrite(v.conn.CutText(text))
 }
 
+// resizeTexture reallocates the framebuffer texture when the guest resolution
+// changes, which a reconnect can do as easily as a mode switch can.
+//
+// It is only ever called with pixels in hand: reallocating leaves the texture
+// undefined, so doing it speculatively — on attach, say — would destroy the
+// frozen frame and leave a window of garbage until the new connection's first
+// update arrived.
 func (v *Viewer) resizeTexture(w, h int) error {
 	if w <= 0 || h <= 0 {
 		return fmt.Errorf("viewer: guest reported an empty framebuffer (%dx%d)", w, h)
@@ -826,10 +1155,17 @@ func (v *Viewer) resizeTexture(w, h int) error {
 		return fmt.Errorf("viewer: allocate %dx%d texture: %w", w, h, err)
 	}
 	v.texW, v.texH = w, h
+	// The old contents are gone, so nothing may be presented from this texture
+	// until something has been uploaded into it.
+	v.haveFrame = false
 	return nil
 }
 
 // redraw uploads whatever changed and presents the frame.
+//
+// When there is no connection — or the new one has not decoded a frame yet —
+// it presents the texture as it stands, which is the last frame the guest
+// sent, under the status overlay.
 func (v *Viewer) redraw(now time.Time) error {
 	v.inbox.Lock()
 	// Decide whether to draw before taking the damage: returning early after
@@ -838,27 +1174,67 @@ func (v *Viewer) redraw(now time.Time) error {
 		v.inbox.Unlock()
 		return nil
 	}
-	damage := v.inbox.damage
-	v.inbox.damage = make([]rfb.Rect, 0, cap(damage))
-	full := v.inbox.fullRepaint
-	resized := v.inbox.resized
-	v.inbox.fullRepaint, v.inbox.resized, v.inbox.needsPresent = false, false, false
+	if v.fresh && v.inbox.gotUpdate {
+		v.fresh = false
+	}
+	live := v.conn != nil && !v.fresh
+
+	var (
+		damage  []rfb.Rect
+		full    bool
+		resized bool
+	)
+	if live {
+		damage = v.inbox.damage
+		v.inbox.damage = make([]rfb.Rect, 0, cap(damage))
+		full, resized = v.inbox.fullRepaint, v.inbox.resized
+		v.inbox.fullRepaint, v.inbox.resized, v.inbox.gotUpdate = false, false, false
+	}
+	v.inbox.needsPresent = false
 	v.inbox.Unlock()
 
+	if live {
+		if err := v.uploadFrame(damage, full); err != nil {
+			return err
+		}
+	}
+
+	v.updatePresent()
+	overlay, err := v.buildOverlay()
+	if err != nil {
+		return err
+	}
+	if err := v.be.Present(v.present, overlay); err != nil {
+		return fmt.Errorf("viewer: present: %w", err)
+	}
+	v.frames++
+	v.presentDue = now.Add(forcedPresentInterval)
+
+	if live && resized {
+		// The server changed resolution, so the old contents are meaningless
+		// and an incremental request would only describe changes to an image
+		// we no longer have.
+		if err := v.conn.RequestUpdate(false); err != nil {
+			return v.connWrite(err)
+		}
+	}
+	return nil
+}
+
+// uploadFrame copies the damaged parts of the live framebuffer into the
+// texture.
+func (v *Viewer) uploadFrame(damage []rfb.Rect, full bool) error {
 	// Everything that depends on the framebuffer's size happens under its
 	// lock. Reading the size separately would let the read loop resize the
 	// framebuffer in between, leaving the texture and the pixels disagreeing
 	// about how big the guest screen is.
-	var (
-		innerErr error
-		fbW, fbH int
-	)
+	var innerErr error
 	v.conn.WithFramebuffer(func(fb *rfb.Framebuffer) {
-		fbW, fbH = fb.Width, fb.Height
+		fbW, fbH := fb.Width, fb.Height
 		if innerErr = v.resizeTexture(fbW, fbH); innerErr != nil {
 			return
 		}
-		if full {
+		if full || !v.haveFrame {
 			damage = []rfb.Rect{{X: 0, Y: 0, Width: uint16(fbW), Height: uint16(fbH)}}
 		}
 		for _, r := range planUploads(damage, fbW, fbH, v.cfg.MaxUploadRects) {
@@ -868,27 +1244,82 @@ func (v *Viewer) redraw(now time.Time) error {
 				return
 			}
 		}
+		v.frameW, v.frameH = fbW, fbH
+		v.haveFrame = true
 	})
-	if innerErr != nil {
-		return innerErr
+	return innerErr
+}
+
+// buildOverlay rasterises and uploads the status plate when it has changed,
+// and returns how this frame should be composited.
+func (v *Viewer) buildOverlay() (Overlay, error) {
+	lines := v.overlayLines()
+	if len(lines) == 0 {
+		// Forget the cached raster so that the next overlay is rebuilt for
+		// whatever the window size is by then.
+		v.overlayKey = overlayKey{}
+		return Overlay{}, nil
 	}
 
-	v.updatePresent(fbW, fbH)
-	if err := v.be.Present(v.present); err != nil {
-		return fmt.Errorf("viewer: present: %w", err)
-	}
-	v.frames++
-	v.presentDue = now.Add(forcedPresentInterval)
-
-	if resized {
-		// The server changed resolution, so the old contents are meaningless
-		// and an incremental request would only describe changes to an image
-		// we no longer have.
-		if err := v.conn.RequestUpdate(false); err != nil {
-			return fmt.Errorf("viewer: request update after resize: %w", err)
+	key := overlayKey{text: strings.Join(lines, "\n"), w: v.winW, h: v.winH}
+	if key != v.overlayKey {
+		img := renderOverlay(lines, v.winW, v.winH)
+		if img.w <= 0 || img.h <= 0 {
+			// A window too small for even one scaled glyph still gets the dim,
+			// so the state is visible if not readable.
+			return Overlay{Dim: overlayDim}, nil
 		}
+		if img.w != v.ovW || img.h != v.ovH {
+			if err := v.be.SetOverlaySize(img.w, img.h); err != nil {
+				return Overlay{}, fmt.Errorf("viewer: allocate overlay texture: %w", err)
+			}
+			v.ovW, v.ovH = img.w, img.h
+		}
+		if err := v.be.UploadOverlay(Rect{W: img.w, H: img.h}, img.pix, img.stride); err != nil {
+			return Overlay{}, fmt.Errorf("viewer: upload overlay: %w", err)
+		}
+		v.overlayKey = key
 	}
-	return nil
+	return Overlay{
+		Dim: overlayDim,
+		Rect: Rect{
+			X: (v.winW - v.ovW) / 2,
+			Y: (v.winH - v.ovH) / 2,
+			W: v.ovW,
+			H: v.ovH,
+		},
+	}, nil
+}
+
+// overlayLines is the text the overlay should show right now, or nil for none.
+func (v *Viewer) overlayLines() []string {
+	status, detail := v.Status()
+	if status == StatusLive {
+		if v.haveFrame {
+			return nil
+		}
+		// Connected, but nothing has been drawn yet: an empty black window
+		// with no explanation looks like a broken client.
+		status, detail = StatusConnecting, ""
+	}
+	return statusLines(status, detail)
+}
+
+// sourceSize is the size of the image the presented rectangle is computed
+// from: the texture's actual contents when there are any, and otherwise the
+// size the guest has reported.
+//
+// Preferring the contents is what keeps a frozen frame honest across a
+// reconnect at a different resolution — the last 1024x768 frame is presented
+// as 4:3 even though the new connection says the guest is now 1920x1080.
+func (v *Viewer) sourceSize() (int, int) {
+	if v.haveFrame {
+		return v.frameW, v.frameH
+	}
+	if v.conn != nil {
+		return v.conn.Size()
+	}
+	return 0, 0
 }
 
 // updatePresent recomputes the letterboxed destination rectangle.
@@ -896,8 +1327,9 @@ func (v *Viewer) redraw(now time.Time) error {
 // It is kept current outside the draw path as well, because the pointer
 // mapping reads it: a click that arrives in the same batch as a resize must
 // not be mapped through the previous frame's geometry.
-func (v *Viewer) updatePresent(fbW, fbH int) {
-	v.present = FitLetterbox(fbW, fbH, v.winW, v.winH)
+func (v *Viewer) updatePresent() {
+	w, h := v.sourceSize()
+	v.present = FitLetterbox(w, h, v.winW, v.winH)
 }
 
 func (v *Viewer) markPresent() {
@@ -908,7 +1340,8 @@ func (v *Viewer) markPresent() {
 
 // updateTitle refreshes the window title with the guest resolution and a
 // throughput sample, which is the cheapest honest connection-quality
-// indicator a client can offer.
+// indicator a client can offer. While there is no connection it carries the
+// status instead, so the state is legible from a taskbar too.
 func (v *Viewer) updateTitle(now time.Time) error {
 	if now.Before(v.statsDue) {
 		return nil
@@ -917,22 +1350,33 @@ func (v *Viewer) updateTitle(now time.Time) error {
 	v.statsDue = now.Add(v.cfg.StatsInterval)
 	v.lastStatsAt = now
 
-	stats := v.conn.Stats()
-	bytes := stats.BytesRead
-	var kbits float64
-	if elapsed > 0 && bytes >= v.lastBytes {
-		kbits = float64(bytes-v.lastBytes) * 8 / 1000 / elapsed
-	}
-	v.lastBytes = bytes
-
 	var fps float64
 	if elapsed > 0 {
 		fps = float64(v.frames) / elapsed
 	}
 	v.frames = 0
 
-	fbW, fbH := v.conn.Size()
-	title := fmt.Sprintf("%s — %dx%d — %.0f fps · %s", v.cfg.Title, fbW, fbH, fps, formatBitrate(kbits))
+	title := v.cfg.Title
+	if status, _ := v.Status(); v.conn == nil || status != StatusLive {
+		if status == StatusLive {
+			status = StatusConnecting
+		}
+		title += " — " + status.Text()
+		// The byte counter belongs to a connection that is gone; restart the
+		// sample rather than reporting a nonsensical rate on reconnect.
+		v.lastBytes = 0
+	} else {
+		stats := v.conn.Stats()
+		bytes := stats.BytesRead
+		var kbits float64
+		if elapsed > 0 && bytes >= v.lastBytes {
+			kbits = float64(bytes-v.lastBytes) * 8 / 1000 / elapsed
+		}
+		v.lastBytes = bytes
+
+		fbW, fbH := v.sourceSize()
+		title = fmt.Sprintf("%s — %dx%d — %.0f fps · %s", v.cfg.Title, fbW, fbH, fps, formatBitrate(kbits))
+	}
 	if title == v.title {
 		return nil
 	}
@@ -954,6 +1398,15 @@ func (v *Viewer) logf(format string, args ...any) {
 	if v.cfg.Logf != nil {
 		v.cfg.Logf(format, args...)
 	}
+}
+
+// errText renders an error for the overlay, naming the anonymous case rather
+// than showing the user an empty reason.
+func errText(err error) string {
+	if err == nil {
+		return "the connection was closed"
+	}
+	return err.Error()
 }
 
 func lowerRune(r rune) rune {

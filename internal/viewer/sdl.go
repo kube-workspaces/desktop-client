@@ -33,6 +33,12 @@ type SDLBackend struct {
 	renderer *sdl.Renderer
 	texture  *sdl.Texture
 
+	// overlay holds the status plate. It is a separate texture so that the
+	// frozen frame in the main texture is never overwritten to draw a state
+	// message over it: the whole point of the frozen frame is that the pixels
+	// survive until a new connection replaces them.
+	overlay *sdl.Texture
+
 	scale ScaleQuality
 
 	// winW/winH are window coordinates; outW/outH are drawable pixels. They
@@ -134,6 +140,10 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 // Close destroys everything Open created, in reverse order, and unloads the
 // library. It is safe to call more than once.
 func (b *SDLBackend) Close() {
+	if b.overlay != nil {
+		b.overlay.Destroy()
+		b.overlay = nil
+	}
 	if b.texture != nil {
 		b.texture.Destroy()
 		b.texture = nil
@@ -184,6 +194,44 @@ func (b *SDLBackend) SetTextureSize(w, h int) error {
 	return nil
 }
 
+// SetOverlaySize allocates the streaming texture that holds the status plate.
+func (b *SDLBackend) SetOverlaySize(w, h int) error {
+	if b.renderer == nil {
+		return fmt.Errorf("viewer: SDL backend is not open")
+	}
+	if w <= 0 || h <= 0 {
+		return fmt.Errorf("viewer: invalid overlay size %dx%d", w, h)
+	}
+	if b.overlay != nil {
+		b.overlay.Destroy()
+		b.overlay = nil
+	}
+	texture, err := b.renderer.CreateTexture(sdl.PIXELFORMAT_RGBA32, sdl.TEXTUREACCESS_STREAMING, w, h)
+	if err != nil {
+		return fmt.Errorf("sdl create overlay texture: %w", err)
+	}
+	// The plate is translucent by design, and its glyphs are rasterised at an
+	// integer scale, so it is blended but never filtered.
+	if err := texture.SetBlendMode(sdl.BLENDMODE_BLEND); err != nil {
+		texture.Destroy()
+		return fmt.Errorf("sdl set overlay blend mode: %w", err)
+	}
+	if err := texture.SetScaleMode(sdl.SCALEMODE_NEAREST); err != nil {
+		texture.Destroy()
+		return fmt.Errorf("sdl set overlay scale mode: %w", err)
+	}
+	b.overlay = texture
+	return nil
+}
+
+// UploadOverlay copies RGBA pixels into the overlay texture.
+func (b *SDLBackend) UploadOverlay(r Rect, pix []byte, stride int) error {
+	if b.overlay == nil {
+		return fmt.Errorf("viewer: no overlay texture")
+	}
+	return updateTexture(b.overlay, r, pix, stride)
+}
+
 func sdlScaleMode(q ScaleQuality) sdl.ScaleMode {
 	switch q {
 	case ScaleNearest:
@@ -200,6 +248,11 @@ func (b *SDLBackend) Upload(r Rect, pix []byte, stride int) error {
 	if b.texture == nil {
 		return fmt.Errorf("viewer: no texture")
 	}
+	return updateTexture(b.texture, r, pix, stride)
+}
+
+// updateTexture is the shared, bounds-checked path into SDL_UpdateTexture.
+func updateTexture(texture *sdl.Texture, r Rect, pix []byte, stride int) error {
 	if r.Empty() || stride <= 0 {
 		return nil
 	}
@@ -209,17 +262,18 @@ func (b *SDLBackend) Upload(r Rect, pix []byte, stride int) error {
 	offset := r.Y*stride + r.X*4
 	last := (r.Y+r.H-1)*stride + (r.X+r.W)*4
 	if offset < 0 || last > len(pix) {
-		return fmt.Errorf("viewer: upload %s exceeds framebuffer (%d bytes, stride %d)", r, len(pix), stride)
+		return fmt.Errorf("viewer: upload %s exceeds source image (%d bytes, stride %d)", r, len(pix), stride)
 	}
 	rect := sdl.Rect{X: int32(r.X), Y: int32(r.Y), W: int32(r.W), H: int32(r.H)}
-	if err := b.texture.Update(&rect, pix[offset:], int32(stride)); err != nil {
+	if err := texture.Update(&rect, pix[offset:], int32(stride)); err != nil {
 		return fmt.Errorf("sdl update texture: %w", err)
 	}
 	return nil
 }
 
-// Present clears the window and draws the texture into dst.
-func (b *SDLBackend) Present(dst Rect) error {
+// Present clears the window, draws the framebuffer texture into frame, applies
+// the overlay, and shows the result.
+func (b *SDLBackend) Present(frame Rect, ov Overlay) error {
 	if b.renderer == nil {
 		return fmt.Errorf("viewer: SDL backend is not open")
 	}
@@ -230,11 +284,14 @@ func (b *SDLBackend) Present(dst Rect) error {
 	if err := b.renderer.Clear(); err != nil {
 		return fmt.Errorf("sdl clear: %w", err)
 	}
-	if b.texture != nil && !dst.Empty() {
-		rect := sdl.FRect{X: float32(dst.X), Y: float32(dst.Y), W: float32(dst.W), H: float32(dst.H)}
+	if b.texture != nil && !frame.Empty() {
+		rect := sdl.FRect{X: float32(frame.X), Y: float32(frame.Y), W: float32(frame.W), H: float32(frame.H)}
 		if err := b.renderer.RenderTexture(b.texture, nil, &rect); err != nil {
 			return fmt.Errorf("sdl render texture: %w", err)
 		}
+	}
+	if err := b.drawOverlay(ov); err != nil {
+		return err
 	}
 	if err := b.renderer.Present(); err != nil {
 		return fmt.Errorf("sdl present: %w", err)
@@ -242,8 +299,60 @@ func (b *SDLBackend) Present(dst Rect) error {
 	return nil
 }
 
+// drawOverlay dims the frame and draws the status plate over it.
+func (b *SDLBackend) drawOverlay(ov Overlay) error {
+	if ov.Empty() {
+		return nil
+	}
+	// Blending has to be turned on for the dim and back off afterwards: the
+	// clear above relies on the opaque default, and a renderer left in blend
+	// mode would let the letterbox bars accumulate.
+	if err := b.renderer.SetDrawBlendMode(sdl.BLENDMODE_BLEND); err != nil {
+		return fmt.Errorf("sdl set blend mode: %w", err)
+	}
+	defer func() { _ = b.renderer.SetDrawBlendMode(sdl.BLENDMODE_NONE) }()
+
+	if ov.Dim > 0 {
+		if err := b.renderer.SetDrawColor(0, 0, 0, ov.Dim); err != nil {
+			return fmt.Errorf("sdl set draw color: %w", err)
+		}
+		// A nil rectangle fills the whole render target.
+		if err := b.renderer.RenderFillRect(nil); err != nil {
+			return fmt.Errorf("sdl fill dim: %w", err)
+		}
+	}
+	if b.overlay != nil && !ov.Rect.Empty() {
+		rect := sdl.FRect{X: float32(ov.Rect.X), Y: float32(ov.Rect.Y), W: float32(ov.Rect.W), H: float32(ov.Rect.H)}
+		if err := b.renderer.RenderTexture(b.overlay, nil, &rect); err != nil {
+			return fmt.Errorf("sdl render overlay: %w", err)
+		}
+	}
+	return nil
+}
+
 // Size returns the drawable size in pixels.
 func (b *SDLBackend) Size() (int, int) { return b.outW, b.outH }
+
+// SetSize resizes the window, which the viewer does once, when the first
+// connection reveals the guest's resolution.
+func (b *SDLBackend) SetSize(w, h int) error {
+	if b.window == nil || w <= 0 || h <= 0 {
+		return nil
+	}
+	if b.fullscreen {
+		// The compositor owns the size of a fullscreen window; asking is at
+		// best ignored and at worst drops it out of fullscreen.
+		return nil
+	}
+	if err := b.window.SetSize(int32(w), int32(h)); err != nil {
+		return fmt.Errorf("sdl set window size: %w", err)
+	}
+	// Best-effort, as in SetFullscreen: the resize event that follows
+	// corrects whatever the window manager actually did.
+	_ = b.window.Sync()
+	b.refreshMetrics()
+	return nil
+}
 
 // SetTitle updates the window title.
 func (b *SDLBackend) SetTitle(title string) error {

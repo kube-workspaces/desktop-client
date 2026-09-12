@@ -4,10 +4,12 @@
 package viewer
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,20 +23,34 @@ import (
 // scripted event queue. It is how the loop is tested without a display: every
 // SDL-specific concern lives behind Backend, so a table-driven fake is enough
 // to exercise all of viewer.go.
+//
+// Every method takes the mutex, because the tests that exercise [Viewer.Run]
+// drive the loop from another goroutine and push events from the test's. Tests
+// that step the loop by hand are single-threaded and read the fields directly.
 type fakeBackend struct {
+	mu sync.Mutex
+
 	opened bool
 	closed int
 	opts   WindowOptions
 
 	w, h       int
 	texW, texH int
+	// texSizes records every texture allocation, so that a reconnect at a
+	// different guest resolution can be shown to reallocate exactly once.
+	texSizes   [][2]int
+	ovW, ovH   int
 	fullscreen bool
+	sized      [][2]int
 
 	queue []Event
 
-	uploads  []Rect
-	presents []Rect
-	titles   []string
+	uploads     []Rect
+	ovUploads   []Rect
+	presents    []Rect
+	overlays    []Overlay
+	titles      []string
+	presentCals int
 
 	clipboard    string
 	clipboardSet []string
@@ -49,6 +65,8 @@ func newFakeBackend(w, h int) *fakeBackend {
 }
 
 func (f *fakeBackend) Open(opts WindowOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.opened = true
 	f.opts = opts
 	if opts.Width > 0 && opts.Height > 0 {
@@ -58,14 +76,45 @@ func (f *fakeBackend) Open(opts WindowOptions) error {
 	return nil
 }
 
-func (f *fakeBackend) Close() { f.closed++ }
+func (f *fakeBackend) Close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed++
+}
 
 func (f *fakeBackend) SetTextureSize(w, h int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.texW, f.texH = w, h
+	f.texSizes = append(f.texSizes, [2]int{w, h})
+	return nil
+}
+
+func (f *fakeBackend) SetOverlaySize(w, h int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if w <= 0 || h <= 0 {
+		return fmt.Errorf("invalid overlay size %dx%d", w, h)
+	}
+	f.ovW, f.ovH = w, h
+	return nil
+}
+
+func (f *fakeBackend) UploadOverlay(r Rect, pix []byte, stride int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if stride > 0 && !r.Empty() {
+		if last := (r.Y+r.H-1)*stride + (r.X+r.W)*4; last > len(pix) {
+			return fmt.Errorf("overlay upload %s exceeds %d bytes at stride %d", r, len(pix), stride)
+		}
+	}
+	f.ovUploads = append(f.ovUploads, r)
 	return nil
 }
 
 func (f *fakeBackend) Upload(r Rect, pix []byte, stride int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.uploadErr != nil {
 		return f.uploadErr
 	}
@@ -81,35 +130,63 @@ func (f *fakeBackend) Upload(r Rect, pix []byte, stride int) error {
 	return nil
 }
 
-func (f *fakeBackend) Present(dst Rect) error {
+func (f *fakeBackend) Present(frame Rect, ov Overlay) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.presentErr != nil {
 		return f.presentErr
 	}
-	f.presents = append(f.presents, dst)
+	f.presents = append(f.presents, frame)
+	f.overlays = append(f.overlays, ov)
+	f.presentCals++
 	return nil
 }
 
 func (f *fakeBackend) PollEvents(dst []Event) []Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	dst = append(dst, f.queue...)
 	f.queue = nil
 	return dst
 }
 
-func (f *fakeBackend) Size() (int, int) { return f.w, f.h }
+func (f *fakeBackend) Size() (int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.w, f.h
+}
+
+func (f *fakeBackend) SetSize(w, h int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.w, f.h = w, h
+	f.sized = append(f.sized, [2]int{w, h})
+	return nil
+}
 
 func (f *fakeBackend) SetTitle(title string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.titles = append(f.titles, title)
 	return nil
 }
 
 func (f *fakeBackend) SetFullscreen(on bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.fullscreen = on
 	return nil
 }
 
-func (f *fakeBackend) Fullscreen() bool { return f.fullscreen }
+func (f *fakeBackend) Fullscreen() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fullscreen
+}
 
 func (f *fakeBackend) Clipboard() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.clipboardErr != nil {
 		return "", f.clipboardErr
 	}
@@ -117,18 +194,59 @@ func (f *fakeBackend) Clipboard() (string, error) {
 }
 
 func (f *fakeBackend) SetClipboard(text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.clipboard = text
 	f.clipboardSet = append(f.clipboardSet, text)
 	return nil
 }
 
 // push queues events for the next PollEvents.
-func (f *fakeBackend) push(events ...Event) { f.queue = append(f.queue, events...) }
+func (f *fakeBackend) push(events ...Event) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queue = append(f.queue, events...)
+}
 
 // resize simulates the window manager resizing the window.
 func (f *fakeBackend) resize(w, h int) {
+	f.mu.Lock()
 	f.w, f.h = w, h
+	f.mu.Unlock()
 	f.push(EventResize{W: w, H: h})
+}
+
+// presentCount reports how many frames have been shown. It exists for the
+// tests that run the loop on another goroutine.
+func (f *fakeBackend) presentCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.presentCals
+}
+
+// uploadCount reports how many texture uploads have been made.
+func (f *fakeBackend) uploadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.uploads)
+}
+
+// closedCount reports how many times the window has been torn down.
+func (f *fakeBackend) closedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+// lastFrame returns the most recent presented rectangle and overlay.
+func (f *fakeBackend) lastFrame(t *testing.T) (Rect, Overlay) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.presents) == 0 {
+		t.Fatal("nothing has been presented")
+	}
+	return f.presents[len(f.presents)-1], f.overlays[len(f.overlays)-1]
 }
 
 var _ Backend = (*fakeBackend)(nil)
@@ -381,12 +499,13 @@ func (s *fakeServer) pointers(t *testing.T) []pointerMsg {
 // --- harness ----------------------------------------------------------------
 
 type harness struct {
-	v    *Viewer
-	be   *fakeBackend
-	srv  *fakeServer
-	conn *rfb.Conn
-	cfg  rfb.Config
-	now  time.Time
+	v      *Viewer
+	be     *fakeBackend
+	srv    *fakeServer
+	conn   *rfb.Conn
+	cfg    rfb.Config
+	now    time.Time
+	cancel context.CancelFunc
 }
 
 // newHarness wires a viewer to a fake backend and a real connection, and runs
@@ -408,10 +527,19 @@ func newHarness(t *testing.T, guestW, guestH, winW, winH int, cfg Config) *harne
 		t.Fatalf("rfb handshake: %v", err)
 	}
 
-	h := &harness{v: v, be: be, srv: srv, conn: conn, cfg: rfbCfg, now: time.Now()}
-	if err := v.start(conn, h.now); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	h := &harness{v: v, be: be, srv: srv, conn: conn, cfg: rfbCfg, now: time.Now(), cancel: cancel}
+	if err := v.start(h.now); err != nil {
 		t.Fatalf("viewer start: %v", err)
 	}
+	v.attach(conn, ctx, h.now)
+	// A freshly attached connection holds no pixels of its own, so the viewer
+	// keeps showing whatever the texture already had. Announce one update, as
+	// the read loop would, to put the harness in the steady state every test
+	// below assumes.
+	h.damage()
 	// The handshake and the start-up full-frame request are not what any test
 	// is about.
 	srv.drain(t)
@@ -446,18 +574,17 @@ func keyUp(k keysym.Key, mods keysym.Modifiers) EventKey {
 
 // --- tests ------------------------------------------------------------------
 
-func TestViewerStartOpensWindowAndRequestsFullFrame(t *testing.T) {
-	transport, srv := startFakeServer(t, 1024, 768)
-	be := newFakeBackend(800, 600)
+// TestViewerOpensTheWindowBeforeAnyConnection pins the reason the viewer no
+// longer takes a connection at start-up: a session that is waiting for a busy
+// display, or retrying a flaky link, must already be on screen and closable.
+func TestViewerOpensTheWindowBeforeAnyConnection(t *testing.T) {
+	be := newFakeBackend(0, 0)
 	v := New(be, Config{Title: "ns/vm"})
-
-	conn, err := rfb.NewConn(transport, v.RFBConfig(rfb.Config{}))
-	if err != nil {
-		t.Fatalf("rfb handshake: %v", err)
-	}
-	if err := v.start(conn, time.Now()); err != nil {
+	now := time.Now()
+	if err := v.start(now); err != nil {
 		t.Fatalf("start: %v", err)
 	}
+	defer v.stop()
 
 	if !be.opened {
 		t.Fatal("start did not open the window")
@@ -465,12 +592,57 @@ func TestViewerStartOpensWindowAndRequestsFullFrame(t *testing.T) {
 	if be.opts.Title != "ns/vm" {
 		t.Fatalf("window title = %q", be.opts.Title)
 	}
-	// The window should open at the guest's resolution when it fits.
-	if be.opts.Width != 1024 || be.opts.Height != 768 {
-		t.Fatalf("window opened at %dx%d, want 1024x768", be.opts.Width, be.opts.Height)
+	if be.opts.Width != fallbackWidth || be.opts.Height != fallbackHeight {
+		t.Fatalf("window opened at %dx%d, want the %dx%d fallback",
+			be.opts.Width, be.opts.Height, fallbackWidth, fallbackHeight)
 	}
-	if be.texW != 1024 || be.texH != 768 {
-		t.Fatalf("texture allocated at %dx%d, want 1024x768", be.texW, be.texH)
+	if status, _ := v.Status(); status != StatusConnecting {
+		t.Fatalf("status before any connection = %v, want %v", status, StatusConnecting)
+	}
+
+	// And it says so, over an empty frame, rather than showing a black window
+	// with no explanation.
+	if err := v.step(now); err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	frame, ov := be.lastFrame(t)
+	if !frame.Empty() {
+		t.Fatalf("presented %v before any frame existed", frame)
+	}
+	if ov.Empty() {
+		t.Fatal("no overlay was drawn while connecting")
+	}
+	if got := v.overlayLines(); len(got) == 0 || got[0] != StatusConnecting.Text() {
+		t.Fatalf("overlay says %q, want %q", got, StatusConnecting.Text())
+	}
+
+	v.stop()
+	if be.closed == 0 {
+		t.Fatal("stop did not close the backend")
+	}
+}
+
+func TestViewerFirstConnectionSizesWindowAndRequestsFullFrame(t *testing.T) {
+	transport, srv := startFakeServer(t, 1024, 768)
+	be := newFakeBackend(800, 600)
+	v := New(be, Config{Title: "ns/vm"})
+
+	rfbCfg := v.RFBConfig(rfb.Config{})
+	conn, err := rfb.NewConn(transport, rfbCfg)
+	if err != nil {
+		t.Fatalf("rfb handshake: %v", err)
+	}
+	now := time.Now()
+	if err := v.start(now); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer v.stop()
+	v.attach(conn, t.Context(), now)
+
+	// The window follows the guest's resolution when it fits, which is only
+	// knowable once a connection exists.
+	if be.w != 1024 || be.h != 768 {
+		t.Fatalf("window is %dx%d after the first connection, want 1024x768", be.w, be.h)
 	}
 
 	// A fresh texture holds nothing, so the first request must be
@@ -482,12 +654,20 @@ func TestViewerStartOpensWindowAndRequestsFullFrame(t *testing.T) {
 		}
 	}
 	if !sawFull {
-		t.Fatal("start did not request a non-incremental update")
+		t.Fatal("attach did not request a non-incremental update")
 	}
 
-	v.stop()
-	if be.closed == 0 {
-		t.Fatal("stop did not close the backend")
+	// The texture is allocated when there are pixels to put in it, not before:
+	// allocating leaves it undefined, which would destroy a frozen frame.
+	if be.texW != 0 || be.texH != 0 {
+		t.Fatalf("texture allocated at %dx%d before any update arrived", be.texW, be.texH)
+	}
+	conn.WithFramebuffer(func(fb *rfb.Framebuffer) { rfbCfg.OnFramebufferUpdate(fb, nil) })
+	if err := v.step(now); err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	if be.texW != 1024 || be.texH != 768 {
+		t.Fatalf("texture allocated at %dx%d, want 1024x768", be.texW, be.texH)
 	}
 }
 
@@ -499,17 +679,38 @@ func TestViewerInitialSizeIsCapped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rfb handshake: %v", err)
 	}
-	if err := v.start(conn, time.Now()); err != nil {
+	now := time.Now()
+	if err := v.start(now); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer v.stop()
+	v.attach(conn, t.Context(), now)
 
-	if be.opts.Width != 1920 || be.opts.Height != 1080 {
-		t.Fatalf("4K guest opened a %dx%d window", be.opts.Width, be.opts.Height)
+	if be.w != 1920 || be.h != 1080 {
+		t.Fatalf("4K guest produced a %dx%d window", be.w, be.h)
 	}
-	// The texture still matches the guest: only the window is capped.
-	if be.texW != 3840 || be.texH != 2160 {
-		t.Fatalf("texture is %dx%d, want the full guest resolution", be.texW, be.texH)
+}
+
+func TestViewerKeepsAPinnedWindowSize(t *testing.T) {
+	transport, _ := startFakeServer(t, 1024, 768)
+	be := newFakeBackend(0, 0)
+	v := New(be, Config{Width: 640, Height: 480})
+	conn, err := rfb.NewConn(transport, v.RFBConfig(rfb.Config{}))
+	if err != nil {
+		t.Fatalf("rfb handshake: %v", err)
+	}
+	now := time.Now()
+	if err := v.start(now); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer v.stop()
+	v.attach(conn, t.Context(), now)
+
+	if len(be.sized) != 0 {
+		t.Fatalf("a pinned window was resized to %v", be.sized)
+	}
+	if be.w != 640 || be.h != 480 {
+		t.Fatalf("window is %dx%d, want the pinned 640x480", be.w, be.h)
 	}
 }
 
