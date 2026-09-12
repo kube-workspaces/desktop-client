@@ -63,11 +63,12 @@ func runLogin(ctx context.Context, args []string) error {
 	server := fs.String("server", "", "instance base URL, e.g. https://workspaces.example.com (required for a new profile)")
 	email := fs.String("email", "", "account email for local authentication")
 	token := fs.String("token", "", "use a pre-issued session token instead of logging in (also reads KUBE_WORKSPACES_TOKEN)")
+	browser := fs.Bool("browser", false, "force the system-browser login (RFC 8252 loopback + PKCE); the default when the instance uses OIDC")
 	name := fs.String("name", "", "profile name (defaults to the server hostname)")
 	namespace := fs.String("namespace", "", "pin this profile to a single namespace")
 	insecure := fs.Bool("insecure", false, "skip TLS certificate verification (dev clusters only)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces login --server <url> [--email <email>]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces login --server <url> [--email <email>] [--browser]\n\n")
 		fs.PrintDefaults()
 	}
 	if err := parseFlags(fs, args); err != nil {
@@ -122,7 +123,7 @@ func runLogin(ctx context.Context, args []string) error {
 	}
 
 	if sessionToken == "" {
-		sessionToken, err = interactiveLogin(ctx, client, profile)
+		sessionToken, err = interactiveLogin(ctx, client, profile, *browser)
 		if err != nil {
 			return err
 		}
@@ -169,13 +170,16 @@ func runLogin(ctx context.Context, args []string) error {
 	return nil
 }
 
-// interactiveLogin performs local (username/password) authentication.
+// interactiveLogin authenticates the user, choosing between the two flows the
+// platform offers.
 //
-// OIDC is deliberately not attempted here: a native app must not collect
-// credentials for a third-party identity provider, and the platform API does
-// not yet offer the RFC 8252 loopback flow that would let the system browser
-// do it properly. Until it does, OIDC users pass --token.
-func interactiveLogin(ctx context.Context, client *kwclient.Client, profile *config.Profile) (string, error) {
+// The system browser is used whenever the instance is backed by an identity
+// provider, because a native app must never collect credentials for a third
+// party: the RFC 8252 loopback + PKCE flow hands the IdP conversation to the
+// browser and this process only ever sees the resulting session token. Local
+// (email/password) accounts are the platform's own, so prompting for those
+// here is legitimate.
+func interactiveLogin(ctx context.Context, client *kwclient.Client, profile *config.Profile, forceBrowser bool) (string, error) {
 	authCfg, err := client.AuthConfig(ctx)
 	if err != nil {
 		return "", fmt.Errorf("query auth configuration: %w", err)
@@ -183,9 +187,9 @@ func interactiveLogin(ctx context.Context, client *kwclient.Client, profile *con
 	if !authCfg.Enabled {
 		return "", errors.New("authentication is disabled on this instance; no token is needed")
 	}
-	if !authCfg.LocalAuth.Enabled {
-		return "", fmt.Errorf("this instance uses OIDC (%s); pass --token with a session token until browser login lands",
-			authCfg.IssuerURL)
+
+	if forceBrowser || !authCfg.LocalAuth.Enabled {
+		return browserLogin(ctx, client, profile, authCfg)
 	}
 
 	email := profile.Email
@@ -209,6 +213,54 @@ func interactiveLogin(ctx context.Context, client *kwclient.Client, profile *con
 		fmt.Fprintln(os.Stderr, "warning: this account must change its password in the web UI")
 	}
 	return token, nil
+}
+
+// browserLogin runs the RFC 8252 loopback + PKCE flow in the user's system
+// browser and returns the session token.
+//
+// All progress goes to stderr so that stdout stays usable for the command's
+// own output; the authorization URL is always printed, because a browser that
+// opens on a different desktop (or not at all, over SSH) is common enough that
+// making the user hunt for the URL would be unkind.
+func browserLogin(ctx context.Context, client *kwclient.Client, profile *config.Profile, authCfg *kwclient.AuthConfig) (string, error) {
+	native, err := client.NativeAuth(ctx)
+	if err != nil {
+		return "", fmt.Errorf("query auth configuration: %w", err)
+	}
+	if !native.Supported() {
+		// Be specific: the user's options differ depending on why it is
+		// unavailable, and "browser login is not supported" alone is a dead end.
+		if authCfg.LocalAuth.Enabled {
+			return "", fmt.Errorf("%w; this instance is running an older API build — drop --browser to use email/password",
+				kwclient.ErrNativeAuthUnsupported)
+		}
+		return "", fmt.Errorf("%w; this instance uses OIDC (%s) on an older API build — pass --token with a session token from the web UI",
+			kwclient.ErrNativeAuthUnsupported, authCfg.IssuerURL)
+	}
+
+	fmt.Fprintln(os.Stderr, "Opening your browser to sign in...")
+	login, err := client.LoginBrowser(ctx, &kwclient.BrowserLoginOptions{
+		Notify: func(authorizeURL string, err error) {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+				fmt.Fprintln(os.Stderr, "Open this URL manually to continue:")
+			} else {
+				fmt.Fprintln(os.Stderr, "If it does not open, visit:")
+			}
+			fmt.Fprintf(os.Stderr, "\n  %s\n\n", authorizeURL)
+		},
+	})
+	if err != nil {
+		if errors.Is(err, kwclient.ErrBrowserLoginTimeout) {
+			return "", fmt.Errorf("%w; run `kube-workspaces login` again when you are ready", err)
+		}
+		return "", err
+	}
+
+	if login.Email != "" {
+		profile.Email = login.Email
+	}
+	return login.Token, nil
 }
 
 func prompt(label string) (string, error) {
