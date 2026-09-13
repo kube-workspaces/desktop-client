@@ -242,6 +242,38 @@ func TestFilter(t *testing.T) {
 	}
 }
 
+// TestShowInfoSnapshotsTheWorkspace: the modal must show what it was opened
+// on, whatever the list does underneath it, and be torn down when the session
+// ends for reasons that have nothing to do with the modal.
+func TestShowInfoSnapshotsTheWorkspace(t *testing.T) {
+	var m Model
+	vm := workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)
+
+	m.ShowInfo(vm)
+	if m.Info == nil || m.Info.Key() != "team/vm-a" {
+		t.Fatalf("ShowInfo did not open the modal: %+v", m.Info)
+	}
+
+	// The list refreshes; the snapshot does not move with it.
+	m.WorkspacesLoaded(nil, testNow)
+	if m.Info == nil || m.Info.Key() != "team/vm-a" {
+		t.Fatal("a list refresh changed what the modal was showing")
+	}
+
+	m.CloseInfo()
+	if m.Info != nil {
+		t.Fatal("CloseInfo left the modal open")
+	}
+
+	// A sign-out is a hard reset; a modal left behind would overlay a screen
+	// the user is not thinking about.
+	m.ShowInfo(vm)
+	m.SignOut("You are signed out.")
+	if m.Info != nil {
+		t.Fatal("signing out left the modal open")
+	}
+}
+
 func TestSelectedIndex(t *testing.T) {
 	rows := []kwclient.Workspace{
 		workspace("a", "one", kwclient.WorkspaceTypeVM, true),

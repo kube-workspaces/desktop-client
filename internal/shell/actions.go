@@ -46,6 +46,8 @@ const (
 	intentRefresh
 	intentActivate
 	intentOpenInBrowser
+	intentInfoWorkspace
+	intentInfoClose
 	intentSignOut
 	intentChangeServer
 	intentOpenSettings
@@ -56,7 +58,8 @@ const (
 // intent is one frame's outcome.
 type intent struct {
 	kind intentKind
-	// workspace is the subject of intentActivate and intentOpenInBrowser.
+	// workspace is the subject of intentActivate, intentOpenInBrowser and
+	// intentInfoWorkspace.
 	workspace kwclient.Workspace
 }
 
@@ -86,6 +89,18 @@ func (a *App) act(ctx context.Context, in intent) {
 		if ws, ok := a.resolve(in.workspace); ok {
 			a.openInBrowser(ctx, ws)
 		}
+	case intentInfoWorkspace:
+		if ws, ok := a.resolve(in.workspace); ok {
+			a.m.ShowInfo(ws)
+			// Focus belongs to the modal while it is up: its Close button is
+			// the only reachable control, and it is what Tab users land on.
+			a.ctx.Focus().Set(idInfoClose)
+		}
+	case intentInfoClose:
+		a.m.CloseInfo()
+		// Return the keyboard to where the user was — the selected row's
+		// primary action — rather than letting it fall onto the filter.
+		a.ctx.Focus().Set(idOpen)
 	case intentSignOut:
 		a.signOut()
 	case intentChangeServer:
@@ -629,6 +644,9 @@ const (
 	idOpen    ui.FocusID = "open"
 	idRefresh ui.FocusID = "refresh"
 	idSignOut ui.FocusID = "sign-out"
+
+	idInfo      ui.FocusID = "info"
+	idInfoClose ui.FocusID = "info-close"
 
 	idSettings     ui.FocusID = "settings"
 	idStyleBubbly  ui.FocusID = "style-bubbly"

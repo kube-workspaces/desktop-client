@@ -454,7 +454,13 @@ func (a *App) draw(ctx context.Context) error {
 	}
 
 	a.ctx.Begin(a.canvas, a.in)
-	a.canvas.Fill(a.canvas.Bounds(), a.opts.Theme.Background)
+	// A modal keeps the previous frame as a frozen, dimmed backdrop. The
+	// background is deliberately not cleared and the list is not drawn, so the
+	// buffer still holds the frame the user last saw and the modal dims it.
+	modal := a.m.State == StateWorkspaces && a.m.Info != nil
+	if !modal {
+		a.canvas.Fill(a.canvas.Bounds(), a.opts.Theme.Background)
+	}
 
 	var intent intent
 	switch a.m.State {
@@ -463,7 +469,11 @@ func (a *App) draw(ctx context.Context) error {
 	case StateLogin:
 		intent = a.drawLoginScreen(a.canvas.Bounds())
 	case StateWorkspaces:
-		intent = a.drawWorkspacesScreen(a.canvas.Bounds())
+		if modal {
+			intent = a.drawWorkspaceInfoModal(a.canvas.Bounds())
+		} else {
+			intent = a.drawWorkspacesScreen(a.canvas.Bounds())
+		}
 	case StateSettings:
 		intent = a.drawSettingsScreen(a.canvas.Bounds())
 	case StateSession:

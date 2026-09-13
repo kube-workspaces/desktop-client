@@ -95,6 +95,11 @@ type Model struct {
 	// the user deciding to press Enter and pressing it.
 	Selected string
 
+	// Info is the workspace whose details the info modal is showing, or nil
+	// when no modal is open. It is a snapshot rather than a key, so a list
+	// refresh underneath the modal cannot change what it says while it is up.
+	Info *kwclient.Workspace
+
 	// Opening is the workspace whose session is being started; it is only
 	// meaningful in StateSession.
 	Opening kwclient.Workspace
@@ -121,6 +126,7 @@ func (m *Model) NeedServer(reason string) {
 	m.Auth, m.Native = nil, false
 	m.Identity = nil
 	m.Workspaces, m.Images = nil, nil
+	m.Info = nil
 	m.Busy, m.BusyText = false, ""
 	m.Err = reason
 	m.Notice = ""
@@ -162,6 +168,7 @@ func (m *Model) SignOut(reason string) {
 	m.Identity = nil
 	m.Workspaces, m.Images = nil, nil
 	m.Selected = ""
+	m.Info = nil
 	m.Busy, m.BusyText = false, ""
 	m.Err = ""
 	m.Notice = reason
@@ -250,6 +257,17 @@ func (m *Model) Open(ws kwclient.Workspace) {
 	m.Busy, m.BusyText = false, ""
 	m.State = StateSession
 }
+
+// ShowInfo opens the info modal for ws. The workspace is snapshotted, so a
+// refresh that reorders or replaces the list underneath the modal does not
+// change the details it is showing.
+func (m *Model) ShowInfo(ws kwclient.Workspace) {
+	m.Info = &ws
+	m.Err, m.Notice = "", ""
+}
+
+// CloseInfo dismisses the info modal, returning to the list.
+func (m *Model) CloseInfo() { m.Info = nil }
 
 // SessionEnded returns from a session to the workspace list.
 //

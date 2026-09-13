@@ -32,7 +32,22 @@ const (
 	// state.
 	typeColumnWidth   = 140
 	statusColumnWidth = 210
+
+	// infoCardWidth is the width of the workspace info modal. Values that do
+	// not fit are wrapped rather than stretching the card.
+	infoCardWidth = 560
+
+	// infoLabelWidth is the base width of the label column in the info modal.
+	// The column grows to fit the widest label ("Condition Ready") so nothing
+	// truncates; this floor keeps short, single-word headers ("CPU") from
+	// leaving the value column oddly wide.
+	infoLabelWidth = 120
 )
+
+// modalScrim is the translucent layer between the info modal and the frozen
+// list behind it. The list stays visible so the modal reads as "behind glass",
+// but the scrim is what says it can no longer be touched.
+var modalScrim = color.RGBA{A: 0xaa}
 
 // drawServerScreen asks which instance to talk to.
 //
@@ -603,21 +618,180 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 		Variant:  ui.ButtonPrimary,
 		Disabled: !has || !ws.Running(),
 	}
-	openRect, hintRect := ui.CutLeft(r, max(180, open.Width(ctx)))
-	if open.Layout(ctx, openRect) {
+	// Info is for looking, not acting, so it is secondary to the open button
+	// and disabled when there is no selection to look at.
+	info := ui.Button{ID: idInfo, Text: "Info", Variant: ui.ButtonSecondary, Disabled: !has}
+	cols := ui.Row(r, th.Gap, max(180, open.Width(ctx)), info.Width(ctx), 0)
+	if open.Layout(ctx, cols[0]) {
 		*out = intent{kind: kind, workspace: ws}
+	}
+	if info.Layout(ctx, cols[1]) {
+		*out = intent{kind: intentInfoWorkspace, workspace: ws}
 	}
 
 	hint := "Enter opens  ·  F5 refreshes  ·  Ctrl-F filters  ·  Tab moves"
 	if !a.m.LastRefresh.IsZero() {
 		hint = "Updated " + since(a.m.LastRefresh, a.ctx.Input.Now) + "  ·  " + hint
 	}
-	ui.Label(ctx, ui.InsetXY(hintRect, th.Gap, 0), hint, ui.LabelStyle{
+	ui.Label(ctx, ui.InsetXY(cols[2], th.Gap, 0), hint, ui.LabelStyle{
 		Color:  th.TextMuted,
 		Scale:  th.Small,
 		Align:  ui.AlignRight,
 		Middle: true,
 	})
+}
+
+// drawWorkspaceInfoModal draws the details [Model.Info] names, centred over a
+// dimmed, frozen copy of the list, and reports what the user asked it to do.
+//
+// Only the modal is laid out: the list's widgets are neither drawn nor
+// registered, so nothing behind it can take a click or the keyboard. Escape
+// and the Close button are the only ways back to the list, which is what a
+// modal is for — the list is deliberately out of reach while it is up.
+func (a *App) drawWorkspaceInfoModal(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	ws := a.m.Info
+	var out intent
+	if ws == nil {
+		return out
+	}
+
+	// The frame underneath was not cleared this frame; it is still in the
+	// buffer as the user last saw it. Dimming it is what reads as "behind
+	// glass" rather than a second window.
+	ctx.Canvas.Fill(bounds, modalScrim)
+
+	width := min(bounds.W-2*th.Pad, infoCardWidth)
+	innerW := width - 2*th.Pad
+	rows := workspaceInfoRows(ws)
+
+	// The label column grows to fit the widest label — "Condition Ready"
+	// outruns any fixed header — capped at a third of the card so the value
+	// column keeps the two-thirds the wrapping is tuned for.
+	labelW := infoLabelWidth
+	for _, row := range rows {
+		if w := ui.TextWidth(row[0], th.Small, th.Font); w > labelW {
+			labelW = w
+		}
+	}
+	labelW = min(labelW, innerW/3)
+	valueW := innerW - labelW - th.Gap
+
+	// Measure the card before placing it: a wrapped value decides how tall
+	// the card has to be, and a modal that guessed its height would clip or
+	// gape. The parts are the stack rows in draw order, gaps between them.
+	parts := []int{
+		ui.TextHeight(th.Title, th.Font) + th.Gap/2, // name
+		ui.LineHeight(th.Small, th.Font),            // namespace
+		1,                                           // divider
+	}
+	for _, row := range rows {
+		lines := len(ui.Wrap(row[1], th.Body, th.Font, valueW))
+		if lines < 1 {
+			lines = 1
+		}
+		parts = append(parts, lines*ui.LineHeight(th.Body, th.Font))
+	}
+	parts = append(parts, th.ControlHeight) // close row
+
+	content := 0
+	for i, p := range parts {
+		if i > 0 {
+			content += th.Gap
+		}
+		content += p
+	}
+	content += 2 * th.Pad
+
+	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
+	if card.W <= 0 || card.H <= 0 {
+		return out
+	}
+	card.Y = max(card.Y, th.Gap)
+
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+
+	ui.Label(ctx, body.Next(parts[0]), ws.Name, ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(parts[1]), ws.Key(), ui.LabelStyle{
+		Color: th.TextMuted, Scale: th.Small,
+	})
+	ui.Divider(ctx, body.Next(parts[2]))
+
+	for i, row := range rows {
+		r := body.Next(parts[3+i])
+		labelRect, valueRect := ui.CutLeft(r, labelW)
+		ui.Label(ctx, labelRect, row[0], ui.LabelStyle{
+			Color: th.TextMuted, Scale: th.Small,
+		})
+		ui.Label(ctx, valueRect, row[1], ui.LabelStyle{Wrap: true})
+	}
+
+	footer := body.Next(parts[len(parts)-1])
+	closeRow := ui.Button{ID: idInfoClose, Text: "Close", Variant: ui.ButtonPrimary}
+	closeRect, _ := ui.CutRight(footer, closeRow.Width(ctx))
+	if closeRow.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentInfoClose}
+	}
+	return out
+}
+
+// workspaceInfoRows is the labelled detail the info modal shows. Empty values
+// are dropped so a workspace the API did not decorate does not collect a wall
+// of blank labels.
+func workspaceInfoRows(ws *kwclient.Workspace) [][2]string {
+	if ws == nil {
+		return nil
+	}
+	var rows [][2]string
+	add := func(label, value string) {
+		if value != "" {
+			rows = append(rows, [2]string{label, value})
+		}
+	}
+
+	add("Namespace", ws.Namespace)
+	add("Type", string(ws.Type))
+	add("Status", StatusText(*ws))
+	add("Image", ws.Image)
+	if ws.Port != nil {
+		add("Port", fmt.Sprintf("%d", *ws.Port))
+	}
+	add("CPU", resourceRange(ws.CPURequest, ws.CPULimit))
+	add("Memory", resourceRange(ws.MemoryRequest, ws.MemoryLimit))
+	if t, ok := ws.CreatedAtTime(); ok {
+		add("Created", t.Local().Format("2 Jan 2006 15:04"))
+	}
+	for _, vm := range ws.VolumeMounts {
+		add("Volume", vm.Name+" -> "+vm.MountPath)
+	}
+	for _, c := range ws.Conditions {
+		detail := c.Status
+		if c.Reason != "" {
+			detail += " (" + c.Reason + ")"
+		}
+		if c.Message != "" && c.Message != c.Reason {
+			detail += ": " + c.Message
+		}
+		add("Condition "+c.Type, detail)
+	}
+	return rows
+}
+
+// resourceRange joins a request and a limit into one readable row, e.g.
+// "request 500m, limit 2". A missing side is skipped rather than shown as an
+// empty slot, and an empty pair disappears from the modal entirely.
+func resourceRange(request, limit *string) string {
+	var parts []string
+	if request != nil && *request != "" {
+		parts = append(parts, "request "+*request)
+	}
+	if limit != nil && *limit != "" {
+		parts = append(parts, "limit "+*limit)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // drawConnectingScreen is shown for the single frame between the user

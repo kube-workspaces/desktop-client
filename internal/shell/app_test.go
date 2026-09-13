@@ -687,6 +687,72 @@ func TestFilterNarrowsTheList(t *testing.T) {
 	}
 }
 
+// TestWorkspaceInfoModalShowsAndBlocksTheList: the Info button beside the
+// primary action opens a modal, and while it is up the list behind it must be
+// out of reach — its shortcuts must not even reach the server.
+func TestWorkspaceInfoModalShowsAndBlocksTheList(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}
+	})
+	r.start()
+	if r.app.m.State != StateWorkspaces {
+		t.Fatalf("setup failed: state = %v", r.app.m.State)
+	}
+
+	r.focus(idInfo)
+	r.clickFocused()
+	r.step()
+	if r.app.m.Info == nil || r.app.m.Info.Key() != "team/vm-a" {
+		t.Fatalf("Info opened the modal on %+v", r.app.m.Info)
+	}
+
+	// The modal owns the frame: F5, the list's refresh shortcut, must not
+	// reach the server underneath it.
+	before := r.api.listCalls
+	r.press(keysym.KeyF5, keysym.ModNone)
+	if r.api.listCalls != before {
+		t.Fatal("F5 reached the server while the modal was open")
+	}
+	if r.app.m.Info == nil {
+		t.Fatal("the modal closed itself")
+	}
+
+	// Escape is the modal's own way out, and it lands back on the list.
+	r.press(keysym.KeyEscape, keysym.ModNone)
+	if r.app.m.Info != nil {
+		t.Fatal("Escape did not close the modal")
+	}
+	if r.app.m.State != StateWorkspaces {
+		t.Fatalf("closing the modal left the shell on %v", r.app.m.State)
+	}
+}
+
+func TestWorkspaceInfoModalClosesWithTheButton(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}
+	})
+	r.start()
+
+	r.focus(idInfo)
+	r.clickFocused()
+	r.step()
+	if r.app.m.Info == nil {
+		t.Fatal("the modal did not open")
+	}
+
+	r.focus(idInfoClose)
+	r.clickFocused()
+	r.step()
+	if r.app.m.Info != nil {
+		t.Fatal("the Close button did not dismiss the modal")
+	}
+	if r.app.m.State != StateWorkspaces {
+		t.Fatalf("closing the modal left the shell on %v", r.app.m.State)
+	}
+}
+
 func TestQuitEventEndsTheLoop(t *testing.T) {
 	r := newRig(savedProfile(), "stored-token")
 	r.start()
