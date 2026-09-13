@@ -56,7 +56,7 @@ func run(src string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	img, err := png.Decode(f)
 	if err != nil {
 		return fmt.Errorf("decode %s: %w", src, err)
