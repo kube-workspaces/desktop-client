@@ -691,6 +691,53 @@ func TestSDLBackendToSurface(t *testing.T) {
 	}
 }
 
+func TestCenterInBounds(t *testing.T) {
+	tests := []struct {
+		name         string
+		bounds       sdl.Rect
+		w, h         int32
+		wantX, wantY int32
+	}{
+		{
+			name:   "window smaller than the display",
+			bounds: sdl.Rect{X: 0, Y: 0, W: 1920, H: 1080},
+			w:      1280, h: 800,
+			wantX: 320, wantY: 140,
+		},
+		{
+			// A secondary display left of the primary has negative screen
+			// coordinates; the offset must stay inside its own bounds.
+			name:   "secondary display left of the primary",
+			bounds: sdl.Rect{X: -1920, Y: 0, W: 1920, H: 1080},
+			w:      1024, h: 768,
+			wantX: -1472, wantY: 156,
+		},
+		{
+			name:   "window the size of the display keeps its origin",
+			bounds: sdl.Rect{X: 100, Y: 200, W: 3840, H: 2160},
+			w:      3840, h: 2160,
+			wantX: 100, wantY: 200,
+		},
+		{
+			// Integer halves: a one-pixel sliver goes to the top-left, never
+			// the bottom-right.
+			name:   "odd extra pixel rounds up and left",
+			bounds: sdl.Rect{X: 0, Y: 0, W: 1921, H: 1081},
+			w:      1280, h: 800,
+			wantX: 320, wantY: 140,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			x, y := centerInBounds(tt.bounds, tt.w, tt.h)
+			if x != tt.wantX || y != tt.wantY {
+				t.Fatalf("centerInBounds(%+v, %dx%d) = (%d,%d), want (%d,%d)",
+					tt.bounds, tt.w, tt.h, x, y, tt.wantX, tt.wantY)
+			}
+		})
+	}
+}
+
 // TestSDLBackendImplementsBackend is redundant with the compile-time assertion
 // in sdl.go, but it fails with a clearer message when someone changes the
 // interface.

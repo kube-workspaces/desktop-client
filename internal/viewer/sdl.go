@@ -145,6 +145,10 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 	}
 	b.window, b.renderer = window, renderer
 
+	// Move the window onto the display it was launched from before it is
+	// presented for the first time; see centerOnLaunchDisplay.
+	b.centerOnLaunchDisplay()
+
 	if opts.VSync {
 		// Not fatal: a software renderer may refuse, and a session that
 		// tears is better than no session.
@@ -176,6 +180,56 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 	b.wakeOK = true
 	b.wakeMu.Unlock()
 	return nil
+}
+
+// centerOnLaunchDisplay moves the freshly created window so that it is centred,
+// horizontally and vertically, on the display the pointer is on when the client
+// starts.
+//
+// SDL's default placement centres on the *primary* display, which is wrong on a
+// multi-monitor desktop: a window launched from the second screen's taskbar or
+// Dock lands back on the first. There is no OS API for "which display launched
+// this process", so the display under the pointer is the closest the platform
+// can say — it is the same heuristic Explorer, the Dock and X11 launchers use.
+// The pointer is read after the window exists but before anything has been
+// presented, and creating a window never moves the mouse.
+//
+// Positioning is a request, not a guarantee: Wayland compositors decide
+// placement themselves and ignore it, and tiling window managers override it.
+// Those platforms keep SDL's default centring, which is the best that can be
+// done there. Everywhere else the move is applied before the first frame, so
+// the window never visibly flashes up centred on the primary screen and then
+// jumps.
+func (b *SDLBackend) centerOnLaunchDisplay() {
+	_, mx, my := sdl.GetGlobalMouseState()
+	display := sdl.GetDisplayForPoint(&sdl.Point{X: int32(mx), Y: int32(my)})
+	if display == 0 {
+		return
+	}
+	bounds, err := display.UsableBounds()
+	if err != nil || bounds == nil || bounds.W <= 0 || bounds.H <= 0 {
+		return
+	}
+	w, h, err := b.window.Size()
+	if err != nil || w <= 0 || h <= 0 {
+		return
+	}
+	x, y := centerInBounds(*bounds, w, h)
+	_ = b.window.SetPosition(x, y)
+	// Sync, as in SetSize and SetFullscreen: block until the window manager has
+	// applied the position so the first presented frame is already in it.
+	_ = b.window.Sync()
+}
+
+// centerInBounds returns the top-left corner of a w×h window centred inside the
+// display area bounds, in screen coordinates.
+//
+// The halves round down: an odd pixel of slack goes to the top and left, which
+// is unobservable. The arithmetic is integer on purpose, like FitLetterbox —
+// window geometry is int32 and staying in integers keeps the two rounding
+// conventions from ever disagreeing.
+func centerInBounds(bounds sdl.Rect, w, h int32) (x, y int32) {
+	return bounds.X + (bounds.W-w)/2, bounds.Y + (bounds.H-h)/2
 }
 
 // Close destroys everything Open created, in reverse order, and unloads the

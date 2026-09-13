@@ -30,7 +30,7 @@ WINDOWS_LDFLAGS ?= $(LDFLAGS) -H=windowsgui
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
-.PHONY: help build run test vet lint fmt tidy cover clean build-all
+.PHONY: help build build-windows run test vet lint fmt tidy cover clean build-all
 
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -44,6 +44,11 @@ build: ## Build the kube-workspaces binary into bin/
 	if [ "$$goos" = "windows" ]; then ldflags="$(WINDOWS_LDFLAGS)"; ext=".exe"; fi; \
 	echo "go build -trimpath -ldflags \"$$ldflags\" -o $(BIN_DIR)/$(BINARY)$$ext $(CMD)"; \
 	go build -trimpath -ldflags "$$ldflags" -o $(BIN_DIR)/$(BINARY)$$ext $(CMD)
+
+build-windows: ## Cross-build a Windows amd64 binary into ./kw.exe for testing on a Windows host
+	@echo "go build -trimpath -ldflags \"$(WINDOWS_LDFLAGS)\" -o kw.exe $(CMD)"
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+		go build -trimpath -ldflags "$(WINDOWS_LDFLAGS)" -o kw.exe $(CMD)
 
 run: ## Run the client from source (make run ARGS="--help")
 	go run $(CMD) $(ARGS)
