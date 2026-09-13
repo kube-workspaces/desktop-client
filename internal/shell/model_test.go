@@ -296,7 +296,7 @@ func TestStatusText(t *testing.T) {
 }
 
 func TestStateString(t *testing.T) {
-	for _, s := range []State{StateServer, StateLogin, StateWorkspaces, StateSession} {
+	for _, s := range []State{StateServer, StateLogin, StateWorkspaces, StateSettings, StateSession} {
 		if s.String() == "unknown" {
 			t.Fatalf("state %d has no name", s)
 		}

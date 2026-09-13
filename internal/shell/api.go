@@ -81,6 +81,13 @@ type Store interface {
 	// Forget removes the stored token, leaving the profile in place so the
 	// user does not have to retype the server URL to sign back in.
 	Forget(profile *config.Profile) error
+
+	// LoadSettings returns the client's own preferences. Zero-valued fields
+	// mean the defaults, so a never-written config reads back as empty, not
+	// as an error.
+	LoadSettings() (config.Settings, error)
+	// SaveSettings records the client's own preferences.
+	SaveSettings(settings config.Settings) error
 }
 
 // ConfigStore is the production [Store]: profiles in the user's config
@@ -136,4 +143,23 @@ func (ConfigStore) Forget(profile *config.Profile) error {
 		return nil
 	}
 	return config.DeleteToken(profile.Name)
+}
+
+// LoadSettings implements [Store].
+func (ConfigStore) LoadSettings() (config.Settings, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return config.Settings{}, err
+	}
+	return cfg.Settings, nil
+}
+
+// SaveSettings implements [Store].
+func (ConfigStore) SaveSettings(settings config.Settings) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	cfg.Settings = settings
+	return cfg.Save()
 }

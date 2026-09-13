@@ -30,6 +30,9 @@ const (
 	StateLogin
 	// StateWorkspaces is the main screen: the workspace list.
 	StateWorkspaces
+	// StateSettings is the settings screen: appearance preferences that live
+	// on this computer, not on any instance.
+	StateSettings
 	// StateSession means a display session owns the window. The shell's own
 	// loop is parked for the duration and resumes on StateWorkspaces.
 	StateSession
@@ -44,6 +47,8 @@ func (s State) String() string {
 		return "login"
 	case StateWorkspaces:
 		return "workspaces"
+	case StateSettings:
+		return "settings"
 	case StateSession:
 		return "session"
 	default:

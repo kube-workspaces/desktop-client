@@ -63,6 +63,7 @@ func NewContext(theme *Theme) *Context {
 func (c *Context) Begin(canvas *Canvas, in Input) {
 	c.Canvas = canvas
 	c.Input = in
+	canvas.font = c.Theme.Font
 	c.repaint = false
 	c.repaintAfter = 0
 	c.tabHandled = false

@@ -50,17 +50,17 @@ func (a *App) drawServerScreen(bounds ui.Rect) intent {
 	card.H = bounds.H - card.Y - th.Pad
 	body := ui.NewStack(card, th.Gap)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Title)), "Kube Workspaces", ui.LabelStyle{
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), "Kube Workspaces", ui.LabelStyle{
 		Scale: th.Title,
 	})
 	body.Skip(th.Gap / 2)
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body)*2), "Connect to your workspaces instance.", ui.LabelStyle{
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2), "Connect to your workspaces instance.", ui.LabelStyle{
 		Color: th.TextMuted,
 		Wrap:  true,
 	})
 	body.Skip(th.Pad)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Small)+2), "SERVER ADDRESS", ui.LabelStyle{
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "SERVER ADDRESS", ui.LabelStyle{
 		Color: th.TextMuted,
 		Scale: th.Small,
 	})
@@ -109,9 +109,9 @@ func (a *App) drawLoginScreen(bounds ui.Rect) intent {
 	card.H = bounds.H - card.Y - th.Pad
 	body := ui.NewStack(card, th.Gap)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Title)), "Sign in", ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), "Sign in", ui.LabelStyle{Scale: th.Title})
 	body.Skip(th.Gap / 2)
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body)), a.m.Server, ui.LabelStyle{Color: th.TextMuted})
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), a.m.Server, ui.LabelStyle{Color: th.TextMuted})
 	body.Skip(th.Pad)
 
 	waiting := a.m.Busy && strings.HasPrefix(a.m.BusyText, "Waiting")
@@ -121,7 +121,7 @@ func (a *App) drawLoginScreen(bounds ui.Rect) intent {
 		out = a.drawBrowserWait(body)
 
 	case a.m.AuthDisabled():
-		ui.Label(ctx, body.Next(ui.LineHeight(th.Body)*2),
+		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2),
 			"This instance does not require sign-in.", ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 		body.Skip(th.Gap)
 		cont := ui.Button{ID: idSignIn, Text: "Continue", Variant: ui.ButtonPrimary, Disabled: a.m.Busy}
@@ -161,7 +161,7 @@ func (a *App) drawCredentials(body *ui.Stack) intent {
 			a.drawBusy(body.Next(th.ControlHeight), a.m.BusyText)
 			return out
 		}
-		ui.Label(ctx, body.Next(ui.LineHeight(th.Body)*3),
+		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*3),
 			"This instance offers no sign-in method this client can use. "+
 				"Ask an administrator whether browser sign-in is enabled.",
 			ui.LabelStyle{Color: th.TextMuted, Wrap: true})
@@ -169,12 +169,12 @@ func (a *App) drawCredentials(body *ui.Stack) intent {
 	}
 
 	if local {
-		ui.Label(ctx, body.Next(ui.TextHeight(th.Small)+2), "EMAIL", ui.LabelStyle{
+		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "EMAIL", ui.LabelStyle{
 			Color: th.TextMuted, Scale: th.Small,
 		})
 		emailSubmit := a.emailField.Layout(ctx, body.Next(th.ControlHeight))
 		body.Skip(th.Gap / 2)
-		ui.Label(ctx, body.Next(ui.TextHeight(th.Small)+2), "PASSWORD", ui.LabelStyle{
+		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "PASSWORD", ui.LabelStyle{
 			Color: th.TextMuted, Scale: th.Small,
 		})
 		passwordSubmit := a.passwordField.Layout(ctx, body.Next(th.ControlHeight))
@@ -194,7 +194,7 @@ func (a *App) drawCredentials(body *ui.Stack) intent {
 	if browser {
 		if local {
 			body.Skip(th.Pad)
-			ui.DividerLabel(ctx, body.Next(ui.LineHeight(th.Body)), "or")
+			ui.DividerLabel(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), "or")
 			body.Skip(th.Gap / 2)
 		}
 		variant := ui.ButtonPrimary
@@ -207,7 +207,7 @@ func (a *App) drawCredentials(body *ui.Stack) intent {
 		}
 		if issuer := a.issuerHost(); issuer != "" {
 			body.Skip(th.Gap / 2)
-			ui.Label(ctx, body.Next(ui.LineHeight(th.Small)), "You will be sent to "+issuer,
+			ui.Label(ctx, body.Next(ui.LineHeight(th.Small, th.Font)), "You will be sent to "+issuer,
 				ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
 		}
 	}
@@ -230,16 +230,16 @@ func (a *App) drawBrowserWait(body *ui.Stack) intent {
 	ui.Label(ctx, rest, "Waiting for your browser...", ui.LabelStyle{Middle: true})
 
 	body.Skip(th.Gap / 2)
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body)*2),
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2),
 		"Complete the sign-in in the window that opened, then come back here.",
 		ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 
 	if a.authorizeURL != "" {
 		body.Skip(th.Gap)
-		ui.Label(ctx, body.Next(ui.TextHeight(th.Small)+2), "IF NOTHING OPENED, VISIT", ui.LabelStyle{
+		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "IF NOTHING OPENED, VISIT", ui.LabelStyle{
 			Color: th.TextMuted, Scale: th.Small,
 		})
-		urlBox := body.Next(ui.LineHeight(th.Small)*3 + th.Gap)
+		urlBox := body.Next(ui.LineHeight(th.Small, th.Font)*3 + th.Gap)
 		ctx.Canvas.FillRounded(urlBox, th.Radius, th.SurfaceAlt)
 		ui.Label(ctx, ui.Inset(urlBox, th.Gap/2), a.authorizeURL, ui.LabelStyle{
 			Color: th.TextMuted, Scale: th.Small, Wrap: true,
@@ -262,7 +262,7 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 	var out intent
 
 	content := ui.Inset(bounds, th.Pad)
-	header, content := ui.CutTop(content, ui.TextHeight(th.Title)+th.Gap)
+	header, content := ui.CutTop(content, ui.TextHeight(th.Title, th.Font)+th.Gap)
 	a.drawHeader(header, &out)
 
 	content.Y += th.Gap
@@ -318,18 +318,147 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 	return out
 }
 
-// drawHeader draws the title bar: who is signed in, and the way out.
+// drawSettingsScreen is where the client's own appearance is chosen: the font
+// style and the dark/light colours, both remembered between runs.
+//
+// Every choice is applied and saved at the moment it is made, so the screen
+// doubles as a live preview and closing the window a second later cannot lose
+// a selection. The [ui] package keeps style and colour on separate axes, and
+// this screen is the only place that exposes the separation to the user.
+func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	var out intent
+
+	card := ui.CenterRect(bounds, cardWidth, 0)
+	card.Y = bounds.Y + bounds.H/6
+	card.H = bounds.H - card.Y - th.Pad
+	body := ui.NewStack(card, th.Gap)
+
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), "Settings", ui.LabelStyle{Scale: th.Title})
+	body.Skip(th.Gap / 2)
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2),
+		"How the client looks. Choices save as you make them.", ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	body.Skip(th.Pad)
+
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "STYLE", ui.LabelStyle{
+		Color: th.TextMuted, Scale: th.Small,
+	})
+	styleRow := body.Next(th.ControlHeight)
+	if picked := a.drawChoice(ctx, styleRow, styleIndex(a.settings.Style), []styleOption{
+		{id: idStyleBubbly, label: "Bubbly"},
+		{id: idStyleRetro, label: "Retro"},
+		{id: idStyleClean, label: "Clean"},
+	}); picked != styleIndex(a.settings.Style) {
+		a.applySettings(Settings{Style: styleFromIndex(picked), Mode: a.settings.Mode})
+		a.saveSettings()
+	}
+
+	body.Skip(th.Pad)
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "COLOURS", ui.LabelStyle{
+		Color: th.TextMuted, Scale: th.Small,
+	})
+	modeRow := body.Next(th.ControlHeight)
+	modeOpts := []styleOption{{id: idModeDark, label: "Dark"}, {id: idModeLight, label: "Light"}}
+	modeIdx := 0
+	if a.settings.Mode == ui.ModeLight {
+		modeIdx = 1
+	}
+	if picked := a.drawChoice(ctx, modeRow, modeIdx, modeOpts); picked != modeIdx {
+		mode := ui.ModeDark
+		if picked == 1 {
+			mode = ui.ModeLight
+		}
+		a.applySettings(Settings{Style: a.settings.Style, Mode: mode})
+		a.saveSettings()
+	}
+
+	body.Skip(th.Pad)
+	done := ui.Button{ID: idSettingsDone, Text: "Done", Variant: ui.ButtonPrimary}
+	if done.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)[0]) ||
+		ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentSettingsDone}
+	}
+
+	a.drawFooterHint(bounds, "Changes save as you pick  ·  Escape closes")
+	return out
+}
+
+// drawChoice renders a one-of-N choice as a row of buttons and returns the
+// index of the option selected after this frame.
+//
+// The selected option carries the accent, the others the ordinary surface, so
+// a user can tell which is which without reading any label twice: a settings
+// screen is two of these rows side by side. The option labels are mapped to
+// ids so the focus ring (and therefore keyboard navigation) treats each pill
+// as its own control.
+func (a *App) drawChoice(ctx *ui.Context, r ui.Rect, selected int, opts []styleOption) int {
+	th := a.opts.Theme
+	widths := make([]int, len(opts)) // Row spreads every zero over the free space
+	cols := ui.Row(r, th.Gap, widths...)
+	chosen := selected
+	for i, o := range opts {
+		b := ui.Button{ID: o.id, Text: o.label, Variant: ui.ButtonSecondary}
+		if i == selected {
+			b.Variant = ui.ButtonPrimary
+		}
+		if b.Layout(ctx, cols[i]) {
+			chosen = i
+		}
+	}
+	return chosen
+}
+
+// styleIndex maps a style to its position in the settings screen's row, and
+// its inverse styleFromIndex maps the row back. The row order is the enum
+// order, so both are three-line functions that do not drift because of
+// switch defaults.
+func styleIndex(s ui.Style) int {
+	switch s {
+	case ui.StyleBubbly:
+		return 0
+	case ui.StyleRetro:
+		return 1
+	default:
+		return 2
+	}
+}
+
+func styleFromIndex(i int) ui.Style {
+	switch i {
+	case 0:
+		return ui.StyleBubbly
+	case 1:
+		return ui.StyleRetro
+	default:
+		return ui.StyleClean
+	}
+}
+
+type styleOption struct {
+	id    ui.FocusID
+	label string
+}
+
+// drawHeader draws the title bar: who is signed in, the way out, and the way
+// to the appearance settings.
 func (a *App) drawHeader(r ui.Rect, out *intent) {
 	th := a.opts.Theme
 	ctx := a.ctx
 
 	signOut := ui.Button{ID: idSignOut, Text: "Sign out", Variant: ui.ButtonQuiet}
-	signOutRect, rest := ui.CutRight(r, signOut.Width(ctx))
-	if signOut.Layout(ctx, signOutRect) {
+	settings := ui.Button{ID: idSettings, Text: "Settings", Variant: ui.ButtonQuiet}
+	buttonsW := signOut.Width(ctx) + settings.Width(ctx) + th.Gap/2
+	signOutRect, rest := ui.CutRight(r, buttonsW)
+	cols := ui.Row(signOutRect, th.Gap/2, settings.Width(ctx), signOut.Width(ctx))
+	if settings.Layout(ctx, cols[0]) {
+		*out = intent{kind: intentOpenSettings}
+	}
+	if signOut.Layout(ctx, cols[1]) {
 		*out = intent{kind: intentSignOut}
 	}
 
-	title, identity := ui.CutLeft(rest, ui.TextWidth("Workspaces", th.Title)+th.Pad)
+	title, identity := ui.CutLeft(rest, ui.TextWidth("Workspaces", th.Title, th.Font)+th.Pad)
 	ui.Label(ctx, title, "Workspaces", ui.LabelStyle{Scale: th.Title, Middle: true})
 	ui.Label(ctx, ui.InsetXY(identity, th.Gap, 0), a.identityLine(), ui.LabelStyle{
 		Color:  th.TextMuted,
@@ -531,8 +660,8 @@ func (a *App) messageHeight(width int) int {
 		return 0
 	}
 	th := a.opts.Theme
-	lines := ui.Wrap(text, th.Body, width-2*th.Gap)
-	return len(lines)*ui.LineHeight(th.Body) + th.Gap + th.Gap
+	lines := ui.Wrap(text, th.Body, th.Font, width-2*th.Gap)
+	return len(lines)*ui.LineHeight(th.Body, th.Font) + th.Gap + th.Gap
 }
 
 // drawBusy draws a spinner and a caption inline.
@@ -548,7 +677,7 @@ func (a *App) drawBusy(r ui.Rect, text string) {
 // drawFooterHint writes a keyboard hint along the bottom of the window.
 func (a *App) drawFooterHint(bounds ui.Rect, text string) {
 	th := a.opts.Theme
-	strip, _ := ui.CutBottom(ui.Inset(bounds, th.Pad), ui.LineHeight(th.Small))
+	strip, _ := ui.CutBottom(ui.Inset(bounds, th.Pad), ui.LineHeight(th.Small, th.Font))
 	ui.Label(a.ctx, strip, text, ui.LabelStyle{
 		Color: th.TextMuted, Scale: th.Small, Align: ui.AlignRight,
 	})

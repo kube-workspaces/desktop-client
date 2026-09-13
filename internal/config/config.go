@@ -36,12 +36,27 @@ type Profile struct {
 	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 }
 
+// Settings are the client's own preferences: how the interface looks, in
+// contrast to [Profile], which is about an instance. They are stored in the
+// same file but are independent of any profile, so a client with no instance
+// configured yet still remembers what its user picked.
+type Settings struct {
+	// Style names the theme's typography: "bubbly" (the default), "retro" or
+	// "clean". Empty means the default.
+	Style string `json:"style,omitempty"`
+	// Mode names the colour scheme: "dark" (the default) or "light". Empty
+	// means the default.
+	Mode string `json:"mode,omitempty"`
+}
+
 // Config is the on-disk configuration document.
 type Config struct {
 	// Current is the name of the active profile.
 	Current string `json:"current,omitempty"`
 	// Profiles holds every configured instance, keyed by name.
 	Profiles map[string]*Profile `json:"profiles"`
+	// Settings is the client's own appearance preferences.
+	Settings Settings `json:"settings,omitempty"`
 
 	// path records where this config was loaded from so Save can round-trip.
 	path string

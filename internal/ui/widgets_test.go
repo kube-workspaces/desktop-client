@@ -137,7 +137,7 @@ func TestButtonWidthFitsItsLabel(t *testing.T) {
 	if long.Width(h.ctx) <= short.Width(h.ctx) {
 		t.Fatal("intrinsic width does not follow the label")
 	}
-	if short.Width(h.ctx) <= TextWidth("Go", h.ctx.Theme.Body) {
+	if short.Width(h.ctx) <= TextWidth("Go", h.ctx.Theme.Body, h.ctx.Theme.Font) {
 		t.Fatal("intrinsic width leaves no padding")
 	}
 }
@@ -536,7 +536,7 @@ func TestTextInputPointerPlacesTheCursor(t *testing.T) {
 	}
 
 	// Click near the left edge of the text.
-	cell := GlyphAdvance * h.ctx.Theme.Body
+	cell := h.ctx.Theme.Font.GlyphAdvance * h.ctx.Theme.Body
 	h.frame([]Event{pointer(rect.X+h.ctx.Theme.Gap+cell+1, 20, true)}, body)
 	if f.Cursor() != 1 {
 		t.Fatalf("clicking after the first glyph put the cursor at %d, want 1", f.Cursor())

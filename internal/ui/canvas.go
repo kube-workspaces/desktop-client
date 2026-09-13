@@ -27,6 +27,11 @@ type Canvas struct {
 	// inside the image's own bounds.
 	clip  image.Rectangle
 	stack []image.Rectangle
+
+	// font is the active typeface, set from the theme by [Context.Begin] each
+	// frame. A zero Font means the original face, which is what a canvas used
+	// outside the shell draws with.
+	font viewer.Font
 }
 
 // NewCanvas returns a canvas drawing into img.
@@ -235,9 +240,14 @@ func (c *Canvas) Line(x0, y0, x1, y1, width int, col color.RGBA) {
 	}
 }
 
-// Text draws s with its top-left corner at (x, y), each glyph pixel expanded
-// to a scale by scale block. It returns the width drawn, so a caller can lay
-// out a run of differently styled fragments.
+// Text draws s with its top-left corner at (x, y), each glyph from the
+// canvas's typeface at the given scale. It returns the width drawn, so a
+// caller can lay out a run of differently styled fragments.
+//
+// A glyph arrives as a coverage raster and is plotted one pixel at a time:
+// that is the shared, antialiasing-capable path behind the 1-bit faces (whose
+// rasters are block-expanded, preserving their pixel-identical look) and the
+// rasterised clean face alike.
 //
 // Runes the font does not cover are drawn as a hollow box rather than skipped:
 // this renders workspace names and server error strings, and text that
@@ -246,32 +256,35 @@ func (c *Canvas) Text(s string, x, y, scale int, col color.RGBA) int {
 	if scale <= 0 || col.A == 0 {
 		return 0
 	}
+	f := c.font
+	if f.Glyph == nil {
+		f = viewer.RetroFont
+	}
 	start := x
 	for _, r := range viewer.FoldToFont(s) {
-		g := viewer.GlyphFor(r)
-		for row := 0; row < GlyphHeight; row++ {
-			bits := g[row]
-			if bits == 0 {
-				continue
-			}
-			for col0 := 0; col0 < GlyphWidth; col0++ {
-				if bits&(1<<(GlyphWidth-1-col0)) == 0 {
+		g := f.Glyph(r, scale)
+		for row := 0; row < g.H; row++ {
+			for col0 := 0; col0 < g.W; col0++ {
+				a := g.Px[row*g.W+col0]
+				if a == 0 {
 					continue
 				}
-				c.Fill(Rect{
-					X: x + col0*scale,
-					Y: y + row*scale,
-					W: scale,
-					H: scale,
-				}, col)
+				c.plot(x+col0, y+row, col, a)
 			}
 		}
-		x += GlyphAdvance * scale
+		if f.Advance != nil {
+			x += f.Advance(r, scale)
+		} else {
+			x += f.GlyphAdvance * scale
+		}
 	}
 	if x == start {
 		return 0
 	}
-	return x - start - (GlyphAdvance-GlyphWidth)*scale
+	if f.Advance == nil {
+		x -= (f.GlyphAdvance - f.GlyphW) * scale
+	}
+	return x - start
 }
 
 // plot blends a single pixel, clipped.

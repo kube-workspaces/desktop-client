@@ -409,6 +409,8 @@ type memStore struct {
 	saveErr  error
 	forgot   int
 	savedTok []string
+	settings config.Settings
+	saves    int
 }
 
 func (m *memStore) Load() (*config.Profile, string, error) {
@@ -433,6 +435,22 @@ func (m *memStore) Save(profile *config.Profile, token string) error {
 func (m *memStore) Forget(*config.Profile) error {
 	m.forgot++
 	m.token = ""
+	return nil
+}
+
+func (m *memStore) LoadSettings() (config.Settings, error) {
+	if m.loadErr != nil {
+		return config.Settings{}, m.loadErr
+	}
+	return m.settings, nil
+}
+
+func (m *memStore) SaveSettings(settings config.Settings) error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	m.settings = settings
+	m.saves++
 	return nil
 }
 

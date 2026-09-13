@@ -159,3 +159,11 @@ func (p profileStore) Save(profile *config.Profile, token string) error {
 func (p profileStore) Forget(profile *config.Profile) error {
 	return shell.ConfigStore{}.Forget(profile)
 }
+
+func (p profileStore) LoadSettings() (config.Settings, error) {
+	return shell.ConfigStore{}.LoadSettings()
+}
+
+func (p profileStore) SaveSettings(settings config.Settings) error {
+	return shell.ConfigStore{}.SaveSettings(settings)
+}

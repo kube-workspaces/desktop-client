@@ -8,6 +8,8 @@ import (
 	"image/color"
 	"strings"
 	"testing"
+
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
 var (
@@ -168,7 +170,7 @@ func TestStrokeRoundedDrawsInside(t *testing.T) {
 // renderText draws s and returns it as rows of '#' and '.', the only readable
 // way to assert on a bitmap.
 func renderText(s string, scale int) []string {
-	w := TextWidth(s, scale) + GlyphAdvance*scale
+	w := TextWidth(s, scale, viewer.RetroFont) + GlyphAdvance*scale
 	c := newCanvas(max(w, 1), GlyphHeight*scale)
 	c.Text(s, 0, 0, scale, white)
 

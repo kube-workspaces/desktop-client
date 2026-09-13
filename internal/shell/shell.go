@@ -155,6 +155,10 @@ type App struct {
 	connect Connector
 	profile *config.Profile
 
+	// settings is the client's own appearance. It is applied as a theme at
+	// startup and whenever the settings screen changes it.
+	settings Settings
+
 	// The widgets whose state has to survive a frame.
 	serverField   ui.TextInput
 	insecureBox   ui.Checkbox
@@ -322,6 +326,17 @@ func (a *App) idleTimeout(now time.Time) time.Duration {
 func (a *App) Start(ctx context.Context) {
 	a.dirty = true
 
+	// Appearance first: unlike the profile it needs no instance, so even a
+	// first-run user sees their own chosen look on the very first screen.
+	// A store that cannot be read is not worth stopping over — the defaults
+	// are a fine place to start.
+	if s, err := a.opts.Store.LoadSettings(); err != nil {
+		a.logf("load settings: %v", err)
+		a.applySettings(DefaultSettings())
+	} else {
+		a.applySettings(settingsFromConfig(s))
+	}
+
 	profile, token, err := a.opts.Store.Load()
 	if err != nil {
 		a.m.NeedServer(Describe(err))
@@ -449,6 +464,8 @@ func (a *App) draw(ctx context.Context) error {
 		intent = a.drawLoginScreen(a.canvas.Bounds())
 	case StateWorkspaces:
 		intent = a.drawWorkspacesScreen(a.canvas.Bounds())
+	case StateSettings:
+		intent = a.drawSettingsScreen(a.canvas.Bounds())
 	case StateSession:
 		intent = a.drawConnectingScreen(a.canvas.Bounds())
 	}

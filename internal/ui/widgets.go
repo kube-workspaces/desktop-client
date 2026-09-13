@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
 // Align is the horizontal placement of text within its rectangle.
@@ -49,13 +50,13 @@ func Label(ctx *Context, r Rect, text string, style LabelStyle) {
 	scale := orInt(style.Scale, ctx.Theme.Body)
 	col := or(style.Color, ctx.Theme.Text)
 
-	lines := []string{Truncate(text, scale, r.W)}
+	lines := []string{Truncate(text, scale, ctx.Theme.Font, r.W)}
 	if style.Wrap {
-		lines = Wrap(text, scale, r.W)
+		lines = Wrap(text, scale, ctx.Theme.Font, r.W)
 	}
 
-	lineH := LineHeight(scale)
-	blockH := len(lines)*lineH - (lineH - TextHeight(scale))
+	lineH := LineHeight(scale, ctx.Theme.Font)
+	blockH := len(lines)*lineH - (lineH - TextHeight(scale, ctx.Theme.Font))
 	y := r.Y
 	if style.Middle {
 		y = r.Y + (r.H-blockH)/2
@@ -67,9 +68,9 @@ func Label(ctx *Context, r Rect, text string, style LabelStyle) {
 		x := r.X
 		switch style.Align {
 		case AlignCenter:
-			x = r.X + (r.W-TextWidth(line, scale))/2
+			x = r.X + (r.W-TextWidth(line, scale, ctx.Theme.Font))/2
 		case AlignRight:
-			x = r.X + r.W - TextWidth(line, scale)
+			x = r.X + r.W - TextWidth(line, scale, ctx.Theme.Font)
 		case AlignLeft:
 		}
 		ctx.Canvas.Text(line, x, y, scale, col)
@@ -119,7 +120,7 @@ type Button struct {
 // state name changes.
 func (b *Button) Width(ctx *Context) int {
 	scale := orInt(b.Scale, ctx.Theme.Body)
-	return TextWidth(b.Text, scale) + 2*ctx.Theme.Pad
+	return TextWidth(b.Text, scale, ctx.Theme.Font) + 2*ctx.Theme.Pad
 }
 
 // Layout draws the button in r and reports whether it was activated.
@@ -466,13 +467,13 @@ func (t *TextInput) Layout(ctx *Context, r Rect) bool {
 	defer ctx.Canvas.PopClip()
 
 	display := t.display()
-	baseY := inner.Y + (inner.H-TextHeight(scale))/2
+	baseY := inner.Y + (inner.H-TextHeight(scale, th.Font))/2
 
 	if len(display) == 0 && t.Placeholder != "" {
-		ctx.Canvas.Text(Truncate(t.Placeholder, scale, inner.W), inner.X, baseY, scale, th.TextDisabled)
+		ctx.Canvas.Text(Truncate(t.Placeholder, scale, th.Font, inner.W), inner.X, baseY, scale, th.TextDisabled)
 	}
 
-	t.scrollToCursor(inner.W, scale)
+	t.scrollToCursor(inner.W, scale, th.Font)
 	visible := display
 	if t.offset < len(visible) {
 		visible = visible[t.offset:]
@@ -487,17 +488,18 @@ func (t *TextInput) Layout(ctx *Context, r Rect) bool {
 		// second to animate one rectangle is not a trade worth making.
 		ctx.RepaintAfter(untilNextBlink(ctx.Input.Now))
 		if blinkOn(ctx.Input.Now) {
-			cx := inner.X + TextWidth(string(display[t.offset:clampInt(t.cursor, t.offset, len(display))]), scale)
-			if t.cursor > t.offset {
+			cx := inner.X + TextWidth(string(display[t.offset:clampInt(t.cursor, t.offset, len(display))]), scale, th.Font)
+			if t.cursor > t.offset && th.Font.Advance == nil {
 				// The measured run omits the trailing inter-glyph gap, which
-				// is exactly where the cursor belongs.
-				cx += (GlyphAdvance - GlyphWidth) * scale
+				// is exactly where the cursor belongs. A proportional face
+				// carries its spacing in each advance and needs no gap.
+				cx += (th.Font.GlyphAdvance - th.Font.GlyphW) * scale
 			}
 			ctx.Canvas.Fill(Rect{
 				X: cx,
 				Y: baseY - scale,
 				W: max(1, scale),
-				H: TextHeight(scale) + 2*scale,
+				H: TextHeight(scale, th.Font) + 2*scale,
 			}, th.Accent)
 		}
 	}
@@ -518,22 +520,28 @@ func (t *TextInput) display() []rune {
 }
 
 // scrollToCursor adjusts the first visible rune so the cursor is on screen.
-func (t *TextInput) scrollToCursor(width, scale int) {
-	cell := GlyphAdvance * scale
-	if cell <= 0 || width <= 0 {
+// Scrolling is measured in pixels rather than cells because the clean face is
+// proportional and has no glyph cell.
+func (t *TextInput) scrollToCursor(width, scale int, f viewer.Font) {
+	if width <= 0 {
 		t.offset = 0
 		return
 	}
-	cols := width / cell
-	if cols < 1 {
-		cols = 1
-	}
 	t.cursor = clampInt(t.cursor, 0, len(t.text))
-	if t.cursor < t.offset {
+	if t.offset > t.cursor {
 		t.offset = t.cursor
 	}
-	if t.cursor-t.offset >= cols {
-		t.offset = t.cursor - cols + 1
+	// The caret may not be to the right of the box: push the window forward
+	// until the run between offset and the caret fits.
+	for t.offset < t.cursor && TextWidth(string(t.text[t.offset:t.cursor]), scale, f) > width {
+		t.offset++
+	}
+	// When the caret is at the end of the text, pull the window back so as
+	// much of the tail as fits is visible, the opposite of the press.
+	if t.cursor >= len(t.text) {
+		for t.offset > 0 && TextWidth(string(t.text[t.offset-1:]), scale, f) <= width {
+			t.offset--
+		}
 	}
 	t.offset = clampInt(t.offset, 0, len(t.text))
 }
@@ -541,14 +549,32 @@ func (t *TextInput) scrollToCursor(width, scale int) {
 // cursorFromPointer places the cursor at the glyph the user clicked on.
 func (t *TextInput) cursorFromPointer(ctx *Context, r Rect, scale int) {
 	inner := InsetXY(r, ctx.Theme.Gap, 0)
-	cell := GlyphAdvance * scale
-	if cell <= 0 {
+	px := ctx.Input.Mouse.X - inner.X
+	if px <= 0 {
+		t.SetCursor(t.offset)
 		return
 	}
-	// Round to the nearest gap rather than truncating, so clicking the right
-	// half of a character puts the cursor after it.
-	col := (ctx.Input.Mouse.X - inner.X + cell/2) / cell
-	t.SetCursor(t.offset + max(0, col))
+	// Walk the advances of the visible run until the click falls in a glyph's
+	// left half, rounding to the nearest gap the way a caret does.
+	idx, total := len(t.text), 0
+	for i := t.offset; i < len(t.text); i++ {
+		total += advanceAt(ctx.Theme.Font, scale, t.text[i])
+		if px <= total-advanceAt(ctx.Theme.Font, scale, t.text[i])/2 {
+			idx = i
+			break
+		}
+		idx = i + 1
+	}
+	t.SetCursor(idx)
+}
+
+// advanceAt is the horizontal step a glyph takes at the given scale, working
+// for the proportional clean face and the monospace bitmap faces alike.
+func advanceAt(f viewer.Font, scale int, r rune) int {
+	if f.Advance != nil {
+		return f.Advance(r, scale)
+	}
+	return f.GlyphAdvance * scale
 }
 
 // blinkOn reports whether the text cursor is in its visible half-period.
@@ -614,7 +640,7 @@ func (c *Checkbox) Layout(ctx *Context, r Rect) bool {
 		c.Checked = !c.Checked
 	}
 
-	size := TextHeight(scale) + 2*scale
+	size := TextHeight(scale, th.Font) + 2*scale
 	box := Rect{X: r.X, Y: r.Y + (r.H-size)/2, W: size, H: size}
 	fill, border := th.SurfaceAlt, th.Border
 	if c.Checked {
@@ -936,7 +962,7 @@ func DividerLabel(ctx *Context, r Rect, text string) {
 	if text == "" {
 		return
 	}
-	w := TextWidth(text, th.Small) + 2*th.Gap
+	w := TextWidth(text, th.Small, th.Font) + 2*th.Gap
 	box := Rect{X: r.X + (r.W-w)/2, Y: r.Y, W: w, H: r.H}
 	ctx.Canvas.Fill(box, th.Background)
 	Label(ctx, box, text, LabelStyle{
@@ -985,8 +1011,8 @@ func Banner(ctx *Context, r Rect, kind BannerKind, text string) int {
 
 	scale := th.Body
 	inner := InsetXY(r, th.Gap, th.Gap/2)
-	lines := Wrap(text, scale, inner.W)
-	height := len(lines)*LineHeight(scale) - (LineHeight(scale) - TextHeight(scale)) + th.Gap
+	lines := Wrap(text, scale, th.Font, inner.W)
+	height := len(lines)*LineHeight(scale, th.Font) - (LineHeight(scale, th.Font) - TextHeight(scale, th.Font)) + th.Gap
 
 	box := Rect{X: r.X, Y: r.Y, W: r.W, H: height}
 	ctx.Canvas.FillRounded(box, th.Radius, fill)

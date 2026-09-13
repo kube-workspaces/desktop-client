@@ -48,6 +48,8 @@ const (
 	intentOpenInBrowser
 	intentSignOut
 	intentChangeServer
+	intentOpenSettings
+	intentSettingsDone
 	intentQuit
 )
 
@@ -89,6 +91,13 @@ func (a *App) act(ctx context.Context, in intent) {
 	case intentChangeServer:
 		a.cancelInFlight()
 		a.m.NeedServer("")
+	case intentOpenSettings:
+		// Settings are only ever opened from the workspace list, so getting
+		// out of them is a return, not a hop.
+		a.m.Err, a.m.Notice = "", ""
+		a.m.State = StateSettings
+	case intentSettingsDone:
+		a.m.State = StateWorkspaces
 	case intentQuit:
 		a.quit = true
 	}
@@ -590,4 +599,12 @@ const (
 	idOpen    ui.FocusID = "open"
 	idRefresh ui.FocusID = "refresh"
 	idSignOut ui.FocusID = "sign-out"
+
+	idSettings     ui.FocusID = "settings"
+	idStyleBubbly  ui.FocusID = "style-bubbly"
+	idStyleRetro   ui.FocusID = "style-retro"
+	idStyleClean   ui.FocusID = "style-clean"
+	idModeDark     ui.FocusID = "mode-dark"
+	idModeLight    ui.FocusID = "mode-light"
+	idSettingsDone ui.FocusID = "settings-done"
 )
