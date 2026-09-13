@@ -8,18 +8,20 @@ A native desktop client for accessing workspaces on a [Kube Workspaces](https://
 platform instance. Point it at your instance, sign in, pick a running workspace,
 connect.
 
-> ## Status: early development — unreleased
+> ## Status: early development — v0.1.0 released
 >
-> There is a working graphical shell and a working RFB (VNC) session viewer: you
-> can build the binary, run it, sign in against a real instance, browse your
-> workspaces and open a VM's display in a window, with clipboard, guest resize
-> and automatic reconnect.
+> **v0.1.0 is out**: binaries for all six targets are published on the
+> [releases page](https://github.com/kube-workspaces/desktop-client/releases).
+> The graphical shell and the RFB (VNC) session viewer work end to end against a
+> real instance: sign in, browse your workspaces and open a VM's display in a
+> window, with clipboard, guest resize and automatic reconnect.
 >
-> What that is **not**: released, packaged or signed. **No binaries are
-> published** — you build it yourself. Nothing is versioned, nothing is
-> supported, and the CLI surface still changes without notice. Several things
-> named on this page (the in-guest Tier 1 transport, audio, adaptive quality)
-> are explicitly **not implemented**; they are marked as such where they appear.
+> What this is **not**: stable or feature-complete. The binaries are **not
+> code-signed or notarised** — macOS Gatekeeper and Windows SmartScreen will
+> warn and need to be overridden. The CLI surface can still change between
+> releases, and several things named on this page (the in-guest Tier 1
+> transport, audio, adaptive quality) are explicitly **not implemented**; they
+> are marked as such where they appear.
 
 ## Why
 
@@ -43,7 +45,8 @@ machine does not need SDL installed to run.
 
 A Linux desktop session (X11 or Wayland) is of course still needed at *runtime*
 for the shell and the session viewer. The CLI subcommands that do not open a
-window — `login`, `list`, `probe`, `screenshot` — run fine headless.
+window — `login`, `logout`, `profile`, `whoami`, `list`, `probe`, `screenshot`,
+`version` — run fine headless.
 
 ## Building
 
