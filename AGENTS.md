@@ -47,6 +47,10 @@ Not implemented, and must not be described otherwise:
 - **Tier 1, the in-guest transport** (Selkies agent, H.264 + Opus, via
   `kube-workspaces/proxy`). No code exists. Tier 0 (RFB) is the only transport.
 - Multiple concurrent sessions; one window means one session at a time.
+- **Code signing and notarisation.** Release binaries are unsigned; macOS
+  Gatekeeper and Windows SmartScreen warn today. Backburnered on budget, not
+  engineering — the plan and the load-bearing gotchas are under *Key Notes →
+  Deferred: code signing and notarisation*.
 
 ## Architecture decisions (locked in)
 
@@ -250,6 +254,70 @@ must stay on a release built with go1.26 or newer.
   `SDL_SetWindowIcon` (title bar). The .icns drives the macOS Dock icon via the
   bundle; everywhere else SDL owns the icon.
 
+### Deferred: code signing and notarisation (blocked on budget, not engineering)
+
+Both macOS and Windows remediation require paid products; **nothing free removes
+the warnings**. A self-signed Authenticode cert behaves identically to no
+signature for SmartScreen, and an ad-hoc macOS signature does not satisfy
+Gatekeeper quarantine. Backburnered deliberately. When funded (≈US$100–300/yr
+floor), this is the researched plan — verify tool versions and prices at the
+time, since actions and pricing drift.
+
+**macOS — sign + notarise + staple**
+
+- Requires an Apple Developer Program membership (≈US$99/yr). Issue a
+  **Developer ID Application** certificate + private key (export as `.p12`, or
+  store the key and cert as PEM), plus an **App Store Connect API key** (`.p8`,
+  key ID, issuer ID; no extra cost) for notarisation. An individual account is
+  enough; the cert identity is what Gatekeeper shows as the verified developer.
+- Use **`rcodesign`** (`indygreg/apple-codesign`, wrapped by
+  `indygreg/apple-code-sign-action@v1`) on the existing ubuntu runner: it signs
+  the whole `.app` bundle recursively and notarises + staples from Linux,
+  preserving the single-host cross-build story. The staple ticket lives inside
+  `.app`, so the existing `.tar.gz` distribution is unchanged.
+- **Load-bearing gotcha:** notarisation requires the hardened runtime
+  (`--code-signature-flags runtime`), and hardened runtime refuses to dlopen
+  unsigned libraries. This app dlopens SDL3 — `binsdl.Load()` unpacks the
+  embedded `.dylib` to a temp dir and `sdl.LoadLibrary` loads it at runtime
+  (`internal/viewer/sdl.go`). A blindly-signed app would crash at startup.
+  The bundle therefore must carry `com.apple.security.cs.disable-library-validation`
+  in a committed `entitlements.plist`; verify on a real Mac that the app
+  launches and the dylib loads.
+
+**Windows — Authenticode**
+
+- Recommended: **Azure Artifact Signing** (formerly Trusted Signing), ≈US$10/mo
+  plus a per-signature fee; needs a paid Azure subscription; organisations in
+  the US/CA/EU/UK (individuals US/CA only). Use `azure/artifact-signing-action@v2`
+  — **Windows runners only** — authenticated with an OIDC federated credential
+  and the `Certificate Profile Signer` role. Sign both `.exe`s (amd64 + arm64)
+  with SHA-256 plus an RFC3161 timestamp, then re-zip.
+- Fallback: an OV/PV Authenticode cert (Sectigo has the cheapest individual
+  path, ≈US$70–300/yr) via `signtool` on a Windows runner or `osslsigncode` on
+  Linux.
+- Reality check: signing does **not** silence SmartScreen immediately — a new
+  file shows "unrecognized app" until downloads build reputation, and EV
+  certificates no longer bypass (removed 2024). Sign every release with a
+  consistent identity so publisher reputation accumulates and carries across
+  releases.
+
+**Workflow reshape (when funded)**
+
+- Current DAG: `build` (ubuntu) → `release` (ubuntu; rebuilds, writes notes,
+  publishes). Future: `build` → `sign-macos` (ubuntu; rcodesign) and
+  `sign-windows` (windows-latest; azure action) → `release` consumes the
+  **signed** artifacts, rewrites the "not code-signed" note, and **recomputes
+  SHA256SUMS** — signing changes file bytes, so checksums computed before
+  signing are wrong.
+- Sign on tag pushes only; main-branch artifacts stay unsigned dev builds.
+- Secrets/vars when funded — Apple: `APPLE_DEVELOPER_ID_P12` (base64) +
+  password, `APPLE_CONNECT_API_KEY_JSON` (or key ID + issuer ID). Azure:
+  client/tenant/subscription IDs, signing endpoint, account + certificate
+  profile names.
+- Touch-up list when it lands: this section, the README status block, the
+  release-notes template in `.github/workflows/build.yml`, and the CI
+  description below.
+
 ### Repo conventions
 
 - Go version: **1.26** (see `go.mod`). Apache-2.0.
@@ -277,7 +345,9 @@ must stay on a release built with go1.26 or newer.
   `main` and uploads them as workflow artifacts; on a `v*` tag the same archives
   are published as a GitHub Release. The generated release notes state the
   binaries are unsigned. The version is resolved from `git describe`, so a
-  release build reports the tag rather than a bare sha.
+  release build reports the tag rather than a bare sha. When signing is funded,
+  `sign-macos`/`sign-windows` jobs slot in between `build` and `release` (see
+  the Deferred section above).
 - `.github/workflows/ci.yml` — gofmt check, `go build ./...`, `go vet ./...`,
   `go test -race` with a coverage step-summary, plus a `cross` matrix job that
   builds on ubuntu, macOS and windows runners. The matrix is belt-and-braces
