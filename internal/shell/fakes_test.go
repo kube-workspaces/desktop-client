@@ -6,6 +6,7 @@ package shell
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -277,6 +278,13 @@ type fakeAPI struct {
 	listErr    error
 	listCalls  int
 	images     []kwclient.Image
+
+	// grantPaths records the redirect each GrantBrowserSession is asked for.
+	grantPaths []string
+	grantErr   error
+	// grantGate, when non-nil, blocks GrantBrowserSession until it is closed,
+	// so a test can assert on the waiting screen.
+	grantGate chan struct{}
 }
 
 func newFakeAPI(base string) *fakeAPI {
@@ -389,6 +397,36 @@ func (f *fakeAPI) WorkspaceURL(ws kwclient.Workspace, img *kwclient.Image) strin
 		path = img.DefaultPath
 	}
 	return f.base + "/proxy/" + ws.Namespace + "/" + ws.Name + "/" + path
+}
+
+func (f *fakeAPI) WorkspacePath(ws kwclient.Workspace, img *kwclient.Image) string {
+	path := ""
+	if img != nil {
+		path = img.DefaultPath
+	}
+	return "/proxy/" + ws.Namespace + "/" + ws.Name + "/" + strings.TrimPrefix(path, "/")
+}
+
+func (f *fakeAPI) GrantBrowserSession(ctx context.Context, redirect string) (*kwclient.BrowserSessionGrant, error) {
+	f.mu.Lock()
+	f.grantPaths = append(f.grantPaths, redirect)
+	gate, err := f.grantGate, f.grantErr
+	f.mu.Unlock()
+
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &kwclient.BrowserSessionGrant{
+		Code: "grant-code",
+		URL:  f.base + "/auth/browser-session?code=grant-code",
+	}, nil
 }
 
 // set applies a mutation under the lock, for a test changing the fake's

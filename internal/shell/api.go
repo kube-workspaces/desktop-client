@@ -43,6 +43,13 @@ type API interface {
 	ListImages(ctx context.Context) ([]kwclient.Image, error)
 	// WorkspaceURL builds the URL a browser should open for a workspace.
 	WorkspaceURL(ws kwclient.Workspace, img *kwclient.Image) string
+	// GrantBrowserSession hands this client's session to the browser: the
+	// server parks the session token behind a single-use code and returns the
+	// URL that redeems it into a kw-session cookie.
+	GrantBrowserSession(ctx context.Context, redirect string) (*kwclient.BrowserSessionGrant, error)
+	// WorkspacePath builds the root-relative /proxy/... path for a workspace,
+	// what a browser-session grant should redirect to.
+	WorkspacePath(ws kwclient.Workspace, img *kwclient.Image) string
 }
 
 // The production client is the interface, with no adapter in between.

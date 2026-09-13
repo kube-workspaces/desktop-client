@@ -84,7 +84,7 @@ func (a *App) act(ctx context.Context, in intent) {
 		}
 	case intentOpenInBrowser:
 		if ws, ok := a.resolve(in.workspace); ok {
-			a.openInBrowser(ws)
+			a.openInBrowser(ctx, ws)
 		}
 	case intentSignOut:
 		a.signOut()
@@ -454,7 +454,7 @@ func (a *App) resolve(ws kwclient.Workspace) (kwclient.Workspace, bool) {
 
 // activate opens a workspace: a display session for a VM, the browser for
 // anything else.
-func (a *App) activate(_ context.Context, ws kwclient.Workspace) {
+func (a *App) activate(ctx context.Context, ws kwclient.Workspace) {
 	switch {
 	case !ws.Running():
 		a.m.Notice = ""
@@ -465,27 +465,57 @@ func (a *App) activate(_ context.Context, ws kwclient.Workspace) {
 		// Container and scratch workspaces are web applications served
 		// through the proxy. Rendering one here would mean shipping a
 		// browser; offering the user their own is the honest option.
-		a.openInBrowser(ws)
+		a.openInBrowser(ctx, ws)
 	}
 }
 
-// openInBrowser opens a workspace's proxy URL in the user's browser.
-func (a *App) openInBrowser(ws kwclient.Workspace) {
+// openInBrowser opens a container workspace's web UI in the user's browser.
+//
+// The browser has never seen this client's session — the client logged in over
+// the loopback flow or with --token — and the proxy only trusts its kw-session
+// cookie, so opening the /proxy/ URL bare would land on a 401. The server
+// closes the gap: the client POSTs /auth/browser-session/grant and gets a
+// single-use code plus the /auth/browser-session?code=... URL that redeems it
+// into the same cookie a login would set. Opening that URL is one navigation,
+// and the browser lands on the workspace signed in.
+func (a *App) openInBrowser(ctx context.Context, ws kwclient.Workspace) {
 	if a.api == nil {
 		return
 	}
 	if !ws.Running() {
+		a.m.Notice = ""
 		a.m.Err = fmt.Sprintf("%s is %s and cannot be opened yet.", ws.Name, StatusText(ws))
 		return
 	}
-	target := a.api.WorkspaceURL(ws, a.imageFor(ws))
-	if err := a.opts.OpenBrowser(target); err != nil {
-		a.m.Notice = ""
-		a.m.Err = "No browser could be opened. Visit " + target
-		return
-	}
-	a.m.Err = ""
-	a.m.Notice = "Opened " + ws.Name + " in your browser."
+
+	api := a.api
+	redirect := a.api.WorkspacePath(ws, a.imageFor(ws))
+
+	a.m.Working("Opening " + ws.Name + " in your browser")
+	opCtx, cancel := context.WithTimeout(ctx, listTimeout)
+	a.cancelInFlight()
+	a.cancelPending = cancel
+	a.background(func() func() {
+		grant, err := api.GrantBrowserSession(opCtx, redirect)
+		return func() {
+			cancel()
+			a.cancelPending = nil
+			if a.m.State != StateWorkspaces {
+				return
+			}
+			a.m.Done()
+			if err != nil {
+				a.m.Err = Describe(err)
+				return
+			}
+			if err := a.opts.OpenBrowser(grant.URL); err != nil {
+				a.m.Err = "No browser could be opened. Visit " + grant.URL
+				return
+			}
+			a.m.Err = ""
+			a.m.Notice = "Opened " + ws.Name + " in your browser."
+		}
+	})
 }
 
 // signOut forgets the session but keeps the profile, so signing back in does

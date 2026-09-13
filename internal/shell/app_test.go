@@ -414,12 +414,81 @@ func TestNonVMWorkspacesOpenInABrowser(t *testing.T) {
 	if len(r.browsed) != 1 {
 		t.Fatalf("the browser was opened %d times", len(r.browsed))
 	}
-	// The URL is the proxy path plus the catalog's default path.
-	if want := "https://kw.example.com/proxy/team/code/?folder=/workspace"; r.browsed[0] != want {
+	// The client's session is a header the browser never saw, so opening the
+	// bare proxy URL would land on a 401. The browser is opened at the
+	// single-use redeem URL instead, which sets the kw-session cookie and
+	// redirects to the workspace.
+	if want := "https://kw.example.com/auth/browser-session?code=grant-code"; r.browsed[0] != want {
 		t.Fatalf("opened %q, want %q", r.browsed[0], want)
+	}
+	// ...and the grant asked to land on the proxy path plus the catalog's
+	// default path.
+	if want := "/proxy/team/code/?folder=/workspace"; len(r.api.grantPaths) != 1 || r.api.grantPaths[0] != want {
+		t.Fatalf("grant redirects = %v, want %q", r.api.grantPaths, want)
 	}
 	if !strings.Contains(r.app.m.Notice, "browser") {
 		t.Fatalf("the user was not told what happened: %q", r.app.m.Notice)
+	}
+}
+
+// TestOpenInBrowserWaitsForGrant: minting the code is a network round trip,
+// and the shell is honest about that instead of freezing.
+func TestOpenInBrowserWaitsForGrant(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	gate := make(chan struct{})
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "code", kwclient.WorkspaceTypeContainer, true)}
+		f.grantGate = gate
+	})
+	r.start()
+
+	r.focus(idList)
+	r.clickFocused()
+	for i := 0; i < 5; i++ {
+		r.step()
+	}
+
+	if !r.app.m.Busy || !strings.HasPrefix(r.app.m.BusyText, "Opening") {
+		t.Fatalf("the grant in flight was not shown: busy=%t %q", r.app.m.Busy, r.app.m.BusyText)
+	}
+	if len(r.browsed) != 0 {
+		t.Fatalf("the browser was opened before the grant returned")
+	}
+
+	close(gate)
+	r.api.set(func(f *fakeAPI) { f.grantGate = nil })
+	r.settle()
+
+	if len(r.browsed) != 1 || r.browsed[0] != "https://kw.example.com/auth/browser-session?code=grant-code" {
+		t.Fatalf("browser opened with %v, want the redeem URL", r.browsed)
+	}
+	if r.app.m.Busy {
+		t.Fatal("the shell stayed busy after the grant completed")
+	}
+}
+
+// TestOpenInBrowserGrantFailure: a failed handoff is reported and no browser
+// is opened at a URL that cannot sign in.
+func TestOpenInBrowserGrantFailure(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "code", kwclient.WorkspaceTypeContainer, true)}
+		f.grantErr = fmt.Errorf("server refused the handoff")
+	})
+	r.start()
+
+	r.focus(idList)
+	r.clickFocused()
+	r.settle()
+
+	if len(r.browsed) != 0 {
+		t.Fatalf("a browser was opened despite the failed grant: %v", r.browsed)
+	}
+	if r.app.m.Err == "" {
+		t.Fatal("the failed grant produced no error")
+	}
+	if r.app.m.Busy {
+		t.Fatal("the shell stayed busy after the failure")
 	}
 }
 
