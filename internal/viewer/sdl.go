@@ -8,7 +8,11 @@ package viewer
 // to move it.
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
+	"image"
+	"image/png"
 	"math"
 	"sync"
 	"time"
@@ -17,6 +21,15 @@ import (
 	"github.com/Zyko0/go-sdl3/sdl"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 )
+
+// appIconPNG is the 256×256 Kube Workspaces cube generated from
+// assets/icon.svg by `make icons` (cmd/mkicon). It is shown on the window via
+// SDL_SetWindowIcon, which is how the icon reaches the Windows title bar and
+// taskbar button, the Linux window manager and the macOS window while running;
+// the macOS Dock icon comes from the .icns in the .app bundle instead.
+//
+//go:embed icon.png
+var appIconPNG []byte
 
 // wakeEventType is the event [SDLBackend.Wake] pushes.
 //
@@ -149,6 +162,10 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 	// presented for the first time; see centerOnLaunchDisplay.
 	b.centerOnLaunchDisplay()
 
+	// The title-bar/taskbar icon. Not fatal on failure: a window with no icon
+	// is cosmetic damage, not a broken session.
+	b.setWindowIcon()
+
 	if opts.VSync {
 		// Not fatal: a software renderer may refuse, and a session that
 		// tears is better than no session.
@@ -180,6 +197,49 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 	b.wakeOK = true
 	b.wakeMu.Unlock()
 	return nil
+}
+
+// setWindowIcon shows the embedded cube on the window's title bar and taskbar
+// button. SDL copies the surface's pixels, so it is safe to destroy it here.
+//
+// The conversion from the decoded PNG's NRGBA layout to ARGB8888 is an
+// explicit byte swap: ARGB8888 is a big-endian word, and every architecture
+// this repo builds is little-endian, so the memory bytes are B,G,R,A while the
+// Go image stores R,G,B,A. Writing the four bytes by hand keeps the pixel
+// layout correct without guessing at platform pixel format constants.
+func (b *SDLBackend) setWindowIcon() {
+	if len(appIconPNG) == 0 {
+		return
+	}
+	img, err := png.Decode(bytes.NewReader(appIconPNG))
+	if err != nil {
+		return
+	}
+	nrgba, ok := img.(*image.NRGBA)
+	if !ok {
+		bounds := img.Bounds()
+		nrgba = image.NewNRGBA(bounds)
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				nrgba.Set(x, y, img.At(x, y))
+			}
+		}
+	}
+	surface, err := sdl.CreateSurface(nrgba.Bounds().Dx(), nrgba.Bounds().Dy(), sdl.PIXELFORMAT_ARGB8888)
+	if err != nil {
+		return
+	}
+	defer surface.Destroy()
+	pix := surface.Pixels()
+	src := nrgba.Pix
+	n := min(len(pix), len(src)) / 4
+	for i := 0; i < n; i++ {
+		pix[i*4+0] = src[i*4+2]
+		pix[i*4+1] = src[i*4+1]
+		pix[i*4+2] = src[i*4+0]
+		pix[i*4+3] = src[i*4+3]
+	}
+	_ = b.window.SetIcon(surface)
 }
 
 // centerOnLaunchDisplay moves the freshly created window so that it is centred,

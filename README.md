@@ -54,11 +54,20 @@ Requires Go 1.26+. No code generation, no container image, no system packages.
 
 ```bash
 make build          # -> bin/kube-workspaces
+make icons          # regenerate the icon artwork from assets/icon.svg
 make build-all      # cross-build all six targets into dist/
 make test           # go test -race ./...
 make lint           # golangci-lint, skipped if not installed
 make help           # all targets
 ```
+
+`make build-all` produces the release archives: Linux tarballs with the plain
+binary, a **`Kube Workspaces.app` bundle** (icon, `Info.plist`, bundle layout)
+for macOS, and Windows zips whose `.exe` carries the app icon and version
+metadata in its PE resources. `make icons` needs `inkscape` and ImageMagick's
+`convert` on the machine running it; `make build-all` runs `go-winres` (fetched
+automatically) to build the Windows resources. The generated artwork is
+committed, so plain `make build`/`build-all` need none of those tools.
 
 ## Getting started
 

@@ -42,3 +42,9 @@ desktop.ini
 
 # Screenshots captured by `kube-workspaces screenshot` during development.
 *.png
+# ...but the brand icon sources and the window-icon embed are not screenshots.
+!assets/icon.png
+!internal/viewer/icon.png
+
+# go-winres build output: the Windows .exe icon + version resources.
+cmd/kube-workspaces/*.syso

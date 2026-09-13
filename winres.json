@@ -1,0 +1,29 @@
+{
+  "RT_GROUP_ICON": {
+    "APP": {
+      "0000": "assets/icon.ico"
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "0.0.0.0",
+          "product_version": "0.0.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "kube-workspaces",
+            "FileDescription": "Kube Workspaces desktop client",
+            "FileVersion": "0.0.0.0",
+            "InternalName": "kube-workspaces",
+            "LegalCopyright": "Apache-2.0",
+            "OriginalFilename": "kube-workspaces.exe",
+            "ProductName": "Kube Workspaces",
+            "ProductVersion": "0.0.0.0"
+          }
+        }
+      }
+    }
+  }
+}

@@ -200,19 +200,27 @@ jobs:
             echo
             echo "## Install"
             echo
-            echo '**Linux / macOS**'
+            echo '**Linux**'
             echo
             echo '```bash'
-            echo "tar -xzf kube-workspaces-$VERSION-<platform>.tar.gz"
-            echo "cd kube-workspaces-<platform>"
+            echo "tar -xzf kube-workspaces-$VERSION-linux-amd64.tar.gz"
+            echo "cd kube-workspaces-linux-amd64"
             echo "./kube-workspaces --help"
+            echo '```'
+            echo
+            echo '**macOS** — the archive contains a `Kube Workspaces.app` bundle. Drag it to'
+            echo 'Applications, or open it in place:'
+            echo
+            echo '```bash'
+            echo "tar -xzf kube-workspaces-$VERSION-darwin-arm64.tar.gz"
+            echo 'open "kube-workspaces-darwin-arm64/Kube Workspaces.app"'
             echo '```'
             echo
             echo '**Windows** — unzip and run `kube-workspaces.exe`.'
             echo
             echo "> **These binaries are not code-signed.** macOS Gatekeeper will refuse to run"
-            echo "> the first time: clear the quarantine attribute with"
-            echo "> \`xattr -d com.apple.quarantine ./kube-workspaces\`, or open it once via"
+            echo "> the app the first time: clear the quarantine attribute with"
+            echo "> \`xattr -d com.apple.quarantine 'Kube Workspaces.app'\`, or open it once via"
             echo "> Finder → right-click → Open. Windows SmartScreen will warn: choose"
             echo "> \"More info\" → \"Run anyway\". Signing and notarisation are not yet set up."
             echo

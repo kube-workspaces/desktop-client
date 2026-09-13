@@ -25,6 +25,14 @@ Implemented and working:
 - SDL3 session viewer: window, streaming texture upload, damage-tracked
   presentation, full keyboard/pointer/wheel input, bidirectional clipboard,
   guest resize, fullscreen, status overlays.
+- **Icons and packaging.** One master SVG (`assets/icon.svg`) drives the whole
+  platform icon set: `make icons` rasterises it with Inkscape to
+  `assets/icon.png`, ImageMagick embeds a multi-size 32-bit `.ico`, and
+  `cmd/mkicon` packs the `.icns` and the 256px cube the viewer embeds and shows
+  on the window. The Windows `.exe` links PE resources (icon + version info)
+  built by go-winres, and macOS archives ship a proper `Kube Workspaces.app`
+  bundle. All inputs and outputs are committed, so builds and CI never run
+  Inkscape, ImageMagick or go-winres.
 - **Automatic reconnect** — implemented: a capped-exponential-backoff
   supervisor (`internal/reconnect` + `internal/session`) swaps connections
   underneath a window that is never destroyed.
@@ -110,6 +118,8 @@ make vet                        # go vet ./...
 make lint                       # golangci-lint (skipped if not installed)
 make fmt                        # gofmt -w -s .
 make cover                      # coverage summary
+make icons                      # regenerate icon artwork (needs inkscape + ImageMagick)
+make winres                     # regenerate the Windows .syso resources
 make build-all                  # cross-build all 6 targets into dist/
 make help                       # list every target
 ```
@@ -210,6 +220,36 @@ must stay on a release built with go1.26 or newer.
   must be sent on focus loss, and a hotkey's key-*up* must be swallowed as well
   as its key-down.
 
+### Icon and packaging facts (each verified against the tools' source)
+
+- **`winres.json` is three levels deep** — type → resource → language, value
+  directly (`"RT_GROUP_ICON": {"APP": {"0000": "assets/icon.ico"}}`). A fourth
+  nesting level silently fails with "invalid icon definition", and a `.ico`
+  with an even number of images tripped an assumption in older go-winres — the
+  pinned v0.3.3 handles PNG-compressed icon entries fine.
+- **go-winres resolves relative paths against the working directory, and
+  `filepath.Join` strips a leading slash from an absolute path.** Absolute
+  paths in `winres.json` break; keep them relative and run `make winres` from
+  the repo root.
+- **The `.syso` files are filtered by the Go linker on the filename suffix**
+  (`rsrc_windows_amd64.syso` vs `rsrc_windows_arm64.syso`), so all of
+  `cmd/kube-workspaces` can hold both at once. They are build output: they
+  live in `cmd/kube-workspaces/` only because that is where the linker looks,
+  and they are gitignored. A Linux build ignores them.
+- **No manifest is emitted, on purpose.** go-winres only writes
+  `RT_MANIFEST` if `winres.json` says so; leaving it out means the process has
+  no declared DPI awareness, so SDL keeps sole control of it and adding the
+  icon/version resources changes nothing about window presentation.
+- **PE file/products versions come from `--file-version=git-tag`** (go-winres
+  runs `git describe --tags` itself). The winres version parser scans to the
+  first digit and reads up to four dot-separated numbers, so `v0.1.0-3-g…-dirty`
+  becomes `0.1.0.0` with the raw string kept for Explorer's Details tab.
+- **The `.exe` carries the icon twice by design**: once as the PE
+  `RT_GROUP_ICON`/`RT_ICON` resource (Explorer, taskbar) and once as the
+  `internal/viewer/icon.png` embed that `sdl.go`'s `setWindowIcon` hands to
+  `SDL_SetWindowIcon` (title bar). The .icns drives the macOS Dock icon via the
+  bundle; everywhere else SDL owns the icon.
+
 ### Repo conventions
 
 - Go version: **1.26** (see `go.mod`). Apache-2.0.
@@ -248,9 +288,9 @@ must stay on a release built with go1.26 or newer.
 
 ### Stale comments to be aware of
 
-The `build-all` target in the `Makefile` and the `cross` job in `ci.yml` both
-still carry comments from before the SDL3 decision, claiming the cross-builds
-are "pure-Go packages only" and that the session viewer cannot be
-cross-compiled. That is no longer true — `make build-all` builds the entire
-binary, viewer included, for all six targets. Fix those comments when next
-editing those files.
+The pre-SDL3 claims that the session viewer "cannot be cross-compiled" and
+that cross-builds are "pure-Go packages only" have been corrected in the
+`Makefile` and both workflows — `make build-all` builds the entire binary,
+viewer included, for all six targets. Keep the cross-build comments honest on
+the same lines when next editing them: the claim is "no cgo anywhere, so one
+host builds all six targets".
