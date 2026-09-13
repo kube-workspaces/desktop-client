@@ -50,7 +50,51 @@ type Input struct {
 	// Keys are the key presses in this batch, in order, including auto-repeat.
 	// Releases are dropped: no widget here acts on one, and keeping them would
 	// make every consumer filter.
+	//
+	// It is the right field for asking whether a key or a chord was pressed.
+	// It is the wrong field for asking what the user typed; see Edits.
 	Keys []EventKey
+
+	// Edits is the same batch as a text field must apply it: the key presses
+	// of Keys interleaved, in arrival order, with the [EventText] commits
+	// that landed between them.
+	//
+	// The two views exist because the two questions are different. A chord
+	// query ("was F5 pressed?") does not care about order and does not care
+	// about text at all, so Keys stays a plain slice of key events. Editing
+	// does care about both: "a", Home, "b" and Home, "a", "b" leave different
+	// text in the field, and a batch really can hold all three — one poll
+	// drains everything the window queued, which at sixty frames a second is
+	// however many keystrokes a fast typist managed in sixteen milliseconds.
+	// Folding the text into a second, separate slice and applying it after
+	// the keys would silently reorder exactly that case.
+	Edits []Event
+
+	// ComposedText latches the first time the backend delivers an
+	// [EventText], and never clears.
+	//
+	// It is how a text field knows which of the two descriptions of a
+	// keystroke to believe. A backend that composes text sends both: a key
+	// event naming the physical key (which the guest needs) and a text event
+	// carrying the character (which is the only one that is right for dead
+	// keys, IME commits, AltGr and every shifted symbol). Inserting from both
+	// types every character twice.
+	//
+	// The latch, rather than a per-batch check, is what makes dead keys work.
+	// Pressing the dead key produces a key event and no text at all — the
+	// platform is waiting for the second keystroke — so "insert from the key
+	// event when this batch brought no text" would type a bare accent that
+	// the user is still in the middle of composing.
+	//
+	// Backends that do not report composed text — test doubles, and any
+	// future backend on a platform without a composition API — never set it,
+	// and their key events are read as characters as before.
+	ComposedText bool
+
+	// Mods is the modifier state as of the most recent key event. It is what
+	// tells a text commit apart from the side effect of a shortcut; see
+	// [Input.Fold].
+	Mods keysym.Modifiers
 
 	// Focused reports whether the window has keyboard focus.
 	Focused bool
@@ -81,6 +125,7 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 	out.Resized = false
 	out.ClipboardChanged = false
 	out.Keys = nil
+	out.Edits = nil
 
 	for _, ev := range events {
 		switch e := ev.(type) {
@@ -100,6 +145,11 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 				// pointer motion would read as a drag.
 				out.Down = false
 				out.Buttons = 0
+				// Same argument for the keyboard: the Ctrl-up that lands
+				// after focus moved away is never delivered, and a window
+				// that came back believing Ctrl was held would read the next
+				// keystroke as a shortcut and refuse to type it.
+				out.Mods = keysym.ModNone
 			}
 
 		case EventPointer:
@@ -121,8 +171,22 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 			out.Wheel.Y += e.DY
 
 		case EventKey:
+			// Modifier state is tracked from releases too, or a chord's
+			// trailing Ctrl-up would leave Ctrl held forever.
+			out.Mods = e.Mods
 			if e.Down {
 				out.Keys = append(out.Keys, e)
+				out.Edits = append(out.Edits, e)
+			}
+
+		case EventText:
+			// The latch records the capability, not the commit, so it is set
+			// before the filtering below: a text event that turns out to be
+			// the side effect of a shortcut still proves the backend composes
+			// text.
+			out.ComposedText = true
+			if e.Text != "" && !commandChord(out.Mods) {
+				out.Edits = append(out.Edits, e)
 			}
 
 		case EventClipboard:
@@ -136,9 +200,13 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 //
 // The shell uses it to decide whether to draw at all: a frame with no input
 // and no data change would be pixel-identical to the one already on screen.
+// It tests Edits rather than Keys because Edits is the superset: an IME commit
+// accepted by clicking a candidate changes the text with no key press behind
+// it at all, and a frame that skipped it would leave the field showing the
+// text from before.
 func (in Input) Idle() bool {
 	return !in.Pressed && !in.Released && !in.Resized && !in.Quit &&
-		in.Wheel == (Point{}) && len(in.Keys) == 0
+		in.Wheel == (Point{}) && len(in.Edits) == 0
 }
 
 // Hovering reports whether the pointer is inside r.
@@ -227,6 +295,11 @@ func lowerASCII(r rune) rune {
 // Control and Alt chords are excluded because they are commands — Ctrl-V is
 // not the letter v — and so are the C0 range and DEL, which reach a field as
 // named keys instead.
+//
+// It applies only to backends that do not compose text; see
+// [Input.ComposedText]. When one does, the character in a key event is the
+// backend's best guess from a keycode, and the text event is the platform's
+// actual answer.
 func IsTextRune(e EventKey) bool {
 	if e.Key != keysym.KeyUnknown || e.Rune == 0 {
 		return false
@@ -235,4 +308,22 @@ func IsTextRune(e EventKey) bool {
 		return false
 	}
 	return e.Rune >= 0x20 && e.Rune != 0x7f
+}
+
+// commandChord reports whether mods mean the user is pressing a shortcut
+// rather than typing, so that any text the platform reports alongside it is a
+// side effect to be discarded. Without it, Ctrl-V would both paste the
+// clipboard and type a "v".
+//
+// Alt deliberately does not count on its own, and neither does Ctrl+Alt.
+// AltGr is reported as Ctrl+Alt on Windows and as Alt on macOS, and AltGr is
+// how a large part of the world types "@", "€", "\" and every accented
+// letter. Treating those as commands would drop the characters this code
+// exists to deliver. Plain command chords do not produce text on any platform
+// the client runs on, so nothing is lost by being narrow here.
+func commandChord(m keysym.Modifiers) bool {
+	if m.Has(keysym.ModSuper) {
+		return true
+	}
+	return m.Has(keysym.ModControl) && !m.Has(keysym.ModAlt)
 }

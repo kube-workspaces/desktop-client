@@ -391,11 +391,32 @@ func (t *TextInput) HandleKey(ctx *Context, e EventKey) bool {
 		}
 	}
 
-	if IsTextRune(e) {
+	// The character in a key event is only text when the backend has no
+	// better answer. Once it has delivered even one [EventText] it is
+	// composing properly, and [TextInput.HandleText] owns insertion; reading
+	// both would type every character twice.
+	if !ctx.Input.ComposedText && IsTextRune(e) {
 		t.Insert(e.Rune)
 		return true
 	}
 	return false
+}
+
+// HandleText inserts one committed text event and reports whether it inserted
+// anything.
+//
+// The whole string goes in, not its first rune: an IME commits a word at a
+// time, and on some platforms a paste arrives this way too. [TextInput.Insert]
+// drops what the field cannot hold — control characters, and anything past
+// MaxLen.
+//
+// The event needs no modifier check of its own: [Input.Fold] has already
+// dropped the text a command chord produced, which is the check that keeps
+// Ctrl-V from pasting and typing a "v".
+func (t *TextInput) HandleText(e EventText) bool {
+	before := len(t.text)
+	t.Insert([]rune(e.Text)...)
+	return len(t.text) != before
 }
 
 // Layout draws the field in r and reports whether the user pressed Enter in
@@ -406,8 +427,17 @@ func (t *TextInput) Layout(ctx *Context, r Rect) bool {
 	focused := ctx.register(t.ID, r)
 
 	if focused {
-		for _, e := range ctx.Input.Keys {
-			t.HandleKey(ctx, e)
+		// Edits, not Keys: a field has to apply key presses and composed text
+		// in the order they arrived. Type "a", press Home, type "b" quickly
+		// enough that all three land in one batch, and applying the keys
+		// first would put the cursor at the start before "a" was inserted.
+		for _, ev := range ctx.Input.Edits {
+			switch e := ev.(type) {
+			case EventKey:
+				t.HandleKey(ctx, e)
+			case EventText:
+				t.HandleText(e)
+			}
 		}
 		// The pointer places the cursor. Without this a user who clicks into
 		// the middle of a mistyped URL gets the cursor at whichever end it

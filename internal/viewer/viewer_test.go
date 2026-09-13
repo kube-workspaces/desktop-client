@@ -1102,6 +1102,52 @@ func TestViewerFocusLossReleasesEverything(t *testing.T) {
 	h.srv.expectNone(t)
 }
 
+// TestViewerIgnoresComposedText protects the guest side of the text-input
+// change.
+//
+// The window collects text for the shell's fields, and it keeps collecting it
+// while a session is on screen, so [EventText] reaches the viewer too. RFB has
+// no way to say "insert this text": the guest is driven by one keysym per
+// physical key transition and runs its own layout and input method over that
+// stream. Forwarding the composed text as well would type everything twice.
+func TestViewerIgnoresComposedText(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+	h.step(t)
+	h.srv.drain(t)
+
+	h.be.push(EventText{Text: "https://kw.example.com"}, EventText{Text: "日本語"})
+	h.step(t)
+	h.srv.expectNone(t)
+
+	// The key events beside it are still forwarded: this drops the text, not
+	// the keyboard.
+	h.be.push(
+		keyDown(keysym.KeyShiftL, 0),
+		EventKey{Rune: ':', Down: true, Mods: keysym.ModShift},
+		EventText{Text: ":"},
+		EventKey{Rune: ':', Down: false, Mods: keysym.ModShift},
+		keyUp(keysym.KeyShiftL, keysym.ModShift),
+	)
+	h.step(t)
+
+	want := []keyMsg{
+		{uint32(keysym.ShiftL), true},
+		{uint32(keysym.FromRune(':')), true},
+		{uint32(keysym.FromRune(':')), false},
+		{uint32(keysym.ShiftL), false},
+	}
+	got := h.srv.keys(t)
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("key %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestViewerFullscreenHotkeyIsNotForwarded(t *testing.T) {
 	h := newHarness(t, 800, 600, 800, 600, Config{})
 	defer h.v.stop()

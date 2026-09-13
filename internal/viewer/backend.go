@@ -351,6 +351,13 @@ type EventQuit struct{}
 // them this way is what keeps the keysym mapping out of the backend: the
 // backend answers "which physical key, or which character", and internal/keysym
 // answers "which X11 keysym".
+//
+// Rune exists for the guest: RFB carries one keysym per physical key
+// transition, so a remote desktop has to name the key that went down, not the
+// text it composed. It is emphatically not how a local text field should read
+// what the user typed — a key transition cannot express a dead-key sequence,
+// an IME commit, or anything else that turns several keystrokes into one (or
+// no) character. Local text entry consumes [EventText] instead.
 type EventKey struct {
 	// Key is the non-text key, or keysym.KeyUnknown for a text key.
 	Key keysym.Key
@@ -362,6 +369,28 @@ type EventKey struct {
 	Repeat bool
 	// Mods is the modifier state at the time of the event.
 	Mods keysym.Modifiers
+}
+
+// EventText is text the user has committed, already composed by the platform.
+//
+// It is a separate event from [EventKey] because text and keys are genuinely
+// different things, and the difference is exactly where the client used to get
+// this wrong. A key event names a physical transition; the character it
+// "produces" has to be synthesised from a keycode, and a keycode cannot
+// express a shifted symbol on every layout, an AltGr third level, a dead-key
+// accent, or an IME commit. The platform already did that work — Windows'
+// WM_CHAR, X11's XmbLookupString, macOS' interpretKeyEvents — and this event
+// is its answer.
+//
+// Text is UTF-8 and may hold any number of characters: an IME commits a whole
+// word at once, and some platforms deliver a paste this way. A consumer must
+// insert all of it, not just the first rune.
+//
+// Text is never empty in a delivered event: a backend with nothing to report
+// reports nothing.
+type EventText struct {
+	// Text is the composed text, in the order the user committed it.
+	Text string
 }
 
 // EventPointer is an absolute pointer position plus the buttons held. X and Y
@@ -396,6 +425,7 @@ type EventClipboard struct{}
 
 func (EventQuit) isViewerEvent()      {}
 func (EventKey) isViewerEvent()       {}
+func (EventText) isViewerEvent()      {}
 func (EventPointer) isViewerEvent()   {}
 func (EventWheel) isViewerEvent()     {}
 func (EventResize) isViewerEvent()    {}

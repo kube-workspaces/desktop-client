@@ -4,7 +4,9 @@
 package viewer
 
 import (
+	"runtime"
 	"testing"
+	"unsafe"
 
 	"github.com/Zyko0/go-sdl3/sdl"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
@@ -248,6 +250,269 @@ func TestRuneFromKeycodeReachesKeysyms(t *testing.T) {
 		if sym := keysym.FromRune(r); sym == keysym.NoSymbol {
 			t.Errorf("keycode %#x -> %q has no keysym", uint32(code), r)
 		}
+	}
+}
+
+func TestTranslateText(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *sdl.TextInputEvent
+		want string
+		ok   bool
+	}{
+		{"a character", &sdl.TextInputEvent{Text: "a"}, "a", true},
+		// The keystroke from the bug report: shift and the ";" key.
+		{"a shifted symbol", &sdl.TextInputEvent{Text: ":"}, ":", true},
+		// An IME commits a whole word, and some platforms deliver a paste
+		// this way. Taking the first rune would silently drop the rest.
+		{"an IME commit", &sdl.TextInputEvent{Text: "日本語"}, "日本語", true},
+		{"a pasted line", &sdl.TextInputEvent{Text: "https://kw.example.com"}, "https://kw.example.com", true},
+		// A composition that ended without producing anything. Passing it on
+		// would look to a widget like the user typing nothing.
+		{"an empty commit", &sdl.TextInputEvent{Text: ""}, "", false},
+		{"no event at all", nil, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := translateText(tt.in)
+			if ok != tt.ok {
+				t.Fatalf("translateText ok = %t, want %t", ok, tt.ok)
+			}
+			if got.Text != tt.want {
+				t.Fatalf("translateText text = %q, want %q", got.Text, tt.want)
+			}
+		})
+	}
+}
+
+// textInputEventBytes mirrors SDL_TextInputEvent, padded to the size of an
+// SDL_Event so that a test can put one on a backend's event slot.
+//
+// The pointer is a real *byte field rather than a word in the padding, so the
+// string it points at stays reachable while the binding decodes it; the
+// binding reads exactly these fields out of the union.
+type textInputEventBytes struct {
+	Type      sdl.EventType
+	Reserved  uint32
+	Timestamp uint64
+	WindowID  sdl.WindowID
+	Text      *byte
+	_         [96]byte
+}
+
+// TestTranslateDispatchesTextInput drives the real event switch, not just the
+// helper under it, so that a text event that SDL delivers cannot be dropped by
+// a missing case.
+func TestTranslateDispatchesTextInput(t *testing.T) {
+	if unsafe.Sizeof(textInputEventBytes{}) != unsafe.Sizeof(sdl.Event{}) {
+		t.Fatalf("the stand-in event is %d bytes and sdl.Event is %d",
+			unsafe.Sizeof(textInputEventBytes{}), unsafe.Sizeof(sdl.Event{}))
+	}
+
+	text := append([]byte(":"), 0)
+	raw := textInputEventBytes{Type: sdl.EVENT_TEXT_INPUT, Text: &text[0]}
+
+	b := NewSDLBackend()
+	b.event = *(*sdl.Event)(unsafe.Pointer(&raw))
+	got := b.translate(nil)
+
+	if len(got) != 1 {
+		t.Fatalf("translate produced %d events, want 1", len(got))
+	}
+	ev, ok := got[0].(EventText)
+	if !ok {
+		t.Fatalf("translate produced %T, want EventText", got[0])
+	}
+	if ev.Text != ":" {
+		t.Fatalf("translate produced %q, want %q", ev.Text, ":")
+	}
+	runtime.KeepAlive(raw)
+	runtime.KeepAlive(text)
+}
+
+// TestTranslateDropsPreEditText: the half-composed text an IME is still
+// showing is not something the user has typed, and forwarding it would insert
+// a candidate they have not chosen.
+func TestTranslateDropsPreEditText(t *testing.T) {
+	for _, typ := range []sdl.EventType{sdl.EVENT_TEXT_EDITING, sdl.EVENT_TEXT_EDITING_CANDIDATES} {
+		b := NewSDLBackend()
+		b.event = sdl.Event{Type: typ}
+		if got := b.translate(nil); len(got) != 0 {
+			t.Fatalf("event type %d produced %d events, want none", typ, len(got))
+		}
+	}
+}
+
+// usLayout is enough of a US keyboard layout to type a server URL, keyed by
+// physical key and giving the unshifted and shifted characters.
+var usLayout = map[sdl.Scancode][2]sdl.Keycode{
+	sdl.SCANCODE_SEMICOLON: {sdl.K_SEMICOLON, sdl.K_COLON},
+	sdl.SCANCODE_SLASH:     {sdl.K_SLASH, sdl.K_QUESTION},
+	sdl.SCANCODE_2:         {sdl.K_2, sdl.K_AT},
+	sdl.SCANCODE_1:         {sdl.K_1, sdl.K_EXCLAIM},
+	sdl.SCANCODE_A:         {sdl.K_A, sdl.Keycode('A')},
+}
+
+// layoutQuery records one call into the stand-in keyboard layout.
+type layoutQuery struct {
+	mods     sdl.Keymod
+	keyEvent bool
+}
+
+// stubLayout replaces the live keymap lookup with usLayout, so the guest-facing
+// half of the translation can be tested without a keyboard or a loaded SDL.
+//
+// The stand-in reproduces the behaviour of SDL_GetKeyFromScancode, including
+// the part that caused the bug: asked for a key-event keycode it throws the
+// modifier state away. That is not decoration — it is what makes these tests
+// fail if the production code ever asks for one again.
+func stubLayout(t *testing.T) *[]layoutQuery {
+	t.Helper()
+	asked := new([]layoutQuery)
+	previous := keycodeFromScancode
+	t.Cleanup(func() { keycodeFromScancode = previous })
+	keycodeFromScancode = func(sc sdl.Scancode, mods sdl.Keymod, keyEvent bool) sdl.Keycode {
+		*asked = append(*asked, layoutQuery{mods: mods, keyEvent: keyEvent})
+		if keyEvent {
+			// SDL_keyboard.c: "We won't be applying any modifiers by default".
+			mods = sdl.KMOD_NONE
+		}
+		pair, ok := usLayout[sc]
+		if !ok {
+			return sdl.K_UNKNOWN
+		}
+		if mods&sdl.KMOD_SHIFT != 0 {
+			return pair[1]
+		}
+		return pair[0]
+	}
+	return asked
+}
+
+// TestTranslateKeyResolvesTheShiftedCharacter is the guest-side half of the
+// reported bug.
+//
+// SDL3 builds the keycode in a key event with the modifier state deliberately
+// thrown away ("We won't be applying any modifiers by default", SDL_keyboard.c),
+// and asking SDL_GetKeyFromScancode for a key-event keycode does the same. So
+// the ";" key reports ';' whether or not shift is held, and a viewer that
+// believes it tells the guest the user pressed semicolon.
+func TestTranslateKeyResolvesTheShiftedCharacter(t *testing.T) {
+	asked := stubLayout(t)
+	b := NewSDLBackend()
+
+	// The event is exactly what SDL3 delivers for shift and the ";" key: the
+	// modifier is in Mod, and Key is still the unshifted value.
+	down, ok := b.translateKey(&sdl.KeyboardEvent{
+		Type:     sdl.EVENT_KEY_DOWN,
+		Scancode: sdl.SCANCODE_SEMICOLON,
+		Key:      sdl.K_SEMICOLON,
+		Mod:      sdl.KMOD_LSHIFT,
+		Down:     true,
+	})
+	if !ok {
+		t.Fatal("shift and the ; key produced no event at all")
+	}
+	if down.Rune != ':' {
+		t.Fatalf("shift and the ; key produced %q, want %q", down.Rune, ':')
+	}
+	if down.Rune == ';' {
+		t.Fatal("the unshifted keycode was used; this is the reported bug")
+	}
+	if !down.Mods.Has(keysym.ModShift) {
+		t.Fatalf("the modifier state was lost: %s", down.Mods)
+	}
+	if len(*asked) != 1 {
+		t.Fatalf("the layout was queried %d times, want once", len(*asked))
+	}
+	if q := (*asked)[0]; q.mods != sdl.KMOD_LSHIFT || q.keyEvent {
+		t.Fatalf("the layout was asked with mods=%#x keyEvent=%t; it must be asked with the "+
+			"modifiers from the event and keyEvent false, or SDL discards them",
+			uint16(q.mods), q.keyEvent)
+	}
+
+	// The release must report the same character, or the guest is left
+	// holding a colon it never sees released.
+	up, ok := b.translateKey(&sdl.KeyboardEvent{
+		Type:     sdl.EVENT_KEY_UP,
+		Scancode: sdl.SCANCODE_SEMICOLON,
+		Key:      sdl.K_SEMICOLON,
+		Mod:      sdl.KMOD_NONE,
+		Down:     false,
+	})
+	if !ok || up.Rune != ':' || up.Down {
+		t.Fatalf("the release reported %q down=%t, want ':' up", up.Rune, up.Down)
+	}
+}
+
+// TestTranslateKeyResolvesShiftedPunctuation is the rest of the row: every
+// shifted symbol was wrong, not only the colon.
+func TestTranslateKeyResolvesShiftedPunctuation(t *testing.T) {
+	stubLayout(t)
+	tests := []struct {
+		scancode sdl.Scancode
+		mod      sdl.Keymod
+		want     rune
+	}{
+		{sdl.SCANCODE_SEMICOLON, sdl.KMOD_NONE, ';'},
+		{sdl.SCANCODE_SEMICOLON, sdl.KMOD_RSHIFT, ':'},
+		{sdl.SCANCODE_SLASH, sdl.KMOD_NONE, '/'},
+		{sdl.SCANCODE_SLASH, sdl.KMOD_LSHIFT, '?'},
+		{sdl.SCANCODE_2, sdl.KMOD_NONE, '2'},
+		{sdl.SCANCODE_2, sdl.KMOD_LSHIFT, '@'},
+		{sdl.SCANCODE_1, sdl.KMOD_LSHIFT, '!'},
+		{sdl.SCANCODE_A, sdl.KMOD_NONE, 'a'},
+		{sdl.SCANCODE_A, sdl.KMOD_LSHIFT, 'A'},
+	}
+	for _, tt := range tests {
+		b := NewSDLBackend()
+		got, ok := b.translateKey(&sdl.KeyboardEvent{
+			Type:     sdl.EVENT_KEY_DOWN,
+			Scancode: tt.scancode,
+			Key:      sdl.K_UNKNOWN,
+			Mod:      tt.mod,
+			Down:     true,
+		})
+		if !ok || got.Rune != tt.want {
+			t.Errorf("scancode %d with mod %#x produced %q (ok=%t), want %q",
+				tt.scancode, uint16(tt.mod), got.Rune, ok, tt.want)
+		}
+	}
+}
+
+// TestTranslateKeyPrefersTheScancodeTable: only character keys go through the
+// layout. A named key must not be resolved into a character, or Return would
+// reach the guest twice.
+func TestTranslateKeyPrefersTheScancodeTable(t *testing.T) {
+	asked := stubLayout(t)
+	b := NewSDLBackend()
+
+	got, ok := b.translateKey(&sdl.KeyboardEvent{
+		Type:     sdl.EVENT_KEY_DOWN,
+		Scancode: sdl.SCANCODE_RETURN,
+		Key:      sdl.K_RETURN,
+		Down:     true,
+	})
+	if !ok || got.Key != keysym.KeyReturn || got.Rune != 0 {
+		t.Fatalf("Return translated to key=%s rune=%q", got.Key, got.Rune)
+	}
+	if len(*asked) != 0 {
+		t.Fatal("a named key was put through the keyboard layout")
+	}
+
+	// A key the layout knows nothing about produces nothing rather than a
+	// zero rune the guest would be asked to send.
+	if _, ok := b.translateKey(&sdl.KeyboardEvent{
+		Type:     sdl.EVENT_KEY_DOWN,
+		Scancode: sdl.SCANCODE_INTERNATIONAL1,
+		Key:      sdl.K_UNKNOWN,
+		Down:     true,
+	}); ok {
+		t.Fatal("an unmapped key produced an event")
+	}
+
+	if _, ok := b.translateKey(nil); ok {
+		t.Fatal("a nil event produced an event")
 	}
 }
 

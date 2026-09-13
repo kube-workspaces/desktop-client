@@ -30,6 +30,27 @@ func runeDown(r rune, mods keysym.Modifiers) EventKey {
 	return EventKey{Rune: r, Down: true, Mods: mods}
 }
 
+// text builds a composed-text event, which is what a backend that can compose
+// text delivers alongside the key press that produced it.
+func text(s string) EventText { return EventText{Text: s} }
+
+// editText renders the text an Input's edit stream would insert, so a test can
+// assert on the whole ordered batch rather than on one event at a time.
+func editText(in Input) string {
+	var out []rune
+	for _, ev := range in.Edits {
+		switch e := ev.(type) {
+		case EventText:
+			out = append(out, []rune(e.Text)...)
+		case EventKey:
+			if !in.ComposedText && IsTextRune(e) {
+				out = append(out, e.Rune)
+			}
+		}
+	}
+	return string(out)
+}
+
 func TestFoldTracksPointerEdges(t *testing.T) {
 	var in Input
 
@@ -223,6 +244,156 @@ func TestIsTextRune(t *testing.T) {
 	}
 }
 
+// TestFoldKeepsTextAndKeysInOrder is the reason Edits exists at all. A batch
+// is one drain of the window's queue, so it can hold several keystrokes, and
+// applying all the keys before all the text would move the cursor before the
+// characters that were typed in front of it.
+func TestFoldKeepsTextAndKeysInOrder(t *testing.T) {
+	in := Input{}.Fold(epoch, []Event{
+		runeDown('a', keysym.ModNone), text("a"),
+		keyDown(keysym.KeyHome, keysym.ModNone),
+		runeDown('b', keysym.ModNone), text("b"),
+	})
+	if len(in.Edits) != 5 {
+		t.Fatalf("collected %d edits, want 5", len(in.Edits))
+	}
+	want := []bool{false, true, false, false, true}
+	for i, ev := range in.Edits {
+		_, isText := ev.(EventText)
+		if isText != want[i] {
+			t.Fatalf("edit %d is text=%t, want %t; the stream was reordered", i, isText, want[i])
+		}
+	}
+	// The key view is unchanged: chord queries still see every press,
+	// including the ones whose character came from a text event.
+	if len(in.Keys) != 3 {
+		t.Fatalf("collected %d key presses, want 3", len(in.Keys))
+	}
+	if !in.RuneChord(keysym.ModNone, 'a') {
+		t.Fatal("a character key press vanished from Keys; Space would stop activating buttons")
+	}
+}
+
+// TestFoldLatchesComposedText covers the flag that stops a character being
+// inserted twice, and the dead-key case that makes it a latch rather than a
+// per-batch check.
+func TestFoldLatchesComposedText(t *testing.T) {
+	var in Input
+	if in.ComposedText {
+		t.Fatal("a fresh input claims the backend composes text")
+	}
+
+	// A backend that only ever sends key events: the character in the key
+	// event is all there is, so it is text.
+	in = in.Fold(epoch, []Event{runeDown('x', keysym.ModNone)})
+	if in.ComposedText {
+		t.Fatal("a key event set the composed-text latch")
+	}
+	if got := editText(in); got != "x" {
+		t.Fatalf("a key-only backend typed %q, want %q", got, "x")
+	}
+
+	// The first text event proves the backend composes, in the same batch as
+	// the key press it belongs to. Only the text counts, or the user gets
+	// two colons.
+	in = in.Fold(epoch, []Event{runeDown(';', keysym.ModShift), text(":")})
+	if !in.ComposedText {
+		t.Fatal("a text event did not set the composed-text latch")
+	}
+	if got := editText(in); got != ":" {
+		t.Fatalf("shift and the ; key typed %q, want %q", got, ":")
+	}
+
+	// A dead key: a key press with a printable character and no text at all,
+	// because the platform is waiting for the next keystroke. The latch is
+	// what stops the bare accent being typed.
+	in = in.Fold(epoch, []Event{runeDown('^', keysym.ModNone)})
+	if got := editText(in); got != "" {
+		t.Fatalf("a dead key typed %q, want nothing", got)
+	}
+	if !in.ComposedText {
+		t.Fatal("the latch cleared; it must survive a batch with no text in it")
+	}
+
+	// ...and the composed result arrives on the next keystroke.
+	in = in.Fold(epoch, []Event{runeDown('e', keysym.ModNone), text("ê")})
+	if got := editText(in); got != "ê" {
+		t.Fatalf("the composed character came out as %q", got)
+	}
+}
+
+func TestFoldDropsTextFromCommandChords(t *testing.T) {
+	tests := []struct {
+		name string
+		mods keysym.Modifiers
+		want string
+	}{
+		// Ctrl-V must paste and nothing else. If the platform reports a "v"
+		// alongside it, the field would paste and then type the v.
+		{"control", keysym.ModControl, ""},
+		{"super", keysym.ModSuper, ""},
+		{"control and super", keysym.ModControl | keysym.ModSuper, ""},
+		// AltGr is Ctrl+Alt on Windows and Alt on macOS, and it is how a
+		// large part of the world types "@" and "€". Discarding it as a
+		// shortcut would break exactly the users this path is for.
+		{"altgr as control+alt", keysym.ModControl | keysym.ModAlt, "€"},
+		{"altgr as alt", keysym.ModAlt, "€"},
+		{"altgr proper", keysym.ModAltGr, "€"},
+		{"shift", keysym.ModShift, "€"},
+		{"none", keysym.ModNone, "€"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := Input{}.Fold(epoch, []Event{
+				EventKey{Rune: 'v', Down: true, Mods: tt.mods},
+				text("€"),
+			})
+			if got := editText(in); got != tt.want {
+				t.Fatalf("with %s held the batch typed %q, want %q", tt.mods, got, tt.want)
+			}
+			if !in.ComposedText {
+				t.Fatal("the latch records the backend's capability, not whether the text was kept")
+			}
+		})
+	}
+}
+
+func TestFoldIgnoresEmptyTextButStillLatches(t *testing.T) {
+	// SDL ends a composition that produced nothing with an empty commit.
+	in := Input{}.Fold(epoch, []Event{text("")})
+	if len(in.Edits) != 0 {
+		t.Fatalf("an empty commit produced %d edits", len(in.Edits))
+	}
+	if !in.ComposedText {
+		t.Fatal("an empty commit is still proof the backend composes text")
+	}
+}
+
+func TestFoldTracksModifierState(t *testing.T) {
+	in := Input{}.Fold(epoch, []Event{keyDown(keysym.KeyControlL, keysym.ModControl)})
+	if in.Mods != keysym.ModControl {
+		t.Fatalf("mods = %s, want control", in.Mods)
+	}
+	// A release updates the state too, or a chord's trailing Ctrl-up would
+	// leave the shell believing Ctrl is held forever.
+	in = in.Fold(epoch, []Event{EventKey{Key: keysym.KeyControlL, Down: false, Mods: keysym.ModNone}})
+	if in.Mods != keysym.ModNone {
+		t.Fatalf("mods after the release = %s, want none", in.Mods)
+	}
+
+	// Focus loss eats the release, so the state is cleared outright.
+	in = in.Fold(epoch, []Event{keyDown(keysym.KeyControlL, keysym.ModControl)})
+	in = in.Fold(epoch, []Event{EventFocus{Gained: false}})
+	if in.Mods != keysym.ModNone {
+		t.Fatalf("focus loss left %s held", in.Mods)
+	}
+	// ...and text typed after coming back is text, not a shortcut.
+	in = in.Fold(epoch, []Event{EventFocus{Gained: true}, text("a")})
+	if got := editText(in); got != "a" {
+		t.Fatalf("after focus returned the batch typed %q, want %q", got, "a")
+	}
+}
+
 func TestIdle(t *testing.T) {
 	var zero Input
 	if !zero.Idle() {
@@ -234,5 +405,10 @@ func TestIdle(t *testing.T) {
 	}
 	if wheel := zero.Fold(epoch, []Event{EventWheel{DY: 1}}); wheel.Idle() {
 		t.Fatal("a wheel click is not idle")
+	}
+	// An IME commit accepted by clicking a candidate changes the text with no
+	// key press behind it. A frame skipped here leaves the field stale.
+	if typed := zero.Fold(epoch, []Event{text("漢字")}); typed.Idle() {
+		t.Fatal("committed text is not idle")
 	}
 }

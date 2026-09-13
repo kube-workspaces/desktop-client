@@ -14,6 +14,19 @@ DIST_DIR?= dist
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS ?= -s -w -X main.version=$(VERSION)
 
+# Windows only: link as a GUI subsystem executable (PE subsystem 2) instead of
+# a console one (subsystem 3). Without this the loader allocates a console for
+# the process, so launching the client from Explorer opens a black console
+# window next to the shell — and that console owns the process, so closing it
+# kills the application. No other platform has a subsystem flag; leave their
+# link lines alone.
+#
+# The cost is that a GUI subsystem process inherits no standard streams from
+# cmd.exe or PowerShell, which would mute `kube-workspaces list` and every other
+# subcommand. cmd/kube-workspaces/console_windows.go reattaches them at startup;
+# the two changes only work as a pair, so do not apply one without the other.
+WINDOWS_LDFLAGS ?= $(LDFLAGS) -H=windowsgui
+
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
@@ -24,7 +37,13 @@ help: ## Show this help message
 
 build: ## Build the kube-workspaces binary into bin/
 	@mkdir -p $(BIN_DIR)
-	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) $(CMD)
+	@# GOOS-aware so that a developer on Windows builds the same kind of binary
+	@# that ships, rather than a console one that behaves differently from the
+	@# release. Everywhere else this is exactly the old command.
+	@goos=$$(go env GOOS); ldflags="$(LDFLAGS)"; ext=""; \
+	if [ "$$goos" = "windows" ]; then ldflags="$(WINDOWS_LDFLAGS)"; ext=".exe"; fi; \
+	echo "go build -trimpath -ldflags \"$$ldflags\" -o $(BIN_DIR)/$(BINARY)$$ext $(CMD)"; \
+	go build -trimpath -ldflags "$$ldflags" -o $(BIN_DIR)/$(BINARY)$$ext $(CMD)
 
 run: ## Run the client from source (make run ARGS="--help")
 	go run $(CMD) $(ARGS)
@@ -70,12 +89,13 @@ build-all: ## Cross-build and package all 6 targets into dist/
 		darwin/amd64 darwin/arm64 \
 		windows/amd64 windows/arm64; do \
 		os=$${target%/*}; arch=$${target#*/}; \
-		ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
+		ext=""; ldflags="$(LDFLAGS)"; \
+		if [ "$$os" = "windows" ]; then ext=".exe"; ldflags="$(WINDOWS_LDFLAGS)"; fi; \
 		stage="$(DIST_DIR)/$(BINARY)-$$os-$$arch"; \
 		echo "building $$os/$$arch"; \
 		rm -rf "$$stage"; mkdir -p "$$stage"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
-			go build -trimpath -ldflags "$(LDFLAGS)" -o "$$stage/$(BINARY)$$ext" $(CMD); \
+			go build -trimpath -ldflags "$$ldflags" -o "$$stage/$(BINARY)$$ext" $(CMD); \
 		cp README.md LICENSE "$$stage/"; \
 		if [ "$$os" = "windows" ]; then \
 			(cd $(DIST_DIR) && zip -qr "$(BINARY)-$(VERSION)-$$os-$$arch.zip" "$(BINARY)-$$os-$$arch"); \

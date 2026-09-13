@@ -160,6 +160,17 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 	b.fullscreen = opts.Fullscreen
 	b.refreshMetrics()
 
+	// SDL3 does not collect text by default, and without this the window
+	// receives key events only — which is how the client used to end up
+	// synthesising characters from keycodes and typing ";" for ":".
+	//
+	// It is not fatal if it fails: a window that reports key events but no
+	// text is degraded, not useless, and taking the whole session down over
+	// an IME that would not start would be the worse failure.
+	if err := b.StartTextInput(); err != nil {
+		_ = err
+	}
+
 	// Only now may another goroutine push into the event queue.
 	b.wakeMu.Lock()
 	b.wakeOK = true
@@ -189,6 +200,10 @@ func (b *SDLBackend) Close() {
 		b.renderer = nil
 	}
 	if b.window != nil {
+		// Paired with the StartTextInput in Open. Destroying the window would
+		// end composition anyway; stopping first keeps a platform IME from
+		// being left attached to a window that is about to disappear.
+		_ = b.StopTextInput()
 		b.window.Destroy()
 		b.window = nil
 	}
@@ -422,6 +437,51 @@ func (b *SDLBackend) SetFullscreen(on bool) error {
 // is the requested state rather than SDL's flag.
 func (b *SDLBackend) Fullscreen() bool { return b.fullscreen }
 
+// StartTextInput asks the platform to compose keystrokes into text and deliver
+// the result as [EventText]. [SDLBackend.Open] calls it, because SDL3 starts
+// with text input switched off and a window that never calls it never sees a
+// character the user typed.
+//
+// It stays on for the life of the window, and that is a judgement rather than
+// an oversight. The tempting alternative is to stop it for the duration of a
+// display session, on the grounds that a session's keystrokes belong to the
+// guest and an IME candidate window floating over a remote desktop is
+// unwanted. Two things argue against it:
+//
+//   - The guest does not read text events at all. It is fed X11 keysyms
+//     derived from [EventKey], so nothing about a session changes when text
+//     input is on; the viewer simply ignores [EventText].
+//   - The window is not the session's to reconfigure. The shell owns it for
+//     the life of the process and lends it to a viewer through the [Backend]
+//     interface, which has no text-input control and should not grow one for
+//     a single backend's benefit.
+//
+// So the cost is a possible IME popup over a session, and the benefit is that
+// text entry can never be off when a field is focused — which is the failure
+// this whole path exists to prevent. These methods are exported so that a
+// caller holding a concrete backend (rather than the interface) can still make
+// the other choice.
+func (b *SDLBackend) StartTextInput() error {
+	if b.window == nil {
+		return nil
+	}
+	if err := b.window.StartTextInput(); err != nil {
+		return fmt.Errorf("sdl start text input: %w", err)
+	}
+	return nil
+}
+
+// StopTextInput stops text composition; see [SDLBackend.StartTextInput].
+func (b *SDLBackend) StopTextInput() error {
+	if b.window == nil {
+		return nil
+	}
+	if err := b.window.StopTextInput(); err != nil {
+		return fmt.Errorf("sdl stop text input: %w", err)
+	}
+	return nil
+}
+
 // Clipboard returns the host clipboard text.
 func (b *SDLBackend) Clipboard() (string, error) {
 	text, err := sdl.GetClipboardText()
@@ -509,6 +569,19 @@ func (b *SDLBackend) translate(dst []Event) []Event {
 		if ev, ok := b.translateKey(b.event.KeyboardEvent()); ok {
 			dst = append(dst, ev)
 		}
+
+	case sdl.EVENT_TEXT_INPUT:
+		if ev, ok := translateText(b.event.TextInputEvent()); ok {
+			dst = append(dst, ev)
+		}
+
+	case sdl.EVENT_TEXT_EDITING, sdl.EVENT_TEXT_EDITING_CANDIDATES:
+		// Pre-edit state: the half-composed text an IME is showing, and the
+		// candidate list it is offering. Drawing them is the job of a toolkit
+		// with a composition popup, which this is not; SDL falls back to the
+		// platform's own IME window, and the finished text arrives as
+		// EVENT_TEXT_INPUT. Forwarding the pre-edit as if it were committed
+		// would type the candidate the user has not chosen yet.
 
 	case sdl.EVENT_MOUSE_MOTION:
 		m := b.event.MouseMotionEvent()
@@ -653,6 +726,46 @@ func buttonsFromState(state sdl.MouseButtonFlags) Buttons {
 	return out
 }
 
+// translateText turns an SDL text input event into an [EventText].
+//
+// The binding has already decoded SDL's UTF-8 into a Go string, so there is
+// nothing to do here but reject the empty commit — which SDL does send on some
+// platforms when composition ends without producing anything, and which would
+// otherwise look to the viewer like the user typing nothing at all.
+func translateText(e *sdl.TextInputEvent) (EventText, bool) {
+	if e == nil || e.Text == "" {
+		return EventText{}, false
+	}
+	return EventText{Text: e.Text}, true
+}
+
+// keycodeFromScancode resolves the character a physical key produces under the
+// current layout and the given modifier state.
+//
+// The key_event argument must be false. SDL_GetKeyFromScancode passing true
+// means "give me the keycode as it appears in a key event", and SDL builds
+// that keycode with the modifiers deliberately discarded:
+//
+//	if (key_event) {
+//	    ...
+//	    // We won't be applying any modifiers by default
+//	    modstate = SDL_KMOD_NONE;
+//
+// which is why the keycode in an SDL3 key event — and the result of asking for
+// one with true — is always the unshifted value of the key. Ask for ':' that
+// way and you get ';'. Passing false takes the plain keymap lookup, which
+// applies modstate as asked.
+//
+// The keyEvent argument is kept in the signature, rather than hard-coded
+// inside, so that a test can stand in a layout that reproduces SDL's own
+// behaviour and fail if this ever asks for a key-event keycode again.
+//
+// It is a variable so that the translation layer can be tested against a known
+// layout without a keyboard, a window, or a loaded SDL.
+var keycodeFromScancode = func(sc sdl.Scancode, mods sdl.Keymod, keyEvent bool) sdl.Keycode {
+	return sc.KeyFrom(mods, keyEvent)
+}
+
 // translateKey turns an SDL keyboard event into an [EventKey].
 //
 // The split between the two halves of [EventKey] follows the split in SDL
@@ -662,6 +775,9 @@ func buttonsFromState(state sdl.MouseButtonFlags) Buttons {
 // guest needs for text. Mapping everything from the keycode would break
 // non-US layouts; mapping everything from the scancode would send a US-layout
 // guest the wrong letters.
+//
+// The character here is for the guest and for modifier chords, not for local
+// text entry: see the [EventKey] and [EventText] comments.
 func (b *SDLBackend) translateKey(e *sdl.KeyboardEvent) (EventKey, bool) {
 	if e == nil {
 		return EventKey{}, false
@@ -683,14 +799,16 @@ func (b *SDLBackend) translateKey(e *sdl.KeyboardEvent) (EventKey, bool) {
 	if key := keyForScancode(e.Scancode); key != keysym.KeyUnknown {
 		ev.Key = key
 	} else {
-		keycode := e.Key
-		// Ask SDL what this key produces with the current modifiers applied.
-		// Its answer accounts for the layout, including dead keys and
-		// third-level (AltGr) shifts, which no table in this repository could.
-		if mods.HasAny(keysym.ModShift | keysym.ModAltGr | keysym.ModCapsLock) {
-			if resolved := e.Scancode.KeyFrom(e.Mod, true); resolved != sdl.K_UNKNOWN {
-				keycode = resolved
-			}
+		// Ask the layout what this key produces with the modifiers actually
+		// held, rather than reading the event's own keycode, which SDL has
+		// already stripped the modifiers from. The lookup is unconditional:
+		// even with no modifiers it is the better answer, because the event
+		// keycode is subject to SDL_HINT_KEYCODE_OPTIONS and reports a
+		// Russian or Thai letter key as its Latin equivalent, which is not
+		// the key the guest should be told about.
+		keycode := keycodeFromScancode(e.Scancode, e.Mod, false)
+		if keycode == sdl.K_UNKNOWN {
+			keycode = e.Key
 		}
 		ev.Rune = runeFromKeycode(keycode)
 		if ev.Rune == 0 {

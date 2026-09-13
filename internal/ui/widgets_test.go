@@ -5,6 +5,7 @@ package ui
 
 import (
 	"image"
+	"strings"
 	"testing"
 	"time"
 
@@ -290,6 +291,198 @@ func TestTextInputKeyboard(t *testing.T) {
 	})
 	if f.Value() != "" {
 		t.Fatalf("an unfocused field accepted input: %q", f.Value())
+	}
+}
+
+// TestTextInputTypesComposedText is the fix for the reported bug, at the level
+// the user experiences it: a field is typed into and the characters that come
+// out are the ones on the keycaps.
+func TestTextInputTypesComposedText(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+
+	// One keystroke as a composing backend reports it: the physical key, and
+	// the character the platform made of it.
+	h.frame([]Event{runeDown('h', keysym.ModNone), text("h")}, body)
+	if f.Value() != "h" {
+		t.Fatalf("typing one character produced %q", f.Value())
+	}
+
+	// A commit carrying several characters at once — an IME finishing a word,
+	// or a paste that some platforms deliver this way. All of it goes in, not
+	// just the first rune.
+	h.frame([]Event{text("ello")}, body)
+	if f.Value() != "hello" {
+		t.Fatalf("a multi-character commit produced %q, want %q", f.Value(), "hello")
+	}
+
+	// Non-ASCII, to prove the field is not taking the first byte.
+	h.frame([]Event{text("日本語")}, body)
+	if f.Value() != "hello日本語" {
+		t.Fatalf("a multi-byte commit produced %q", f.Value())
+	}
+	if f.Cursor() != f.Len() {
+		t.Fatalf("the cursor is at %d after inserting %d runes", f.Cursor(), f.Len())
+	}
+}
+
+// TestTextInputTypesShiftedPunctuation is the regression test for the reported
+// bug itself.
+//
+// Shift and the ";" key is ":" on a US layout. SDL3 reports the *unshifted*
+// keycode in its key event — it discards the modifier state on purpose — so
+// anything that derives the character from the keycode produces ";", and the
+// user typing "https://..." gets "https;//...". The composed text is the only
+// description of that keystroke that is right, and it must be the one that
+// reaches the field.
+func TestTextInputTypesShiftedPunctuation(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+
+	// "https" then Shift+";" — the key event carries the unshifted ';' that
+	// SDL reports, the text event carries the ':' the user actually typed.
+	for _, r := range "https" {
+		h.frame([]Event{runeDown(r, keysym.ModNone), text(string(r))}, body)
+	}
+	h.frame([]Event{runeDown(';', keysym.ModShift), text(":")}, body)
+	for _, r := range "//kw.example.com" {
+		h.frame([]Event{runeDown(r, keysym.ModNone), text(string(r))}, body)
+	}
+
+	const want = "https://kw.example.com"
+	if f.Value() != want {
+		t.Fatalf("typing a server URL produced %q, want %q", f.Value(), want)
+	}
+	if strings.Contains(f.Value(), ";") {
+		t.Fatalf("the unshifted keycode reached the field: %q", f.Value())
+	}
+}
+
+// TestTextInputInsertsEachCharacterOnce is the other half of the same fix. A
+// composing backend describes one keystroke twice, and a field that believed
+// both descriptions would double every character the user typed.
+func TestTextInputInsertsEachCharacterOnce(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+
+	h.frame([]Event{runeDown('a', keysym.ModNone), text("a")}, body)
+	if f.Value() != "a" {
+		t.Fatalf("one keystroke described twice produced %q, want %q", f.Value(), "a")
+	}
+
+	// And it stays that way once the backend has proved it composes: a later
+	// key press with no text beside it — a dead key waiting for its second
+	// keystroke — must not be typed either.
+	h.frame([]Event{runeDown('^', keysym.ModNone)}, body)
+	if f.Value() != "a" {
+		t.Fatalf("a dead key was typed as a character: %q", f.Value())
+	}
+	h.frame([]Event{runeDown('e', keysym.ModNone), text("ê")}, body)
+	if f.Value() != "aê" {
+		t.Fatalf("the composed character produced %q, want %q", f.Value(), "aê")
+	}
+}
+
+// TestTextInputKeepsKeyRunesWithoutAComposingBackend is the compatibility
+// half: a backend that reports no text at all — a test double, or a platform
+// with no composition API — must still be able to type.
+func TestTextInputKeepsKeyRunesWithoutAComposingBackend(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+
+	h.frame([]Event{runeDown('o', keysym.ModNone), runeDown('k', keysym.ModNone)}, body)
+	if f.Value() != "ok" {
+		t.Fatalf("a key-only backend typed %q, want %q", f.Value(), "ok")
+	}
+}
+
+// TestTextInputEditingKeysSurviveComposedText: only character production moves
+// to text events. Navigation and editing are still key events, and they must
+// keep working in a batch that also carries text.
+func TestTextInputEditingKeysSurviveComposedText(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	submitted := 0
+	body := func(ctx *Context) {
+		if f.Layout(ctx, rect) {
+			submitted++
+		}
+	}
+	h.frame(nil, body)
+
+	h.frame([]Event{runeDown('a', keysym.ModNone), text("abc")}, body)
+	if f.Value() != "abc" {
+		t.Fatalf("setup typed %q", f.Value())
+	}
+
+	h.frame([]Event{keyDown(keysym.KeyBackSpace, keysym.ModNone)}, body)
+	if f.Value() != "ab" {
+		t.Fatalf("backspace produced %q", f.Value())
+	}
+	h.frame([]Event{keyDown(keysym.KeyHome, keysym.ModNone)}, body)
+	if f.Cursor() != 0 {
+		t.Fatalf("Home left the cursor at %d", f.Cursor())
+	}
+	h.frame([]Event{keyDown(keysym.KeyDelete, keysym.ModNone)}, body)
+	if f.Value() != "b" {
+		t.Fatalf("delete produced %q", f.Value())
+	}
+	h.frame([]Event{keyDown(keysym.KeyRight, keysym.ModNone), keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if f.Cursor() != 1 {
+		t.Fatalf("the right arrow left the cursor at %d", f.Cursor())
+	}
+	if submitted != 1 {
+		t.Fatalf("Enter produced %d submissions, want 1", submitted)
+	}
+	if f.Value() != "b" {
+		t.Fatalf("Enter or an arrow was inserted as text: %q", f.Value())
+	}
+
+	// Text arriving in the same batch as an editing key is applied where it
+	// arrived, not after everything else.
+	h.frame([]Event{text("x"), keyDown(keysym.KeyBackSpace, keysym.ModNone)}, body)
+	if f.Value() != "b" {
+		t.Fatalf("text then backspace produced %q, want %q", f.Value(), "b")
+	}
+}
+
+// TestTextInputIgnoresTextFromACommandChord: Ctrl-V pastes. If the platform
+// also reported a "v", the field would paste and then type the v over it.
+func TestTextInputIgnoresTextFromACommandChord(t *testing.T) {
+	h := newHarness(400, 100)
+	h.ctx.Clipboard = func() (string, error) { return "pasted", nil }
+	f := &TextInput{ID: "field"}
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+
+	// Prove the backend composes first, so the field is in the mode where a
+	// text event would be believed.
+	h.frame([]Event{runeDown('a', keysym.ModNone), text("a")}, body)
+
+	h.frame([]Event{runeDown('v', keysym.ModControl), text("v")}, body)
+	if f.Value() != "apasted" {
+		t.Fatalf("Ctrl-V produced %q, want %q", f.Value(), "apasted")
+	}
+
+	// The readline bindings are chords too, and they move the cursor rather
+	// than typing their letter.
+	h.frame([]Event{runeDown('u', keysym.ModControl), text("u")}, body)
+	if f.Value() != "" {
+		t.Fatalf("Ctrl-U left %q", f.Value())
 	}
 }
 

@@ -56,6 +56,34 @@ jobs:
           echo "reported version: $got"
           test "$got" = "${{ steps.version.outputs.version }}"
 
+      # v0.1.0 shipped Windows binaries linked as console subsystem executables.
+      # The symptom only showed up on a user's machine — a stray console window
+      # next to the GUI, which killed the app when closed — so it is worth
+      # asserting here rather than trusting the Makefile. The subsystem lives in
+      # the PE optional header: 2 is IMAGE_SUBSYSTEM_WINDOWS_GUI, 3 is the
+      # console one that caused the bug. See cmd/kube-workspaces/console_windows.go
+      # for why the flag alone is not the whole fix.
+      - name: Verify the Windows binaries are GUI subsystem
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            unzip -qo "dist/kube-workspaces-${{ steps.version.outputs.version }}-windows-$arch.zip" -d /tmp/pecheck
+            python3 - "/tmp/pecheck/kube-workspaces-windows-$arch/kube-workspaces.exe" <<'PY'
+          import struct, sys
+          path = sys.argv[1]
+          with open(path, "rb") as fh:
+              data = fh.read()
+          pe = struct.unpack_from("<I", data, 0x3C)[0]
+          assert data[pe:pe + 4] == b"PE\0\0", f"{path}: not a PE binary"
+          subsystem = struct.unpack_from("<H", data, pe + 4 + 20 + 68)[0]
+          if subsystem != 2:
+              sys.exit(f"::error::{path}: PE subsystem is {subsystem}, want 2 (WINDOWS_GUI). "
+                       "A console subsystem build opens a stray console window; check that "
+                       "the Makefile still passes -H=windowsgui for windows targets.")
+          print(f"{path}: PE subsystem 2 (WINDOWS_GUI)")
+          PY
+          done
+
       - name: Summary
         run: |
           {

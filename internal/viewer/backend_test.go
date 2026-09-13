@@ -236,13 +236,14 @@ func TestEventsImplementEvent(t *testing.T) {
 	events := []any{
 		EventQuit{},
 		EventKey{},
+		EventText{},
 		EventPointer{},
 		EventWheel{},
 		EventResize{},
 		EventFocus{},
 		EventClipboard{},
 	}
-	if len(events) != 7 {
+	if len(events) != 8 {
 		t.Fatalf("unexpected event count %d", len(events))
 	}
 	for _, e := range events {

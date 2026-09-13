@@ -848,6 +848,16 @@ func (v *Viewer) handleEvent(now time.Time, ev Event) error {
 	case EventKey:
 		return v.handleKey(e)
 
+	case EventText:
+		// Deliberately dropped. RFB has no "insert this text" message: the
+		// guest is driven by one keysym per physical key transition, which
+		// [Viewer.handleKey] already sends, and it runs its own layout and
+		// input method over that stream. Forwarding composed text as well
+		// would type everything twice. Text events exist for the local
+		// widgets in internal/ui, which is the other consumer of this
+		// backend.
+		return nil
+
 	case EventPointer:
 		return v.handlePointer(e)
 

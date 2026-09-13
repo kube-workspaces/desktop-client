@@ -28,6 +28,14 @@ type command struct {
 }
 
 func main() {
+	// First, before anything can print. The Windows build is linked as a GUI
+	// subsystem binary so that launching it from Explorer does not open a
+	// stray console window alongside the shell; the cost is that the
+	// subcommands below inherit no standard streams when they are run from
+	// cmd.exe or PowerShell. This reattaches them. No-op everywhere else —
+	// see console_windows.go and console_other.go.
+	attachParentConsole()
+
 	commands := []command{
 		shellCommand(),
 		{"login", "Authenticate against a kube-workspaces instance", runLogin},

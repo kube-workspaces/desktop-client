@@ -55,6 +55,8 @@ type (
 	Event = viewer.Event
 	// EventKey is a key press or release; see [viewer.EventKey].
 	EventKey = viewer.EventKey
+	// EventText is composed text the user committed; see [viewer.EventText].
+	EventText = viewer.EventText
 	// EventPointer is an absolute pointer position plus the buttons held.
 	EventPointer = viewer.EventPointer
 	// EventWheel is a scroll wheel movement in whole clicks.
