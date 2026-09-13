@@ -6,10 +6,12 @@ Native desktop client — product and binary name **Kube Workspaces** — for
 accessing workspaces on a kube-workspaces platform instance. Go, targeting
 {linux, darwin, windows} × {amd64, arm64}.
 
-**Early development, unreleased.** The graphical shell and the RFB session
-viewer work end to end against a real instance; nothing is packaged, signed or
-versioned, and no binaries are published. Do not describe anything here as
-shipping or stable.
+**Early development, released.** v0.1.0 is the first release: binaries for all
+six targets are published on the GitHub Release, packaged and versioned, but
+**not code-signed or notarised**. The graphical shell and the RFB session
+viewer work end to end against a real instance, but this is not yet a stable,
+feature-complete product — the CLI surface can change between releases, and
+several things named on this page are explicitly **not implemented**.
 
 ## What exists and what does not
 
@@ -213,8 +215,11 @@ must stay on a release built with go1.26 or newer.
 - Go version: **1.26** (see `go.mod`). Apache-2.0.
 - Work **directly on `main`**. Batch related changes into few, coherent commits;
   prefer working locally before pushing.
-- **No tags and no releases** on this repo without explicit instruction — same
-  as the other component repos.
+- **Releases are tag-driven.** Pushing a `v*` tag makes the `Build` workflow
+  publish the six platform archives as a GitHub Release; tags are created
+  deliberately, never by automation. Cutting a release (or bumping
+  `internal/kwclient.Version`) still needs explicit instruction, same as on the
+  other component repos.
 - **The tree is cgo-free and must stay that way.** `CGO_ENABLED=0` cross-builds
   all six targets; anything that would reintroduce cgo (a native toolkit,
   libavcodec for H.264) needs this decision reopened first, because it would
@@ -228,6 +233,11 @@ must stay on a release built with go1.26 or newer.
 
 ## CI
 
+- `.github/workflows/build.yml` — cross-builds all six targets on every push to
+  `main` and uploads them as workflow artifacts; on a `v*` tag the same archives
+  are published as a GitHub Release. The generated release notes state the
+  binaries are unsigned. The version is resolved from `git describe`, so a
+  release build reports the tag rather than a bare sha.
 - `.github/workflows/ci.yml` — gofmt check, `go build ./...`, `go vet ./...`,
   `go test -race` with a coverage step-summary, plus a `cross` matrix job that
   builds on ubuntu, macOS and windows runners. The matrix is belt-and-braces
