@@ -25,8 +25,8 @@ const (
 	// pending. The last frame stays on screen, dimmed.
 	StatusReconnecting
 	// StatusDisplayInUse means another client holds the workspace's single
-	// display slot. There is no takeover endpoint, so the only options are to
-	// wait or to close the window; the overlay says so.
+	// display slot. The overlay offers the user an interactive take-over
+	// while it waits; the window stays closable throughout.
 	StatusDisplayInUse
 	// StatusFailed is terminal: the reason is shown and the viewer exits
 	// shortly afterwards.

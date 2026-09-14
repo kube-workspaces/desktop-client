@@ -235,6 +235,10 @@ type Viewer struct {
 		status Status
 		detail string
 
+		// takeoverHandler is the optional action run when the user presses
+		// Enter while the display-in-use overlay is up.
+		takeoverHandler func() error
+
 		// nextConn/nextCtx is a connection the pump has taken out and not yet
 		// handed over.
 		nextConn *rfb.Conn
@@ -495,6 +499,22 @@ func (v *Viewer) Status() (Status, string) {
 	v.inbox.Lock()
 	defer v.inbox.Unlock()
 	return v.inbox.status, v.inbox.detail
+}
+
+// SetTakeoverHandler registers the action run when the user presses Enter
+// while the display-in-use overlay is up. Safe from any goroutine; nil
+// disables it.
+func (v *Viewer) SetTakeoverHandler(h func() error) {
+	v.inbox.Lock()
+	v.inbox.takeoverHandler = h
+	v.inbox.Unlock()
+}
+
+// takeoverAction returns the registered take-over action, or nil.
+func (v *Viewer) takeoverAction() func() error {
+	v.inbox.Lock()
+	defer v.inbox.Unlock()
+	return v.inbox.takeoverHandler
 }
 
 // setStatusIfLive raises a status only when nothing more specific has been
@@ -998,6 +1018,21 @@ func (v *Viewer) handleKey(e EventKey) error {
 			return nil
 		}
 		return v.runHotkey(e)
+	}
+
+	// Enter while the display-in-use overlay is up is a take-over, not a
+	// key press for a guest that isn't there.
+	if e.Down && !e.Repeat && e.Key == keysym.KeyReturn {
+		if h := v.takeoverAction(); h != nil {
+			if status, _ := v.Status(); status == StatusDisplayInUse {
+				go func() {
+					if err := h(); err != nil {
+						v.SetStatus(StatusDisplayInUse, "Take over failed: "+err.Error())
+					}
+				}()
+				return nil
+			}
+		}
 	}
 
 	if v.conn == nil {
@@ -1555,7 +1590,11 @@ func (v *Viewer) overlayLines() []string {
 		// with no explanation looks like a broken client.
 		status, detail = StatusConnecting, ""
 	}
-	return statusLines(status, detail)
+	lines := statusLines(status, detail)
+	if status == StatusDisplayInUse && v.takeoverAction() != nil {
+		lines = append(lines, "Press Enter to take over the display")
+	}
+	return lines
 }
 
 // sourceSize is the size of the image the presented rectangle is computed

@@ -152,10 +152,23 @@ func runConnect(ctx context.Context, args []string) error {
 		return err
 	}
 	ui.sess.Store(sess)
-	// Closing the session is what releases the server's single VNC slot; the
-	// KubeVirt console has no takeover endpoint, so leaking it locks the
-	// display out until the idle timeout.
+	// Closing the session is what releases the server's single VNC slot;
+	// leaking it locks the display out until the idle timeout.
 	defer func() { _ = sess.Close() }()
+
+	// Enter while the display-in-use overlay is up takes over the server's
+	// single VNC slot and nudges the supervisor to re-dial immediately.
+	view.SetTakeoverHandler(func() error {
+		res, err := client.VNCTakeover(runCtx, ns, name)
+		if err != nil {
+			return err
+		}
+		if !res.OK {
+			return fmt.Errorf("server declined the takeover")
+		}
+		sess.RetryNow()
+		return nil
+	})
 
 	fmt.Printf("Opening %s/%s\n", ns, name)
 	for _, line := range cfg.Hotkeys() {

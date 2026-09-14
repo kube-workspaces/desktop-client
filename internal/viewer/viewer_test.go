@@ -6,9 +6,11 @@ package viewer
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1896,4 +1898,124 @@ func TestViewerAudioAbortsWhenDeviceUnavailable(t *testing.T) {
 	}
 	cancel()
 	<-runErr // context.Canceled is expected; just wait for the goroutine to exit
+}
+
+// containsLine checks if any line in the slice contains the substring.
+func containsLine(lines []string, substr string) bool {
+	for _, l := range lines {
+		if strings.Contains(l, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TEST A — handler runs once on Enter, key not forwarded:
+func TestViewerTakeoverEnterRunsHandlerWhenDisplayInUse(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+
+	// Initial handshake and idle state.
+	h.step(t)
+	h.cancel()
+	h.step(t)
+
+	// Set status to DisplayInUse (simulating another client holding the display).
+	h.v.SetStatus(StatusDisplayInUse, "")
+
+	// Register a takeover handler that signals when it runs.
+	ran := make(chan struct{}, 1)
+	h.v.SetTakeoverHandler(func() error {
+		ran <- struct{}{}
+		return nil
+	})
+
+	// Simulate pressing Enter (key down without repeat, then up).
+	h.be.push(keyDown(keysym.KeyReturn, 0), keyUp(keysym.KeyReturn, 0))
+	h.step(t)
+
+	// Wait for the handler to complete.
+	waitFor(t, "takeover handler", func() bool {
+		select { case <-ran: return true; default: return false }
+	})
+
+	// Verify the server didn't receive any key events (they were consumed internally).
+	h.srv.expectNone(t)
+}
+
+// TEST B — Enter dropped with no handler (no panic, nothing forwarded):
+func TestViewerTakeoverEnterDroppedWithoutHandler(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+
+	// Initial handshake and idle state.
+	h.step(t)
+	h.cancel()
+	h.step(t)
+
+	// Set status to DisplayInUse but do NOT register a handler.
+	h.v.SetStatus(StatusDisplayInUse, "")
+
+	// The handler is nil by default; pressing Enter should be safely dropped.
+	h.be.push(keyDown(keysym.KeyReturn, 0), keyUp(keysym.KeyReturn, 0))
+	h.step(t)
+
+	// No panic occurred — the drop path works.
+	h.srv.expectNone(t)
+}
+
+// TEST C — failing handler surfaces the reason in the overlay:
+func TestViewerTakeoverFailureSurfacesInOverlay(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+
+	// Initial handshake and idle state.
+	h.step(t)
+	h.cancel()
+	h.step(t)
+
+	// Set status to DisplayInUse.
+	h.v.SetStatus(StatusDisplayInUse, "")
+
+	// Register a handler that returns an error.
+	h.v.SetTakeoverHandler(func() error { return errors.New("boom") })
+
+	// Press Enter — the failure goes through the goroutine path and sets Status().
+	h.be.push(keyDown(keysym.KeyReturn, 0))
+	h.step(t)
+
+	// Wait for the failure message to appear.
+	waitFor(t, "failure detail", func() bool {
+		status, detail := h.v.Status()
+		return status == StatusDisplayInUse &&
+			strings.Contains(detail, "Take over failed") &&
+			strings.Contains(detail, "boom")
+	})
+}
+
+// TEST D — hint line only when a handler is registered:
+func TestViewerTakeoverHintOnlyWithHandler(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+
+	// Initial handshake and idle state.
+	h.step(t)
+	h.cancel()
+	h.step(t)
+
+	// Set status to DisplayInUse WITHOUT a handler first.
+	h.v.SetStatus(StatusDisplayInUse, "")
+	lines := h.v.overlayLines()
+	for _, l := range lines {
+		if strings.Contains(l, "Press Enter") {
+			t.Fatalf("hint appeared without a handler: %q", l)
+		}
+	}
+
+	// Now register a handler.
+	h.v.SetTakeoverHandler(func() error { return nil })
+	lines = h.v.overlayLines()
+	if !containsLine(lines, "Press Enter") {
+		t.Fatalf("missing hint with a handler registered")
+	}
 }
