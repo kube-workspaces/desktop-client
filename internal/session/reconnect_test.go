@@ -709,3 +709,76 @@ func TestReconnectingSessionNamesACleanDisconnect(t *testing.T) {
 		t.Errorf("failure error = %v, want it to name the clean close", err)
 	}
 }
+
+// wantPrefixStates is like wantStates but only requires the recorded states to
+// begin with want, since a supervisor may keep announcing the same state.
+func wantPrefixStates(t *testing.T, rec *recorder, want ...State) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var got []State
+	for time.Now().Before(deadline) {
+		got = rec.seen()
+		if len(got) >= len(want) && equalStates(got[:len(want)], want) {
+			return
+		}
+		time.Sleep(200 * time.Microsecond)
+	}
+	t.Errorf("states = %v, want prefix %v", got, want)
+}
+
+func TestReconnectingSessionRetryNowBreaksTheWait(t *testing.T) {
+	d := newDialer(step{err: fmt.Errorf("dial vnc bridge: %w", kwclient.ErrSessionInUse)})
+	rec := &recorder{}
+	opts := testOptions(d, rec)
+	opts.Policy = reconnect.Policy{Initial: time.Hour, Max: time.Hour, Multiplier: 1}
+	opts.InUsePoll = time.Hour
+
+	r := start(t, context.Background(), opts)
+
+	waitState(t, r, StateDisplayInUse)
+
+	r.RetryNow()
+
+	waitFor(t, "second dial attempt", func() bool { return d.count() >= 2 })
+
+	if !rec.has(StateDisplayInUse) {
+		t.Error("expected at least one StateDisplayInUse")
+	}
+}
+
+func TestReconnectingSessionRetryNowIsASafeNudge(t *testing.T) {
+	d := newDialer(step{err: fmt.Errorf("dial vnc bridge: %w", kwclient.ErrNotVM)})
+	rec := &recorder{}
+	opts := testOptions(d, rec)
+
+	r := start(t, context.Background(), opts)
+
+	if _, _, err := r.Attach(context.Background()); err == nil {
+		t.Fatalf("expected Attach to fail")
+	}
+
+	waitState(t, r, StateFailed)
+
+	r.RetryNow()
+	r.RetryNow()
+
+	wantStates(t, rec, StateConnecting, StateFailed)
+
+	link := newFakeLink()
+	d2 := newDialer(step{link: link})
+	rec2 := &recorder{}
+	opts2 := testOptions(d2, rec2)
+
+	r2 := start(t, context.Background(), opts2)
+
+	_ , _, err := r2.Attach(context.Background())
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	// liveCtx is the parent ctx passed to Attach; as long as attach succeeds, we're fine.
+
+	r2.RetryNow()
+	r2.RetryNow()
+
+	wantStates(t, rec2, StateConnecting, StateConnected)
+}

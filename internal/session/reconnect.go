@@ -180,6 +180,10 @@ type ReconnectingSession struct {
 	// changed is closed and replaced on every state or generation change, so
 	// any number of waiters can be woken without a per-waiter registry.
 	changed chan struct{}
+	// retry signals the supervisor to re-dial immediately when waiting for a
+	// busy display. It is buffered to avoid losing calls from goroutines that
+	// happen to call it at just the wrong time.
+	retry chan struct{}
 }
 
 // generation is one live connection and the context that bounds it.
@@ -238,6 +242,7 @@ func DialReconnecting(ctx context.Context, client *kwclient.Client, namespace, n
 		done:      make(chan struct{}),
 		state:     StateConnecting,
 		changed:   make(chan struct{}),
+		retry:     make(chan struct{}, 1),
 	}
 	go r.run(runCtx)
 	return r, nil
@@ -316,6 +321,14 @@ func (r *ReconnectingSession) Close() error {
 	return nil
 }
 
+// RetryNow asks a session waiting on a busy display (or backing off) to
+// re-dial immediately. It is safe to call from any goroutine and never blocks.
+// It is a nudge, not a command: calling it while a connection is live or the
+// session is closing does nothing.
+func (r *ReconnectingSession) RetryNow() {
+	select { case r.retry <- struct{}{}: default: }
+}
+
 // run is the supervisor loop.
 func (r *ReconnectingSession) run(ctx context.Context) {
 	defer close(r.done)
@@ -374,7 +387,7 @@ func (r *ReconnectingSession) run(ctx context.Context) {
 				return
 			}
 			r.setState(stateFor(err), err)
-			if !sleep(ctx, r.inUsePoll) {
+			if !sleepOrRetry(ctx, r, r.inUsePoll) {
 				r.setState(StateClosed, nil)
 				return
 			}
@@ -558,5 +571,27 @@ func sleep(ctx context.Context, d time.Duration) bool {
 		return true
 	case <-ctx.Done():
 		return false
+	}
+}
+
+// sleepOrRetry waits for either d, ctx cancellation, or a signal on retry. It
+// returns true when the timeout expires (and no cancel happened), and false when
+// the context is cancelled. On retry it returns true immediately without waiting.
+func sleepOrRetry(ctx context.Context, r *ReconnectingSession, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-r.retry:
+		// Retry was signalled; the caller will reconnect immediately. Return
+		// true to signal that we are still "alive" and should continue the loop,
+		// but without having waited out the poll interval.
+		return true
 	}
 }
