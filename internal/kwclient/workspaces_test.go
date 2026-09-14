@@ -390,6 +390,42 @@ func TestConsoleAndSSHSessionControl(t *testing.T) {
 			wantVerb: http.MethodPost,
 			body:     `{"ok":true,"wasInUse":false}`,
 		},
+		{
+			name: "vnc status",
+			call: func(c *Client) (any, error) {
+				return c.VNCStatus(context.Background(), "demo", "dev")
+			},
+			wantPath: "/v1/workspaces/dev/vnc/status",
+			wantVerb: http.MethodGet,
+			body:     `{"inUse":true}`,
+		},
+		{
+			name: "vnc status idle",
+			call: func(c *Client) (any, error) {
+				return c.VNCStatus(context.Background(), "demo", "dev")
+			},
+			wantPath: "/v1/workspaces/dev/vnc/status",
+			wantVerb: http.MethodGet,
+			body:     `{"inUse":false}`,
+		},
+		{
+			name: "vnc takeover",
+			call: func(c *Client) (any, error) {
+				return c.VNCTakeover(context.Background(), "demo", "dev")
+			},
+			wantPath: "/v1/workspaces/dev/vnc/takeover",
+			wantVerb: http.MethodPost,
+			body:     `{"ok":true,"wasInUse":true}`,
+		},
+		{
+			name: "vnc takeover idle",
+			call: func(c *Client) (any, error) {
+				return c.VNCTakeover(context.Background(), "demo", "dev")
+			},
+			wantPath: "/v1/workspaces/dev/vnc/takeover",
+			wantVerb: http.MethodPost,
+			body:     `{"ok":true,"wasInUse":false}`,
+		},
 	}
 
 	for _, tc := range tests {

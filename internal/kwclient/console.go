@@ -55,9 +55,19 @@ func (c *Client) SSHTakeover(ctx context.Context, namespace, name string) (*Take
 	return c.sessionTakeover(ctx, namespace, name, "ssh")
 }
 
-// TODO(vnc): the server has no /vnc/status or /vnc/takeover endpoint yet; they
-// are planned. Until then a busy VNC display is only discoverable by dialing
-// [Client.DialVNC] and handling [ErrSessionInUse].
+// VNCStatus fetches GET /v1/workspaces/{name}/vnc/status and returns the current
+// VNC session status for a workspace. Available for VM workspaces only; will 404/400
+// on container workspaces.
+func (c *Client) VNCStatus(ctx context.Context, namespace, name string) (*SessionStatus, error) {
+	return c.sessionStatus(ctx, namespace, name, "vnc")
+}
+
+// VNCTakeover posts to /v1/workspaces/{name}/vnc/takeover and evicts any existing
+// VNC session, returning the takeover result. Available for VM workspaces only; will
+// 404/400 on container workspaces.
+func (c *Client) VNCTakeover(ctx context.Context, namespace, name string) (*TakeoverResult, error) {
+	return c.sessionTakeover(ctx, namespace, name, "vnc")
+}
 
 // Reboot posts to /v1/workspaces/{name}/reboot, restarting a VM workspace.
 func (c *Client) Reboot(ctx context.Context, namespace, name string) error {
