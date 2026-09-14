@@ -330,6 +330,47 @@ type Backend interface {
 	SetClipboard(text string) error
 }
 
+// AudioFormat describes PCM data as the guest produces it. It is the
+// backend-neutral twin of the rfb package's format struct: a backend must not
+// need to know the wire protocol, so the viewer carries channels, rate and
+// layout here and converts to the RFB form at the connection boundary.
+type AudioFormat struct {
+	// Channels is the number of interleaved sample channels (1 or 2).
+	Channels int32
+	// SampleRate is the sample frequency in Hz.
+	SampleRate int32
+	// BytesPerSample is the sample width: 1, 2 or 4. LittleEndian selects the
+	// byte order of samples wider than one byte.
+	BytesPerSample int32
+	// LittleEndian reports whether samples are little-endian (true) or
+	// big-endian (false). It is ignored when BytesPerSample is 1.
+	LittleEndian bool
+}
+
+// AudioSink is an optional [Backend] capability: when a backend implements it,
+// the viewer enables guest audio and streams PCM through it.
+//
+// Audio follows the same concurrency contract as the rest of [Backend]: every
+// call is made from the goroutine that owns the window, never alongside a call
+// from any other goroutine.
+type AudioSink interface {
+	// OpenAudio opens the output device for the format the guest is about to
+	// send, returning an error if the device or format is unsupported.
+	//
+	// The viewer opens audio lazily: only once the guest has acknowledged the
+	// audio encoding is a stream opened, and an error here simply disables
+	// audio for the session rather than failing the connection.
+	OpenAudio(format AudioFormat) error
+
+	// PlayPCM queues one batch of sample bytes in the negotiated format for
+	// playback. data must not be retained after the call returns.
+	PlayPCM(data []byte)
+
+	// CloseAudio closes the device opened by [AudioSink.OpenAudio]. It is safe
+	// to call when no device is open.
+	CloseAudio()
+}
+
 // Event is one input or window event, reported by [Backend.PollEvents].
 //
 // The set of event types is closed: the unexported marker method means only

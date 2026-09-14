@@ -109,6 +109,17 @@ type SDLBackend struct {
 	// anything that blocks.
 	wakeMu sync.RWMutex
 	wakeOK bool
+
+	// audio holds the output device playing guest PCM. It is only used when
+	// this backend is also an [AudioSink]; audio opens lazily when a connection
+	// that negotiated it becomes live, and is closed with the session. It
+	// follows the same concurrency rule as everything else here: only the
+	// window-owning goroutine touches it.
+	audio struct {
+		opened bool
+		dev    sdl.AudioDeviceID
+		stream *sdl.AudioStream
+	}
 }
 
 // NewSDLBackend returns an unopened SDL backend.
@@ -300,6 +311,8 @@ func (b *SDLBackend) Close() {
 	b.wakeMu.Lock()
 	b.wakeOK = false
 	b.wakeMu.Unlock()
+
+	b.CloseAudio()
 
 	if b.overlay != nil {
 		b.overlay.Destroy()
@@ -611,6 +624,99 @@ func (b *SDLBackend) SetClipboard(text string) error {
 		return fmt.Errorf("sdl set clipboard: %w", err)
 	}
 	return nil
+}
+
+// OpenAudio opens the default output device and binds a stream to it for the
+// given PCM format. SDL converts the stream's format to whatever the device
+// actually runs, so a common case (two-channel 16-bit little-endian at 44100
+// Hz from a QEMU host of the same architecture) has no conversion at all.
+//
+// It is safe to call with a device already open: the previous one is closed
+// first, which is what the viewer asks for when the next connection negotiates
+// audio.
+func (b *SDLBackend) OpenAudio(format AudioFormat) error {
+	if err := sdl.Init(sdl.INIT_AUDIO); err != nil {
+		return fmt.Errorf("sdl init audio: %w", err)
+	}
+	fmtType, err := sdlAudioFormat(format)
+	if err != nil {
+		return err
+	}
+	if b.audio.opened {
+		b.CloseAudio()
+	}
+	spec := &sdl.AudioSpec{Format: fmtType, Channels: format.Channels, Freq: format.SampleRate}
+	dev, err := sdl.AudioDeviceID(0).OpenAudioDevice(spec)
+	if err != nil {
+		return fmt.Errorf("sdl open audio device: %w", err)
+	}
+	stream, err := sdl.CreateAudioStream(spec, spec)
+	if err != nil {
+		dev.Close()
+		return fmt.Errorf("sdl create audio stream: %w", err)
+	}
+	if err := dev.BindAudioStream(stream); err != nil {
+		stream.Destroy()
+		dev.Close()
+		return fmt.Errorf("sdl bind audio stream: %w", err)
+	}
+	if err := dev.Resume(); err != nil {
+		stream.Destroy()
+		dev.Close()
+		return fmt.Errorf("sdl resume audio device: %w", err)
+	}
+	b.audio.dev = dev
+	b.audio.stream = stream
+	b.audio.opened = true
+	return nil
+}
+
+// PlayPCM queues one batch of samples for playback. It is a no-op when no
+// device is open.
+func (b *SDLBackend) PlayPCM(data []byte) {
+	if !b.audio.opened || b.audio.stream == nil {
+		return
+	}
+	if err := b.audio.stream.PutData(data); err != nil {
+		// A failing stream is going to fail on every write; drop it rather
+		// than erroring the frame loop over audio. The next OpenAudio after a
+		// reconnect rebuilds the chain.
+		b.CloseAudio()
+	}
+}
+
+// CloseAudio stops and frees the audio device and stream. It is safe when no
+// device is open.
+func (b *SDLBackend) CloseAudio() {
+	if b.audio.stream != nil {
+		b.audio.stream.Destroy()
+		b.audio.stream = nil
+	}
+	if b.audio.opened {
+		b.audio.dev.Close()
+	}
+	b.audio.opened = false
+}
+
+// sdlAudioFormat maps the backend-neutral format onto the SDL sample type the
+// guest uses. One byte per sample is unsigned; anything wider is signed, in
+// the configured byte order.
+func sdlAudioFormat(f AudioFormat) (sdl.AudioFormat, error) {
+	switch f.BytesPerSample {
+	case 1:
+		return sdl.AUDIO_U8, nil
+	case 2:
+		if f.LittleEndian {
+			return sdl.AUDIO_S16LE, nil
+		}
+		return sdl.AUDIO_S16BE, nil
+	case 4:
+		if f.LittleEndian {
+			return sdl.AUDIO_S32LE, nil
+		}
+		return sdl.AUDIO_S32BE, nil
+	}
+	return 0, fmt.Errorf("viewer: unsupported audio depth of %d bytes per sample", f.BytesPerSample)
 }
 
 // PollEvents drains the SDL event queue, translating each event into a

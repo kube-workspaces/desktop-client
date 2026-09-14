@@ -123,6 +123,9 @@ func SessionConnector(be viewer.Backend, client *kwclient.Client, title string, 
 		defer cancel()
 
 		base := rfb.Config{Encodings: encodings}
+		if fm := view.AudioFormat(); fm != nil {
+			base.AudioFormat = fm
+		}
 		sess, err := session.DialReconnecting(runCtx, client, ws.Namespace, ws.Name, base, session.Options{
 			Policy:         reconnect.Default(),
 			UpdateInterval: opts.UpdateInterval,

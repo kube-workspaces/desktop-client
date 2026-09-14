@@ -67,6 +67,21 @@ type Config struct {
 	// Cursor pseudo-encoding. image is RGBA of size w*h*4; hotX/hotY are the
 	// hotspot. A zero-sized cursor means "hide the pointer".
 	OnCursor func(image []byte, w, h, hotX, hotY int)
+
+	// AudioFormat opts into the QEMU audio extension: EncodingQEMUAudio is
+	// added to the encoding list during the handshake, and once the caller has
+	// seen AudioOK() the format is sent with SetAudioFormat and EnableAudio,
+	// after which the server streams PCM batches to OnAudio. Nil keeps audio
+	// off. A connection never receives audio it has not asked for, and QEMU
+	// only accepts the audio messages after it has acknowledged the encoding,
+	// so nothing is sent until AudioOK().
+	AudioFormat *AudioFormat
+
+	// OnAudio is called for each batch of PCM samples the server streams. data
+	// holds the raw bytes in the negotiated AudioFormat and must not be
+	// retained past the callback; copy it if you need it later. It is only
+	// ever called for a connection that enabled audio via AudioFormat.
+	OnAudio func(data []byte)
 }
 
 func (c *Config) pixelFormat() PixelFormat {
@@ -136,6 +151,11 @@ type Conn struct {
 	serverName  string
 	serverPF    PixelFormat
 	securityTyp uint8
+
+	// audioMu guards audioFmt; SetAudioFormat runs on the sending goroutine
+	// while the read loop consumes it, so the two do not share the write lock.
+	audioMu  sync.RWMutex
+	audioFmt *AudioFormat
 
 	statsMu sync.Mutex
 	stats   Stats
@@ -255,6 +275,16 @@ func (c *Conn) handshake() error {
 	encs := c.cfg.Encodings
 	if encs == nil {
 		encs = DefaultEncodings
+	}
+	if c.cfg.AudioFormat != nil {
+		// Audio is opt-in: the pseudo-encoding is only advertised when this
+		// connection has a sink to play it. QEMU acknowledges it with a
+		// payload-free rectangle only when the display actually has an
+		// audiodev attached; the format and enable messages are sent from
+		// AudioOK(), which observes that ack. Sending them blind is a
+		// protocol error on a server without audio and drops the link.
+		encs = append(append([]Encoding(nil), encs...), EncodingQEMUAudio)
+		c.setAudioFormat(*c.cfg.AudioFormat)
 	}
 	if err := c.SetEncodings(encs); err != nil {
 		return fmt.Errorf("rfb: set encodings: %w", err)
@@ -482,6 +512,77 @@ func (c *Conn) SetEncodings(encs []Encoding) error {
 	return c.send(buf)
 }
 
+// SetAudioFormat tells QEMU the sample format to resample the guest's sound
+// card output to, and remembers it so the read loop can size incoming audio
+// batches. It only takes effect once EnableAudio follows; QEMU reads the
+// current format when the capture starts.
+//
+// fm must be [AudioFormat.Valid]: QEMU treats an invalid format as a protocol
+// error and disconnects the client rather than ignoring it.
+//
+// It must only be called once AudioOK() reports the server acknowledged the
+// audio encoding; QEMU otherwise treats the message as a protocol error.
+func (c *Conn) SetAudioFormat(fm AudioFormat) error {
+	if !fm.Valid() {
+		return fmt.Errorf("rfb: invalid audio format %s", fm)
+	}
+	c.setAudioFormat(fm)
+	buf := make([]byte, 4, 10)
+	buf[0] = msgQEMU
+	buf[1] = qemuSubAudio
+	binary.BigEndian.PutUint16(buf[2:], qemuAudioSetFormat)
+	buf = append(buf, fm.marshal()...)
+	return c.send(buf)
+}
+
+// EnableAudio tells QEMU to start streaming guest audio. It must be called
+// after SetAudioFormat and only once AudioOK() is true; QEMU otherwise
+// desynchronises the session.
+func (c *Conn) EnableAudio() error {
+	buf := []byte{msgQEMU, qemuSubAudio, 0, 0}
+	binary.BigEndian.PutUint16(buf[2:], qemuAudioEnable)
+	return c.send(buf)
+}
+
+// DisableAudio tells QEMU to stop streaming guest audio. QEMU answers with
+// qemuAudioEnd and keeps the capture idle until the next EnableAudio.
+func (c *Conn) DisableAudio() error {
+	buf := []byte{msgQEMU, qemuSubAudio, 0, 0}
+	binary.BigEndian.PutUint16(buf[2:], qemuAudioDisable)
+	return c.send(buf)
+}
+
+// AudioFormat returns the format this connection is configured for, and
+// whether audio was requested at all.
+func (c *Conn) AudioFormat() (AudioFormat, bool) {
+	c.audioMu.RLock()
+	defer c.audioMu.RUnlock()
+	if c.audioFmt == nil {
+		return AudioFormat{}, false
+	}
+	return *c.audioFmt, true
+}
+
+// AudioOK reports whether the server has acknowledged the audio encoding. It
+// is the ground-truth gate for SetAudioFormat and EnableAudio: QEMU echoes the
+// -259 encoding as a payload-free rectangle only when its display was created
+// with an audiodev, so until AudioOK() there is no sound card to capture. The
+// ack arrives asynchronously after the handshake, so this usually reports
+// false for the first few updates of a connection.
+func (c *Conn) AudioOK() bool {
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	return c.stats.AckedPseudoEncodings[EncodingQEMUAudio]
+}
+
+// setAudioFormat stores the format without touching the wire; callers that
+// want to send it use SetAudioFormat.
+func (c *Conn) setAudioFormat(fm AudioFormat) {
+	c.audioMu.Lock()
+	c.audioFmt = &fm
+	c.audioMu.Unlock()
+}
+
 // RequestUpdate asks for a framebuffer update covering the whole screen.
 // Incremental requests ask only for what changed, which is what a client sends
 // continuously; a non-incremental request forces a full repaint and is needed
@@ -629,6 +730,10 @@ func (c *Conn) Run(ctx context.Context) error {
 			if c.cfg.OnCutText != nil {
 				c.cfg.OnCutText(text)
 			}
+		case msgQEMU:
+			if err := c.readQEMU(); err != nil {
+				return err
+			}
 		default:
 			// There is no framing, so an unknown message type means the stream
 			// is desynchronised and cannot be recovered.
@@ -647,6 +752,62 @@ func (c *Conn) readColourMap() error {
 	// discard it rather than desynchronise.
 	if _, err := io.CopyN(io.Discard, c.r, int64(n)*6); err != nil {
 		return fmt.Errorf("rfb: discard colour map: %w", err)
+	}
+	return nil
+}
+
+// readQEMU dispatches one message type 255. On this client the only QEMU
+// server sub-type is audio, so a message that is not audio means the stream is
+// desynchronised and cannot be recovered. The sub-type and command were
+// already announced by the caller consuming the type byte; here we consume the
+// remaining three header bytes plus whatever payload the command carries.
+func (c *Conn) readQEMU() error {
+	head := make([]byte, 3)
+	if err := readFull(c.r, head); err != nil {
+		return fmt.Errorf("rfb: read qemu message header: %w", err)
+	}
+	if head[0] != qemuSubAudio {
+		return fmt.Errorf("rfb: unknown QEMU message sub-type %d", head[0])
+	}
+	switch cmd := binary.BigEndian.Uint16(head[1:]); cmd {
+	case qemuAudioBegin, qemuAudioEnd:
+		// Payload-free notifications that capture started or stopped.
+		return nil
+	case qemuAudioData:
+		return c.readAudioData()
+	default:
+		return fmt.Errorf("rfb: unknown QEMU audio message %d", cmd)
+	}
+}
+
+// readAudioData consumes one batch of PCM samples: a u32 byte count followed
+// by that many bytes in the negotiated format. The buffer is handed to the
+// OnAudio callback, which must not retain it.
+func (c *Conn) readAudioData() error {
+	var head [4]byte
+	if err := readFull(c.r, head[:]); err != nil {
+		return fmt.Errorf("rfb: read audio data header: %w", err)
+	}
+	n := int(binary.BigEndian.Uint32(head[:]))
+	// QEMU's capture path always bundles small batches. 1 MiB is a generous
+	// sanity bound that catches a desynced stream before the allocation.
+	if n <= 0 || n > 1<<20 {
+		return fmt.Errorf("rfb: implausible audio batch of %d bytes", n)
+	}
+	c.audioMu.RLock()
+	fm := c.audioFmt
+	c.audioMu.RUnlock()
+	if fm == nil {
+		// Audio only flows after the client requested it, and the format is
+		// stored before EnableAudio is ever sent, so this is a desync.
+		return fmt.Errorf("rfb: audio data before a format was negotiated")
+	}
+	buf := make([]byte, n)
+	if err := readFull(c.r, buf); err != nil {
+		return fmt.Errorf("rfb: read audio data: %w", err)
+	}
+	if c.cfg.OnAudio != nil {
+		c.cfg.OnAudio(buf)
 	}
 	return nil
 }

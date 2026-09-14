@@ -63,6 +63,13 @@ const (
 	// regardless, so there is nothing to gain by remembering more.
 	maxPendingDamage = 4096
 
+	// maxPendingAudio bounds how much PCM may wait in the inbox between the
+	// network and the audio device. 64 KiB is a few hundred milliseconds of
+	// stereo 44.1kHz; beyond that the link is outpacing the device and the
+	// newest samples win. Bounding it also keeps a talkative guest from
+	// growing the queue unboundedly.
+	maxPendingAudio = 1 << 16
+
 	// maxWheelTicks caps how many wheel clicks one event may expand into.
 	// A high-resolution trackpad can report a large accumulated delta, and
 	// each tick costs two RFB messages.
@@ -237,6 +244,12 @@ type Viewer struct {
 		// srcErr is a terminal failure reported by the connection source.
 		srcErr error
 		hasErr bool
+
+		// audio accumulates PCM batches from the RFB read loop until the
+		// render loop plays them. It is bounded: a link that outpaces the
+		// device for any length of time is being cut down to its newest audio,
+		// which is what the ear prefers to a growing backlog.
+		audio []byte
 	}
 
 	// Everything below is owned by the render loop and must not be touched
@@ -251,6 +264,20 @@ type Viewer struct {
 	// than by being told, which removes a whole class of ordering bug.
 	conn    *rfb.Conn
 	connCtx context.Context
+
+	// audioSink is the backend narrowed to its audio capability, or nil when
+	// the backend has no audio output at all. The zero value is a valid
+	// backend that simply plays no sound.
+	audioSink AudioSink
+	// audioFmt is the PCM layout the current connection's guest is sending,
+	// from its negotiated rfb.AudioFormat, or nil when the connection (or the
+	// backend) has no audio. It is owned by the render loop.
+	audioFmt *rfb.AudioFormat
+	// audioOpened reports that the sink's device is open, audioEnabled that
+	// the guest has been told to stream. Both are reset on attach and cleared
+	// on drop, like everything else that belongs to one connection.
+	audioOpened  bool
+	audioEnabled bool
 
 	// fresh is true from the moment a connection is installed until it has
 	// decoded its first framebuffer update. Until then the texture still holds
@@ -327,11 +354,31 @@ type hotkeyID struct {
 // New returns a viewer that will draw into be.
 func New(be Backend, cfg Config) *Viewer {
 	cfg.applyDefaults()
-	return &Viewer{
+	v := &Viewer{
 		be:      be,
 		cfg:     cfg,
 		swallow: make(map[hotkeyID]bool),
 	}
+	if sink, ok := be.(AudioSink); ok {
+		v.audioSink = sink
+	}
+	return v
+}
+
+// AudioFormat returns the PCM layout audio would be requested in, or nil when
+// the backend cannot play audio.
+//
+// A caller that runs a guest with sound (an image whose spec sets
+// soundDevice, say) installs the returned value as rfb.Config.AudioFormat on
+// every connection it creates, so the viewer's OnAudio handler applies to that
+// connection's stream. Connections that never opted in — a guest with no audio
+// device — simply never send audio, and the return here being non-nil costs
+// nothing.
+func (v *Viewer) AudioFormat() *rfb.AudioFormat {
+	if v.audioSink == nil {
+		return nil
+	}
+	return &rfb.AudioFormatPCM
 }
 
 // RFBConfig returns base with the viewer's callbacks installed.
@@ -397,6 +444,27 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 		v.inbox.Lock()
 		v.inbox.cutText = text
 		v.inbox.hasCutText = true
+		v.inbox.Unlock()
+		v.wake()
+	}
+
+	prevAudio := base.OnAudio
+	cfg.OnAudio = func(data []byte) {
+		if prevAudio != nil {
+			prevAudio(data)
+		}
+		// The connection hands the callback a fresh buffer per batch but asks
+		// the callback not to retain it, so the data is copied before it goes
+		// in the queue.
+		clone := make([]byte, len(data))
+		copy(clone, data)
+		v.inbox.Lock()
+		audio := append(v.inbox.audio, clone...)
+		if len(audio) > maxPendingAudio {
+			// Keep the newest samples: throw the oldest away.
+			audio = append([]byte(nil), audio[len(audio)-maxPendingAudio:]...)
+		}
+		v.inbox.audio = audio
 		v.inbox.Unlock()
 		v.wake()
 	}
@@ -526,7 +594,7 @@ func (v *Viewer) idleTimeout(now time.Time) time.Duration {
 	// a correctness requirement: a frame that lands between this iteration's
 	// redraw and its wait would otherwise sit undrawn until the heartbeat.
 	v.inbox.Lock()
-	pending := v.inbox.needsPresent || v.inbox.hasNext || v.inbox.hasErr || v.inbox.hasCutText
+	pending := v.inbox.needsPresent || v.inbox.hasNext || v.inbox.hasErr || v.inbox.hasCutText || len(v.inbox.audio) > 0
 	v.inbox.Unlock()
 	if pending {
 		return 0
@@ -606,6 +674,13 @@ func (v *Viewer) stop() {
 	// Order matters: tell the guest every key is up while the connection is
 	// still open, then drop the window.
 	v.releaseInput()
+	// The backend's own Close destroys any audio device it opened; closing the
+	// sink here instead keeps playback from persisting across backends that
+	// do not fold it into Close.
+	if v.audioOpened && v.audioSink != nil {
+		v.audioSink.CloseAudio()
+	}
+	v.closeAudio()
 	v.be.Close()
 }
 
@@ -658,6 +733,10 @@ func (v *Viewer) step(now time.Time) error {
 		if err := v.applyGuestResize(now); err != nil {
 			return err
 		}
+		if err := v.syncAudioEnable(); err != nil {
+			return err
+		}
+		v.syncAudio()
 		if err := v.syncClipboard(now); err != nil {
 			return err
 		}
@@ -731,9 +810,21 @@ func (v *Viewer) attach(conn *rfb.Conn, connCtx context.Context, now time.Time) 
 	v.inbox.gotUpdate = false
 	v.inbox.resized = false
 	v.inbox.hasCutText, v.inbox.cutText = false, ""
+	v.inbox.audio = nil
 	v.inbox.fullRepaint = true
 	v.inbox.needsPresent = true
 	v.inbox.Unlock()
+
+	// Audio, like everything else, belongs to one connection: capture the
+	// format it negotiated and let the enable step below open the device once
+	// the ack lands.
+	v.audioOpened, v.audioEnabled = false, false
+	v.audioFmt = nil
+	if v.audioSink != nil {
+		if fm, ok := conn.AudioFormat(); ok {
+			v.audioFmt = &fm
+		}
+	}
 
 	v.SetStatus(StatusLive, "")
 	v.clipDue = now.Add(v.cfg.ClipboardInterval)
@@ -764,8 +855,23 @@ func (v *Viewer) dropConn(cause error) {
 	v.conn, v.connCtx = nil, nil
 	v.fresh = false
 	v.forgetInput()
+	v.closeAudio()
 	v.setStatusIfLive(StatusReconnecting, "")
 	v.markPresent()
+}
+
+// closeAudio tears down the current connection's audio: the device closes and
+// anything still queued in the inbox is dropped, since it belongs to a guest
+// that is no longer there.
+func (v *Viewer) closeAudio() {
+	if v.audioOpened && v.audioSink != nil {
+		v.audioSink.CloseAudio()
+	}
+	v.audioOpened, v.audioEnabled = false, false
+	v.audioFmt = nil
+	v.inbox.Lock()
+	v.inbox.audio = nil
+	v.inbox.Unlock()
 }
 
 // connWrite handles the failure of a write to the guest.
@@ -1185,6 +1291,66 @@ func (v *Viewer) applyGuestResize(now time.Time) error {
 	}
 	v.logf("resizing guest display to %dx%d", v.resizeW, v.resizeH)
 	return v.connWrite(v.conn.SetDesktopSize(uint16(v.resizeW), uint16(v.resizeH)))
+}
+
+// syncAudioEnable opens the audio device and asks the guest to start
+// streaming, exactly once per connection and only after the guest has
+// acknowledged the audio encoding.
+//
+// Nothing here fails the session: a missing device, an unsupported format or a
+// connection that cannot stream audio merely drops audio for that connection.
+func (v *Viewer) syncAudioEnable() error {
+	if v.audioEnabled || v.audioFmt == nil || v.audioSink == nil {
+		return nil
+	}
+	if !v.conn.AudioOK() {
+		// QEMU ignores — and under some versions kills — a connection that
+		// enables audio before the encoding was acknowledged. Wait.
+		return nil
+	}
+	sinkFmt := AudioFormat{
+		Channels:       int32(v.audioFmt.Channels),
+		SampleRate:     int32(v.audioFmt.SamplesPerSec),
+		BytesPerSample: int32(v.audioFmt.BytesPerSample()),
+		LittleEndian:   v.audioFmt.LittleEndian,
+	}
+	if err := v.audioSink.OpenAudio(sinkFmt); err != nil {
+		v.logf("audio disabled: %v", err)
+		v.audioFmt = nil
+		v.inbox.Lock()
+		v.inbox.audio = nil
+		v.inbox.Unlock()
+		return nil
+	}
+	// A write that lands on a dead connection drops the connection, not the
+	// session; the device closes with it.
+	if err := v.connWrite(v.conn.SetAudioFormat(*v.audioFmt)); err != nil {
+		return err
+	}
+	if err := v.connWrite(v.conn.EnableAudio()); err != nil {
+		return err
+	}
+	v.audioOpened = true
+	v.audioEnabled = true
+	v.logf("audio on (%dch %dHz, %d bytes/sample)", v.audioFmt.Channels, v.audioFmt.SamplesPerSec, v.audioFmt.BytesPerSample())
+	return nil
+}
+
+// syncAudio plays whatever audio has arrived since the last pass. It runs
+// every iteration of the render loop while a connection is live, so playback
+// latency is one frame, not one queue's worth.
+func (v *Viewer) syncAudio() {
+	if !v.audioOpened {
+		return
+	}
+	v.inbox.Lock()
+	audio := v.inbox.audio
+	v.inbox.audio = nil
+	v.inbox.Unlock()
+	if len(audio) == 0 {
+		return
+	}
+	v.audioSink.PlayPCM(audio)
 }
 
 func (v *Viewer) syncClipboard(now time.Time) error {

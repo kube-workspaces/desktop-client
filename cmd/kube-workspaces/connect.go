@@ -123,6 +123,12 @@ func runConnect(ctx context.Context, args []string) error {
 	defer cancel()
 
 	base := rfb.Config{Encodings: encs}
+	if fm := view.AudioFormat(); fm != nil {
+		// Opt the connection into guest audio; the viewer enables it on the
+		// wire once the guest acknowledges the encoding. A guest with no
+		// soundDevice simply never streams.
+		base.AudioFormat = fm
+	}
 	opts := session.Options{
 		Policy:         reconnect.Default(),
 		UpdateInterval: *interval,

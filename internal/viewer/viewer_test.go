@@ -315,6 +315,53 @@ func (f *fakeBackend) lastFrame(t *testing.T) (Rect, Overlay) {
 
 var _ Backend = (*fakeBackend)(nil)
 
+// audioBackend is a fakeBackend that also implements [AudioSink]. Embedding
+// buys the whole Backend surface; the audio methods record what the viewer
+// asked of them.
+type audioBackend struct {
+	*fakeBackend
+	audioMu  sync.Mutex
+	opened   int
+	gotFmt   *AudioFormat
+	played   []byte
+	openErr  error
+	closed   int
+}
+
+func (a *audioBackend) OpenAudio(format AudioFormat) error {
+	a.audioMu.Lock()
+	defer a.audioMu.Unlock()
+	if a.openErr != nil {
+		return a.openErr
+	}
+	a.opened++
+	got := format
+	a.gotFmt = &got
+	return nil
+}
+
+func (a *audioBackend) PlayPCM(data []byte) {
+	a.audioMu.Lock()
+	defer a.audioMu.Unlock()
+	// Mirror the viewer contract: the sink must not retain the slice.
+	a.played = append(a.played, data...)
+}
+
+func (a *audioBackend) CloseAudio() {
+	a.audioMu.Lock()
+	defer a.audioMu.Unlock()
+	a.closed++
+}
+
+func (a *audioBackend) audioOpenedCount() int {
+	a.audioMu.Lock()
+	defer a.audioMu.Unlock()
+	return a.opened
+}
+
+var _ Backend = (*audioBackend)(nil)
+var _ AudioSink = (*audioBackend)(nil)
+
 // --- fake RFB server --------------------------------------------------------
 //
 // The viewer is tested against a real rfb.Conn rather than an interface, so
@@ -336,6 +383,14 @@ type cutTextMsg struct{ text string }
 
 type desktopSizeMsg struct{ w, h uint16 }
 
+type audioCtrlMsg struct{ on bool }
+
+type audioFormatMsg struct {
+	format   byte
+	channels byte
+	freq     uint32
+}
+
 type updateRequestMsg struct {
 	incremental bool
 	rect        rfb.Rect
@@ -344,6 +399,21 @@ type updateRequestMsg struct {
 type fakeServer struct {
 	t    *testing.T
 	msgs chan any
+
+	// mu and conn let a test inject server→client traffic (the audio-ack
+	// rectangle and PCM batches, which the viewer otherwise has no way to ask
+	// for). Writes are serialised against the handshake.
+	mu   sync.Mutex
+	conn net.Conn
+}
+
+// send writes a raw server→client message, the way the test peers into the
+// wire with bytes the virtual display's RFB server would produce.
+func (s *fakeServer) send(msg []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.conn.Write(msg)
+	return err
 }
 
 // startFakeServer returns the client side of a connection whose peer speaks
@@ -351,7 +421,7 @@ type fakeServer struct {
 func startFakeServer(t *testing.T, width, height int) (net.Conn, *fakeServer) {
 	t.Helper()
 	clientSide, serverSide := net.Pipe()
-	srv := &fakeServer{t: t, msgs: make(chan any, 256)}
+	srv := &fakeServer{t: t, msgs: make(chan any, 256), conn: serverSide}
 
 	// The handshake runs concurrently with the client's: net.Pipe is
 	// unbuffered, so the server's first write does not complete until the
@@ -478,6 +548,30 @@ func (s *fakeServer) readLoop(c net.Conn) {
 				w: binary.BigEndian.Uint16(buf[1:]),
 				h: binary.BigEndian.Uint16(buf[3:]),
 			})
+		case 255: // QEMU extension, audio sub-type
+			head := make([]byte, 3)
+			if _, err = io.ReadFull(c, head); err != nil {
+				return
+			}
+			if head[0] != 1 { // VNC_MSG_CLIENT_QEMU_AUDIO
+				return
+			}
+			switch cmd := binary.BigEndian.Uint16(head[1:]); cmd {
+			case 0, 1: // enable / disable
+				s.emit(audioCtrlMsg{on: cmd == 0})
+			case 2: // set format
+				fm := make([]byte, 6)
+				if _, err = io.ReadFull(c, fm); err != nil {
+					return
+				}
+				s.emit(audioFormatMsg{
+					format:   fm[0],
+					channels: fm[1],
+					freq:     binary.BigEndian.Uint32(fm[2:]),
+				})
+			default:
+				return
+			}
 		default:
 			return
 		}
@@ -1605,4 +1699,201 @@ func indexOf(haystack, needle string) int {
 		}
 	}
 	return -1
+}
+
+// --- audio ------------------------------------------------------------------
+
+// testAudioAck is the payload-free rectangle QEMU sends once -259 is
+// advertised, and it is what flips the connection's AudioOK.
+func testAudioAck(width, height int) []byte {
+	msg := []byte{0, 0, 0, 1} // framebuffer update, one rect
+	msg = append(msg, 0, 0, 0, 0)
+	msg = append(msg, byte(width>>8), byte(width), byte(height>>8), byte(height))
+	var enc [4]byte
+	encI32 := int32(rfb.EncodingQEMUAudio)
+	binary.BigEndian.PutUint32(enc[:], uint32(encI32))
+	msg = append(msg, enc[:]...)
+	return msg
+}
+
+// testAudioBatch is one QEMU PCM batch: msg 255, sub-type 1, u16 2 (DATA), a
+// u32 byte count, then the samples.
+func testAudioBatch(payload []byte) []byte {
+	msg := []byte{255, 1, 0, 2}
+	var sz [4]byte
+	binary.BigEndian.PutUint32(sz[:], uint32(len(payload)))
+	msg = append(msg, sz[:]...)
+	return append(msg, payload...)
+}
+
+// waitForAudio polls fn until it succeeds, stepping the render loop between polls,
+// which is how the tests drive the enable/playback state machines.
+func waitForAudio(t *testing.T, h *harness, d time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for !fn() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition never became true within ", d)
+		}
+		h.step(t)
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestViewerAudioFormatReportedOnlyWithSink pins AudioFormat's contract: a
+// backend that cannot play audio gets nil, so a front-end opts connections out.
+func TestViewerAudioFormatReportedOnlyWithSink(t *testing.T) {
+	if New(newFakeBackend(200, 200), Config{}).AudioFormat() != nil {
+		t.Fatal("plain backend reported an audio format")
+	}
+	fm := New(&audioBackend{fakeBackend: newFakeBackend(200, 200)}, Config{}).AudioFormat()
+	if fm == nil {
+		t.Fatal("audio backend reported nil format")
+	}
+	if *fm != rfb.AudioFormatPCM {
+		t.Fatalf("AudioFormat() = %v, want %v", *fm, rfb.AudioFormatPCM)
+	}
+}
+
+// TestViewerAudioEnablesOnlyAfterAckAndStreamsToSink is the end-to-end audio
+// path: the connection negotiates a format at creation, the viewer waits for
+// the guest's ack before opening the device or sending a byte, then streams
+// every PCM batch it receives into the sink.
+func TestViewerAudioEnablesOnlyAfterAckAndStreamsToSink(t *testing.T) {
+	transport, srv := startFakeServer(t, 640, 480)
+	ab := &audioBackend{fakeBackend: newFakeBackend(800, 600)}
+	v := New(ab, Config{Title: "ns/vm"})
+	base := v.RFBConfig(rfb.Config{AudioFormat: &rfb.AudioFormatPCM})
+	conn, err := rfb.NewConn(transport, base)
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- conn.Run(ctx) }()
+
+	now := time.Now()
+	if err := v.start(now); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer v.stop()
+	h := &harness{v: v, be: ab.fakeBackend, conn: conn, cfg: base, now: now, cancel: cancel}
+	v.attach(conn, ctx, now)
+	srv.drain(t)
+
+	// Until the ack lands, the device must stay closed and not a single audio
+	// byte may leave the client.
+	h.step(t)
+	if n := ab.audioOpenedCount(); n != 0 {
+		t.Fatalf("audio opened before the ack (opened %d)", n)
+	}
+	for _, m := range srv.drain(t) {
+		switch m.(type) {
+		case audioCtrlMsg, audioFormatMsg:
+			t.Fatalf("audio sent to the guest before its ack: %v", m)
+		}
+	}
+
+	// Ack the encoding; the next pass opens the sink and asks for the PCM
+	// format, then to stream.
+	if err := srv.send(testAudioAck(640, 480)); err != nil {
+		t.Fatalf("send ack: %v", err)
+	}
+	waitForAudio(t, h, 3*time.Second, func() bool { return ab.audioOpenedCount() != 0 })
+
+	var sawFormat, sawEnable bool
+	for _, m := range srv.drain(t) {
+		switch msg := m.(type) {
+		case audioFormatMsg:
+			sawFormat = true
+			want := rfb.AudioFormatPCM
+			if msg.format != want.Format || msg.channels != want.Channels || msg.freq != want.SamplesPerSec {
+				t.Fatalf("set-format = %+v, want %+v", msg, want)
+			}
+		case audioCtrlMsg:
+			if !msg.on {
+				t.Fatal("viewer sent a disable, then an enable")
+			}
+			sawEnable = true
+		}
+	}
+	if !sawFormat || !sawEnable {
+		t.Fatalf("audio control = format %v enable %v, want both", sawFormat, sawEnable)
+	}
+
+	// Two batches, delivered byte-exact to the sink.
+	if err := srv.send(testAudioBatch([]byte{0x11, 0x22, 0x33, 0x44})); err != nil {
+		t.Fatalf("send audio: %v", err)
+	}
+	if err := srv.send(testAudioBatch([]byte{0xaa, 0xbb})); err != nil {
+		t.Fatalf("send audio: %v", err)
+	}
+	want := []byte{0x11, 0x22, 0x33, 0x44, 0xaa, 0xbb}
+	waitForAudio(t, h, 3*time.Second, func() bool {
+		ab.audioMu.Lock()
+		defer ab.audioMu.Unlock()
+		return string(ab.played) == string(want)
+	})
+
+	// Dropping the connection closes the device.
+	cancel()
+	waitForAudio(t, h, 3*time.Second, func() bool {
+		ab.audioMu.Lock()
+		defer ab.audioMu.Unlock()
+		return ab.closed != 0
+	})
+	// conn.Run returns context.Canceled after the viewer's own cancel
+	if err := <-runErr; err != nil && err != context.Canceled {
+		t.Fatalf("conn.Run: %v", err)
+	}
+}
+
+// TestViewerAudioAbortsWhenDeviceUnavailable checks that a sink that refuses
+// the format disables audio gracefully: no enable is sent to the guest and the
+// device is not left half-open.
+func TestViewerAudioAbortsWhenDeviceUnavailable(t *testing.T) {
+	transport, srv := startFakeServer(t, 640, 480)
+	ab := &audioBackend{fakeBackend: newFakeBackend(800, 600)}
+	ab.openErr = fmt.Errorf("no such device")
+	v := New(ab, Config{Title: "ns/vm"})
+	base := v.RFBConfig(rfb.Config{AudioFormat: &rfb.AudioFormatPCM})
+	conn, err := rfb.NewConn(transport, base)
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- conn.Run(ctx) }()
+
+	now := time.Now()
+	if err := v.start(now); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer v.stop()
+	h := &harness{v: v, be: ab.fakeBackend, conn: conn, cfg: base, now: now, cancel: cancel}
+	v.attach(conn, ctx, now)
+	srv.drain(t)
+
+	if err := srv.send(testAudioAck(640, 480)); err != nil {
+		t.Fatalf("send ack: %v", err)
+	}
+	// A few passes after the ack: the first attempt fails and must not be
+	// retried, because audio was abandoned for this connection.
+	for i := 0; i < 5; i++ {
+		h.step(t)
+		time.Sleep(time.Millisecond)
+	}
+	if n := ab.audioOpenedCount(); n != 0 {
+		t.Fatalf("audio device opened despite open error (opened %d)", n)
+	}
+	for _, m := range srv.drain(t) {
+		switch m.(type) {
+		case audioCtrlMsg, audioFormatMsg:
+			t.Fatalf("audio control sent despite the device error: %v", m)
+		}
+	}
+	cancel()
+	<-runErr // context.Canceled is expected; just wait for the goroutine to exit
 }

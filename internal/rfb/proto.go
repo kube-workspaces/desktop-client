@@ -51,6 +51,29 @@ const (
 	msgServerCutText       uint8 = 3
 )
 
+// msgQEMU is QEMU's private message type, used in both directions for the QEMU
+// audio extension. Byte 1 is the sub-type (qemuSubAudio for audio) and bytes
+// 2-3 are a u16 selecting the specific message.
+const msgQEMU uint8 = 255
+
+// QEMU message sub-type carried in byte 1 of a msgQEMU message. QEMU uses a
+// single sub-type in both directions for audio.
+const qemuSubAudio uint8 = 1
+
+// Client-to-server QEMU audio messages (the u16 in bytes 2-3).
+const (
+	qemuAudioEnable    uint16 = 0
+	qemuAudioDisable   uint16 = 1
+	qemuAudioSetFormat uint16 = 2
+)
+
+// Server-to-client QEMU audio messages (the u16 in bytes 2-3).
+const (
+	qemuAudioEnd   uint16 = 0
+	qemuAudioBegin uint16 = 1
+	qemuAudioData  uint16 = 2
+)
+
 // Security types (RFC 6143 §7.1.2).
 const (
 	secInvalid uint8 = 0
@@ -295,6 +318,87 @@ func boolByte(v bool) byte {
 		return 1
 	}
 	return 0
+}
+
+// AudioFormat describes the PCM samples QEMU streams through the QEMU audio
+// pseudo-encoding. Enabling audio is three separate steps: advertise
+// EncodingQEMUAudio (which the handshake does when AudioFormat is configured),
+// wait for the server's payload-free acknowledgment rectangle, then send
+// SetAudioFormat and EnableAudio. QEMU echoes each sample batch to the client
+// in that format as a message type 255, sub-type 1, u16 qemuAudioData.
+//
+// The wire format message carries no byte order: QEMU delivers samples in its
+// own (the host's) endianness, which on every platform this client targets is
+// little-endian. LittleEndian is therefore documentation for the sink, not a
+// negotiation field.
+//
+// QEMU rejects a format the client validates as [AudioFormat.Valid]: channels
+// other than 1 or 2, a sample rate above 48000 Hz, or an unknown format code
+// is a protocol error that disconnects the client. The echo is in host byte
+// order at whatever sample width the format names.
+type AudioFormat struct {
+	// Format is QEMU's sample format code: 0 U8, 1 S8, 2 U16, 3 S16,
+	// 4 U32, 5 S32. One byte per channel, interleaved.
+	Format uint8
+	// Channels is the number of interleaved channels: 1 mono or 2 stereo.
+	Channels uint8
+	// SamplesPerSec is the sample rate in Hz, at most 48000.
+	SamplesPerSec uint32
+	// LittleEndian names the byte order of multi-byte samples on the wire. It
+	// is always the host's order; the field just carries that fact to the
+	// sink without guessing.
+	LittleEndian bool
+}
+
+// AudioFormatPCM is the format this client asks for: signed 16-bit stereo
+// 44100 Hz, host-endian — the shape every desktop audio device and SDL3 device
+// accepts without conversion, so QEMU's resampler is the only stage in the
+// path that does any work.
+var AudioFormatPCM = AudioFormat{
+	Format:        3, // S16
+	Channels:      2,
+	SamplesPerSec: 44100,
+	LittleEndian:  true,
+}
+
+// BytesPerSample returns the sample width the format code implies.
+func (fm AudioFormat) BytesPerSample() int {
+	switch fm.Format {
+	case 0, 1:
+		return 1
+	case 2, 3:
+		return 2
+	case 4, 5:
+		return 4
+	}
+	return 0
+}
+
+// Valid reports whether fm can be sent to QEMU without risking a protocol
+// error (and in particular a disconnect on the other end of the link).
+func (fm AudioFormat) Valid() bool {
+	return fm.BytesPerSample() > 0 &&
+		(fm.Channels == 1 || fm.Channels == 2) &&
+		fm.SamplesPerSec > 0 && fm.SamplesPerSec <= 48000
+}
+
+// marshal writes the 6-byte wire form that follows the sub-type and the u16
+// qemuAudioSetFormat command byte.
+func (fm AudioFormat) marshal() []byte {
+	b := make([]byte, 6)
+	b[0] = fm.Format
+	b[1] = fm.Channels
+	binary.BigEndian.PutUint32(b[2:], fm.SamplesPerSec)
+	return b
+}
+
+func (fm AudioFormat) String() string {
+	names := [...]string{"U8", "S8", "U16", "S16", "U32", "S32"}
+	name := "?"
+	if int(fm.Format) < len(names) {
+		name = names[fm.Format]
+	}
+	return fmt.Sprintf("%dch %dHz %s (%s)", fm.Channels, fm.SamplesPerSec, name, endianName(fm.LittleEndian))
 }
 
 // Rect is a rectangle within the framebuffer.
