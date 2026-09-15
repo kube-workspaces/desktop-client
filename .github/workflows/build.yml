@@ -242,19 +242,18 @@ jobs:
             echo "## What works"
             echo
             echo "Sign-in (browser OIDC via RFC 8252 loopback + PKCE, or local accounts),"
-            echo "workspace discovery, and VM display sessions over the KubeVirt console:"
-            echo "Raw/CopyRect/RRE/Hextile/Zlib/Tight/ZRLE decoding, keyboard and mouse"
-            echo "including the scroll wheel, bidirectional clipboard, guest display resize,"
-            echo "fullscreen, and automatic reconnect that keeps the last frame on screen."
+            echo "workspace discovery, VM display sessions (Raw/CopyRect/RRE/Hextile/Zlib/Tight/ZRLE),"
+            echo "guest audio playback (QEMU audio extension), keyboard/mouse/scroll wheel,"
+            echo "bidirectional clipboard, guest display resize, and automatic reconnect."
             echo
             echo "## What does not"
             echo
-            echo "- **No audio.** The transport exists server-side but nothing plays it yet."
             echo "- **No adaptive quality.** Encoding quality is fixed, not bandwidth-driven."
             echo "- **No in-guest agent (Tier 1).** Sessions use the hypervisor console, which"
             echo "  has no video codec — fine for desktops and text, poor for full-motion video."
             echo "- **Container workspaces open in a browser**, not in the client."
-            echo "- One session at a time; the display is single-session server-side."
+            echo "- **Single session at a time per VM.** The hypervisor display is single-session"
+            echo "  server-side; the client can open multiple windows for different VMs."
             echo "- No HiDPI scaling, no text selection in input fields, ASCII-only text."
             echo
             echo "## Known caveats"
