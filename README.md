@@ -8,20 +8,19 @@ A native desktop client for accessing workspaces on a [Kube Workspaces](https://
 platform instance. Point it at your instance, sign in, pick a running workspace,
 connect.
 
-> ## Status: early development — v0.1.0 released
+> ## Warning: not code-signed
 >
-> **v0.1.0 is out**: binaries for all six targets are published on the
-> [releases page](https://github.com/kube-workspaces/desktop-client/releases).
-> The graphical shell and the RFB (VNC) session viewer work end to end against a
-> real instance: sign in, browse your workspaces and open a VM's display in a
-> window, with clipboard, guest resize and automatic reconnect.
+> The binaries for all six platforms (**linux × amd64/arm64**, macOS × amd64/arm64,
+> windows × amd64/arm64) published on the [releases page](https://github.com/kube-workspaces/desktop-client/releases)
+> are **not code-signed or notarised**. This is a deliberate choice: signing and
+> notarisation require paid products and budget, not engineering effort. The plan
+> to add this when funded lives in `AGENTS.md` under *Deferred: code signing and
+> notarisation*.
 >
-> What this is **not**: stable or feature-complete. The binaries are **not
-> code-signed or notarised** — macOS Gatekeeper and Windows SmartScreen will
-> warn and need to be overridden. The CLI surface can still change between
-> releases, and several things named on this page (the in-guest Tier 1
-> transport, audio, adaptive quality) are explicitly **not implemented**; they
-> are marked as such where they appear.
+> macOS Gatekeeper will refuse the app on first run; Windows SmartScreen will
+> warn about "unrecognized apps". Both require manual override, which is explained
+> in each release's notes. Until then, expect warnings until the binaries gain a
+> reputation through repeated downloads.
 
 ## Why
 
