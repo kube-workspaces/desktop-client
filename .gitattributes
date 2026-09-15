@@ -1,0 +1,5 @@
+# Ensure consistent line endings across platforms
+* text=eol lf
+
+# Go files - always LF
+*.go text eol lf
