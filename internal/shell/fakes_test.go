@@ -52,6 +52,15 @@ type fakeBackend struct {
 	// polls counts drains of the event queue, which is how a test measures
 	// how hard the loop is spinning.
 	polls int
+
+	// audio tracks the AudioSink half of the backend. audioErr makes
+	// OpenAudio fail, so a test can exercise the "backend cannot play audio"
+	// branch without a second type.
+	audioOpens  int
+	audioCloses int
+	audioFormat viewer.AudioFormat
+	audioPlayed [][]byte
+	audioErr    error
 }
 
 func newFakeBackend(w, h int) *fakeBackend {
@@ -113,6 +122,29 @@ func (f *fakeBackend) Clipboard() (string, error)                   { return f.g
 func (f *fakeBackend) PollEvents(dst []viewer.Event) []viewer.Event { return f.drain(dst) }
 func (f *fakeBackend) Size() (int, int)                             { return f.size() }
 func (f *fakeBackend) Fullscreen() bool                             { return f.isFullscreen() }
+
+func (f *fakeBackend) OpenAudio(format viewer.AudioFormat) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.audioErr != nil {
+		return f.audioErr
+	}
+	f.audioOpens++
+	f.audioFormat = format
+	return nil
+}
+
+func (f *fakeBackend) PlayPCM(data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.audioPlayed = append(f.audioPlayed, append([]byte(nil), data...))
+}
+
+func (f *fakeBackend) CloseAudio() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.audioCloses++
+}
 
 // WaitEvents blocks until an event is queued, a wake arrives, or the timeout
 // expires, then drains like PollEvents.
@@ -248,6 +280,7 @@ func (f *fakeBackend) send(events ...viewer.Event) {
 }
 
 var _ viewer.Backend = (*fakeBackend)(nil)
+var _ viewer.AudioSink = (*fakeBackend)(nil)
 
 // fakeAPI is an [API] that answers from fields instead of a network.
 type fakeAPI struct {

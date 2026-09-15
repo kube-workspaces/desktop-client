@@ -5,6 +5,7 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -261,5 +262,83 @@ func TestViewerStatusMapping(t *testing.T) {
 		if tt.state == session.StateFailed && detail == "" {
 			t.Fatal("a failure with no error must still say something")
 		}
+	}
+}
+
+// TestBorrowedBackendCarriesAudio is the regression for the shell's silent
+// audio: the viewer discovers an audio sink by asserting its backend, and a
+// backend embedded behind the [viewer.Backend] interface is invisible to that
+// assertion. A session opened from the shell must still negotiate guest audio,
+// or the window plays no sound at all.
+func TestBorrowedBackendCarriesAudio(t *testing.T) {
+	be := newFakeBackend(1280, 800)
+	borrowed := &borrowedBackend{Backend: be, title: "Kube Workspaces"}
+
+	view := viewer.New(borrowed, viewer.Config{})
+	if fm := view.AudioFormat(); fm == nil {
+		t.Fatal("view.AudioFormat() = nil: the shell session will not ask the guest for audio")
+	}
+
+	// What the viewer does once the guest acknowledges the audio encoding:
+	// open the device, stream PCM, close it at the end of the connection.
+	format := viewer.AudioFormat{Channels: 2, SampleRate: 44100, BytesPerSample: 2, LittleEndian: true}
+	if err := borrowed.OpenAudio(format); err != nil {
+		t.Fatalf("OpenAudio forwarded to the window: %v", err)
+	}
+	if be.audioOpens != 1 {
+		t.Fatalf("the window's device was opened %d times", be.audioOpens)
+	}
+	if be.audioFormat != format {
+		t.Fatalf("the window got format %+v, want %+v", be.audioFormat, format)
+	}
+
+	borrowed.PlayPCM([]byte{0x01, 0x02, 0x03, 0x04})
+	if len(be.audioPlayed) != 1 || string(be.audioPlayed[0]) != "\x01\x02\x03\x04" {
+		t.Fatalf("the PCM batch did not reach the window: %v", be.audioPlayed)
+	}
+
+	borrowed.CloseAudio()
+	if be.audioCloses != 1 {
+		t.Fatalf("the window's device was closed %d times", be.audioCloses)
+	}
+}
+
+// TestBorrowedBackendWithoutAudioKeepsTheSession holds the other half of the
+// bargain: the wrapper advertises the audio capability before the inner
+// backend is known, so a window backend that cannot play audio answers at
+// OpenAudio time with an error — the way the viewer asks — which turns audio
+// off for the session rather than failing it.
+func TestBorrowedBackendWithoutAudioKeepsTheSession(t *testing.T) {
+	// silent is a Backend (everything the real one does except audio).
+	type silent struct{ viewer.Backend }
+	be := newFakeBackend(1280, 800)
+	borrowed := &borrowedBackend{Backend: silent{be}, title: "Kube Workspaces"}
+
+	// The wrapper is the sink the viewer sees; what cannot play audio is the
+	// backend behind the interface, discovered only when audio is opened.
+	if err := borrowed.OpenAudio(viewer.AudioFormat{Channels: 2, SampleRate: 44100, BytesPerSample: 2}); err == nil {
+		t.Fatal("OpenAudio over a silent backend succeeded; the session would enable dead air")
+	}
+	borrowed.PlayPCM([]byte{1, 2, 3})
+	borrowed.CloseAudio()
+	if len(be.audioPlayed) != 0 || be.audioCloses != 0 {
+		t.Fatal("audio reached a backend that cannot play it")
+	}
+}
+
+// TestBorrowedBackendAudioFailureDisablesNotFails covers the OpenAudio error
+// branch end to end at the wrapper level: a window that cannot open a device
+// must only end the session's audio, via the same error the viewer treats that
+// way.
+func TestBorrowedBackendAudioFailureDisablesNotFails(t *testing.T) {
+	be := newFakeBackend(1280, 800)
+	be.audioErr = fmt.Errorf("no sound device")
+	borrowed := &borrowedBackend{Backend: be, title: "Kube Workspaces"}
+
+	if err := borrowed.OpenAudio(viewer.AudioFormat{Channels: 1, SampleRate: 48000, BytesPerSample: 2}); err == nil {
+		t.Fatal("OpenAudio succeeded though the device is unavailable")
+	}
+	if be.audioOpens != 0 {
+		t.Fatal("OpenAudio reached a backend whose device is unavailable")
 	}
 }

@@ -201,10 +201,18 @@ func reasonOrClosed(err error) string {
 // unload SDL and take the shell's surface with it.
 //
 // So Open, Close and SetSize are intercepted. Everything else — textures,
-// uploads, presentation, input, clipboard, fullscreen — is forwarded
+// uploads, presentation, input, clipboard, fullscreen, audio — is forwarded
 // untouched, because all of it is per-session state the viewer is entitled to
 // manage. The shell repairs what it cares about afterwards; see
 // [App.afterSession].
+//
+// Audio needs a method on this wrapper, not just the interface embedding: the
+// viewer discovers an audio sink with a type assertion, and an embedded
+// [viewer.Backend] interface value only carries that interface's methods, so
+// [viewer.AudioSink] would be invisible here. The wrapper implements it and
+// forwards to the field behind the interface; a backend that cannot play audio
+// answers the same way the viewer treats any [viewer.AudioSink.OpenAudio]
+// error — audio disabled for that session.
 type borrowedBackend struct {
 	viewer.Backend
 	// title is the shell's own window title, restored on the way out.
@@ -297,6 +305,35 @@ func (b *borrowedBackend) noteResizes(events []viewer.Event) []viewer.Event {
 	return events
 }
 
+// OpenAudio, PlayPCM and CloseAudio forward the shell's session audio through
+// to the window's backend when that backend can play it.
+//
+// The viewer only calls these on a session whose connection negotiated the
+// QEMU audio extension, which in turn only happens when the backend was
+// recognised as an [viewer.AudioSink] — so the audio path is inert unless the
+// window's backend implements it. A backend that does not (a headless test
+// fake, say) reports the failure just the way [viewer.AudioSink.OpenAudio]
+// asks: with an error, which the viewer turns into "audio off, keep the
+// session".
+func (b *borrowedBackend) OpenAudio(format viewer.AudioFormat) error {
+	if s, ok := b.Backend.(viewer.AudioSink); ok {
+		return s.OpenAudio(format)
+	}
+	return fmt.Errorf("viewer: window backend cannot play audio")
+}
+
+func (b *borrowedBackend) PlayPCM(data []byte) {
+	if s, ok := b.Backend.(viewer.AudioSink); ok {
+		s.PlayPCM(data)
+	}
+}
+
+func (b *borrowedBackend) CloseAudio() {
+	if s, ok := b.Backend.(viewer.AudioSink); ok {
+		s.CloseAudio()
+	}
+}
+
 // Close returns the window to the shell rather than destroying it, at the size
 // the shell was using.
 //
@@ -327,3 +364,8 @@ func (b *borrowedBackend) Close() {
 
 // Compile-time proof that the wrapper is still a backend.
 var _ viewer.Backend = (*borrowedBackend)(nil)
+
+// Compile-time proof that a session opened from the shell can carry audio:
+// the viewer enables guest audio only for a backend it can assert as an
+// [viewer.AudioSink], and this wrapper is what the shell passes it.
+var _ viewer.AudioSink = (*borrowedBackend)(nil)

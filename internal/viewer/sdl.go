@@ -631,6 +631,10 @@ func (b *SDLBackend) SetClipboard(text string) error {
 // actually runs, so a common case (two-channel 16-bit little-endian at 44100
 // Hz from a QEMU host of the same architecture) has no conversion at all.
 //
+// The device is selected by SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK — note that this
+// is SDL3's sentinel (0xFFFFFFFF). SDL2 used 0 for "default"; passing 0 here
+// is not a valid instance ID and makes the open fail.
+//
 // It is safe to call with a device already open: the previous one is closed
 // first, which is what the viewer asks for when the next connection negotiates
 // audio.
@@ -646,7 +650,7 @@ func (b *SDLBackend) OpenAudio(format AudioFormat) error {
 		b.CloseAudio()
 	}
 	spec := &sdl.AudioSpec{Format: fmtType, Channels: format.Channels, Freq: format.SampleRate}
-	dev, err := sdl.AudioDeviceID(0).OpenAudioDevice(spec)
+	dev, err := sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK.OpenAudioDevice(spec)
 	if err != nil {
 		return fmt.Errorf("sdl open audio device: %w", err)
 	}
