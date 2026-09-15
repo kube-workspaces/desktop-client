@@ -27,11 +27,9 @@ func shellCommand() command {
 
 // runShell opens the desktop application.
 //
-// This is the whole client in one window: the profile, login and workspace
-// screens, and the display sessions they open, all on one OS thread against
-// one SDL backend. The shell lends that backend to the session viewer for the
-// length of a session — see internal/shell/session.go — so nothing here has to
-// spawn, supervise or communicate with a second process.
+// This is the whole client: the profile, login and workspace screens, and the
+// display sessions they open. The shell and the sessions run in the same
+// process on the same OS thread, but each opens its own window.
 func runShell(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("shell", flag.ExitOnError)
 	profileName := fs.String("profile", "", "profile to open (defaults to the active profile)")
@@ -96,7 +94,7 @@ func runShell(ctx context.Context, args []string) error {
 			if err != nil {
 				return nil, nil, err
 			}
-			return client, shell.SessionConnector(backend, client, windowTitle, sessionOpts), nil
+			return client, shell.SessionConnector(client, sessionOpts), nil
 		},
 		Store:           profileStore{name: *profileName},
 		RefreshInterval: *refresh,

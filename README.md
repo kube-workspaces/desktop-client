@@ -86,9 +86,8 @@ or a `.desktop` file:
 `--interval`, `-v`).
 
 The shell walks through three screens — instance URL, sign-in, workspace list —
-and then opens a display session **in the same window**. There is no second
-process and no second window: the shell hands the window over to the session
-viewer for the duration and takes it back when the session ends.
+and then opens a display session in its **own window**. The shell's window
+remains open and resumes control when the session ends.
 
 On the workspace list:
 
@@ -169,8 +168,8 @@ platform: `stopped`, then `running` once a replica is ready, otherwise
 
 #### `connect`
 
-Opens a display session for one VM workspace in its own window, without the
-shell. `--namespace` is optional — the workspace is looked up across namespaces
+Opens a display session for one VM workspace in its own window.
+ `--namespace` is optional — the workspace is looked up across namespaces
 when it is unambiguous.
 
 ```bash
@@ -285,17 +284,17 @@ backoff curve. `connect --reconnect=false` reports it and exits instead.
 
 ## Architecture
 
-One process, one window, one OS thread.
+One process, shared SDL, one OS thread.
 
 - `internal/shell` — the graphical front door (profiles, login, workspace list),
   drawn with the software widget layer in `internal/ui`.
 - `internal/viewer` — the session viewer: SDL3 window, texture upload, input,
   overlays.
 
-The shell lends its SDL backend to the viewer for the length of a session and
-picks the window back up afterwards. There is no shell/session process split, no
-IPC, and no orphan to clean up after a crash — see `AGENTS.md` for why that
-decision was made this way.
+The shell and the session viewer each open their own SDL window, sharing the
+same SDL library on the same main thread. There is no shell/session process
+split, no IPC, and no orphan to clean up after a crash — see `AGENTS.md` for why
+that decision was made this way.
 
 ## Where your session token is stored
 

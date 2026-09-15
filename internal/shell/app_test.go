@@ -325,13 +325,8 @@ func TestOpeningAVMWorkspaceRunsASessionAndComesBack(t *testing.T) {
 
 	r.focus(idList)
 	r.clickFocused()
-	if r.app.m.State != StateSession {
-		t.Fatalf("activating a running VM moved to %v", r.app.m.State)
-	}
-
-	// One frame says what is happening; the next hands over the window.
-	r.step()
-	r.step()
+	// In the new architecture, the session runs synchronously within the first
+	// Step of StateSession.
 	r.settle()
 
 	if len(r.opened) != 1 || r.opened[0].Key() != "team/vm-a" {
@@ -360,8 +355,6 @@ func TestSessionFailureIsReportedOnTheList(t *testing.T) {
 
 	r.focus(idList)
 	r.clickFocused()
-	r.step()
-	r.step()
 	r.settle()
 
 	if r.app.m.State != StateWorkspaces {
@@ -384,8 +377,6 @@ func TestSessionEndingWithAnExpiredTokenGoesToLogin(t *testing.T) {
 
 	r.focus(idList)
 	r.clickFocused()
-	r.step()
-	r.step()
 	r.settle()
 
 	if r.app.m.State != StateLogin {
@@ -862,11 +853,9 @@ func TestEnterInTheFilterOpensTheSelection(t *testing.T) {
 	r.focus(idFilter)
 	r.typeText("vm")
 	r.clickFocused()
+	r.settle()
 
-	if r.app.m.State != StateSession {
-		t.Fatalf("Enter in the filter box left the shell on %v (err %q)", r.app.m.State, r.app.m.Err)
-	}
-	if r.app.m.Opening.Name != "vm-a" {
-		t.Fatalf("it opened %q", r.app.m.Opening.Name)
+	if len(r.opened) != 1 || r.opened[0].Name != "vm-a" {
+		t.Fatalf("it opened %v", r.opened)
 	}
 }

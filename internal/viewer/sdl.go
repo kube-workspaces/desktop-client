@@ -42,6 +42,47 @@ var appIconPNG []byte
 // the constant stops being a constant.
 const wakeEventType = sdl.EVENT_USER
 
+// sdlLifecycle guards the single load of the bundled SDL library and the
+// reference count of video initialisation. Since binsdl.Load and sdl.Init
+// must run on the main thread, and every Backend.Open call also runs there,
+// the mutex protects against concurrent Wake calls while the last backend is
+// closing.
+var sdlLifecycle struct {
+	mu     sync.Mutex
+	unload func()
+	refs   int
+}
+
+func acquireSDL() error {
+	sdlLifecycle.mu.Lock()
+	defer sdlLifecycle.mu.Unlock()
+
+	if sdlLifecycle.refs == 0 {
+		lib := binsdl.Load()
+		if err := sdl.Init(sdl.INIT_VIDEO); err != nil {
+			lib.Unload()
+			return fmt.Errorf("sdl init: %w", err)
+		}
+		sdlLifecycle.unload = lib.Unload
+	}
+	sdlLifecycle.refs++
+	return nil
+}
+
+func releaseSDL() {
+	sdlLifecycle.mu.Lock()
+	defer sdlLifecycle.mu.Unlock()
+
+	sdlLifecycle.refs--
+	if sdlLifecycle.refs == 0 {
+		sdl.Quit()
+		if sdlLifecycle.unload != nil {
+			sdlLifecycle.unload()
+			sdlLifecycle.unload = nil
+		}
+	}
+}
+
 // SDLBackend implements [Backend] on SDL3 through the purego binding
 // github.com/Zyko0/go-sdl3, which needs no cgo.
 //
@@ -54,9 +95,9 @@ const wakeEventType = sdl.EVENT_USER
 // down. The bundled library is the only supportable option until the binding
 // gains a version check.
 type SDLBackend struct {
-	loaded   bool
-	unload   func()
+	opened   bool
 	window   *sdl.Window
+	windowID sdl.WindowID
 	renderer *sdl.Renderer
 	texture  *sdl.Texture
 
@@ -135,20 +176,14 @@ func NewSDLBackend() *SDLBackend {
 // of calling this from main, but a caller that moves the loop elsewhere must
 // call runtime.LockOSThread itself.
 func (b *SDLBackend) Open(opts WindowOptions) error {
-	if b.loaded {
+	if b.opened {
 		return fmt.Errorf("viewer: SDL backend already open")
 	}
-	// binsdl.Load calls log.Fatal rather than returning an error if the
-	// bundled library cannot be unpacked; there is nothing this code can do
-	// about that beyond documenting it.
-	lib := binsdl.Load()
-	b.unload = lib.Unload
-	b.loaded = true
 
-	if err := sdl.Init(sdl.INIT_VIDEO); err != nil {
-		b.Close()
-		return fmt.Errorf("sdl init: %w", err)
+	if err := acquireSDL(); err != nil {
+		return err
 	}
+	b.opened = true
 
 	flags := sdl.WINDOW_RESIZABLE
 	if opts.Fullscreen {
@@ -168,6 +203,9 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 		return fmt.Errorf("sdl create window: %w", err)
 	}
 	b.window, b.renderer = window, renderer
+	if id, err := window.ID(); err == nil {
+		b.windowID = id
+	}
 
 	// Move the window onto the display it was launched from before it is
 	// presented for the first time; see centerOnLaunchDisplay.
@@ -303,9 +341,12 @@ func centerInBounds(bounds sdl.Rect, w, h int32) (x, y int32) {
 	return bounds.X + (bounds.W-w)/2, bounds.Y + (bounds.H-h)/2
 }
 
-// Close destroys everything Open created, in reverse order, and unloads the
-// library. It is safe to call more than once.
+// Close destroys everything Open created, in reverse order, and decrements the
+// SDL reference count. It is safe to call more than once.
 func (b *SDLBackend) Close() {
+	if !b.opened {
+		return
+	}
 	// Shut the door on Wake first: everything below this line invalidates the
 	// library a concurrent wake would be calling into.
 	b.wakeMu.Lock()
@@ -334,14 +375,8 @@ func (b *SDLBackend) Close() {
 		b.window.Destroy()
 		b.window = nil
 	}
-	if b.loaded {
-		sdl.Quit()
-		if b.unload != nil {
-			b.unload()
-		}
-		b.unload = nil
-		b.loaded = false
-	}
+	releaseSDL()
+	b.opened = false
 }
 
 // SetTextureSize allocates the streaming texture that holds the guest
@@ -781,10 +816,43 @@ func (b *SDLBackend) Wake() {
 	_ = sdl.PushEvent(&event)
 }
 
+// foreign reports whether the current event belongs to a window other than
+// this backend's.
+func (b *SDLBackend) foreign() bool {
+	id := b.eventWindowID()
+	// An event with no window (0) is global and belongs to every backend.
+	return id != 0 && id != b.windowID
+}
+
+// eventWindowID extracts the window ID from the current event, or 0 if it is
+// a global event or has no window.
+func (b *SDLBackend) eventWindowID() sdl.WindowID {
+	if b.event.Type >= sdl.EVENT_WINDOW_FIRST && b.event.Type <= sdl.EVENT_WINDOW_LAST {
+		return b.event.WindowEvent().WindowID
+	}
+	switch b.event.Type {
+	case sdl.EVENT_KEY_DOWN, sdl.EVENT_KEY_UP:
+		return b.event.KeyboardEvent().WindowID
+	case sdl.EVENT_TEXT_INPUT:
+		return b.event.TextInputEvent().WindowID
+	case sdl.EVENT_MOUSE_MOTION:
+		return b.event.MouseMotionEvent().WindowID
+	case sdl.EVENT_MOUSE_BUTTON_DOWN, sdl.EVENT_MOUSE_BUTTON_UP:
+		return b.event.MouseButtonEvent().WindowID
+	case sdl.EVENT_MOUSE_WHEEL:
+		return b.event.MouseWheelEvent().WindowID
+	default:
+		return 0
+	}
+}
+
 // translate converts the event most recently read into b.event, appending the
 // backend-neutral form to dst. Events with no equivalent are dropped here
 // rather than leaking an SDL concept into the viewer.
 func (b *SDLBackend) translate(dst []Event) []Event {
+	if b.foreign() {
+		return dst
+	}
 	switch b.event.Type {
 	case sdl.EVENT_QUIT, sdl.EVENT_WINDOW_CLOSE_REQUESTED:
 		dst = append(dst, EventQuit{})

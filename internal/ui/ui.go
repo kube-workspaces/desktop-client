@@ -15,10 +15,10 @@
 //   - No dependency. A Go GUI toolkit is a large, fast-moving surface to pin,
 //     audit and cross-compile for six targets; this package is the standard
 //     library plus the bitmap font in internal/viewer.
-//   - One window. The session viewer already owns an SDL window and demands
-//     the main OS thread. Drawing the shell into the same surface means the
-//     app has exactly one window for its whole life, and opening a session is
-//     a repaint rather than a process launch.
+//   - Shared SDL. The session viewer and the shell each open an SDL window
+//     on the same main OS thread. Drawing the shell into its own image
+//     surface means the two can coexist in one process without competing
+//     for the same window or a second windowing toolkit.
 //   - Testability. Every widget is a function from an input batch and a
 //     rectangle to pixels in a buffer, so the tests need neither a display nor
 //     a golden-image harness.

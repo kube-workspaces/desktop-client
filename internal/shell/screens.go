@@ -794,21 +794,6 @@ func resourceRange(request, limit *string) string {
 	return strings.Join(parts, ", ")
 }
 
-// drawConnectingScreen is shown for the single frame between the user
-// activating a workspace and the session viewer taking the window.
-func (a *App) drawConnectingScreen(bounds ui.Rect) intent {
-	th := a.opts.Theme
-	ctx := a.ctx
-
-	// Wide enough for a long "namespace/name": truncating the one thing the
-	// screen exists to name would be absurd.
-	card := ui.CenterRect(bounds, min(bounds.W-2*th.Pad, 900), th.ControlHeight*2)
-	spinner, rest := ui.CutLeft(card, th.ControlHeight*2)
-	ui.Spinner(ctx, ui.Inset(spinner, th.Gap), th.Accent)
-	ui.Label(ctx, rest, "Opening "+a.m.Opening.Key()+"...", ui.LabelStyle{Middle: true})
-	return intent{}
-}
-
 // drawMessagesIn draws whichever message the model is holding.
 //
 // An error and a notice are mutually exclusive by construction — every

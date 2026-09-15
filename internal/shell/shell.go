@@ -4,19 +4,17 @@
 // Package shell is the client's graphical front door: the window a user opens
 // to pick an instance, sign in, and get into a workspace.
 //
-// # One process, one window
+// # One process, shared SDL
 //
-// The shell and the display session share a single window and a single OS
-// thread. Activating a VM workspace does not spawn anything: the shell stops
-// drawing, hands its [viewer.Backend] to a [viewer.Viewer] for the duration
-// (see borrowedBackend), and picks the window back up when the session ends.
-// A user therefore never watches a window disappear and another appear, the
-// SDL library is loaded exactly once, and there is no child process to
-// supervise, no IPC to design and no orphan to clean up after a crash.
+// The shell and the display session run in the same process and share the same
+// SDL library, but each opens its own window. Activating a VM workspace does
+// not spawn anything: the shell's loop parks while the session viewer runs its
+// own window and loop on the same main OS thread. A user therefore sees the
+// session window open alongside the shell, the SDL library is loaded exactly
+// once, and there is no child process to supervise, no IPC to design and no
+// orphan to clean up after a crash.
 //
-// The cost is that the shell's loop is parked while a session is live, which
-// is fine — there is nothing of the shell on screen to interact with — and
-// that both halves must agree about which one owns the window, which is what
+// Both halves must agree about which one owns the main thread, which is what
 // the [State] machine in model.go is for.
 //
 // # Shape
@@ -56,9 +54,9 @@ const (
 
 	// DefaultWidth and DefaultHeight size the window at startup.
 	//
-	// It is also the size the window keeps: sessions are not allowed to
-	// resize it (see borrowedBackend.SetSize) and are given it back at the
-	// end, so the only thing that changes it is the user.
+	// It is also the size the window keeps: sessions run in their own
+	// windows and the user resizes this one, so the only thing that changes
+	// it is the user.
 	DefaultWidth  = 1280
 	DefaultHeight = 800
 
@@ -139,7 +137,7 @@ func (o *Options) applyDefaults() {
 	}
 }
 
-// App is the shell: one window, one state machine, one user.
+// App is the shell: its own window, one state machine, one user.
 //
 // Everything in it belongs to the goroutine that called [App.Run] — the same
 // goroutine that owns the window — except [App.results], which is how work
@@ -184,7 +182,6 @@ type App struct {
 	refreshing     bool
 	nextRefresh    time.Time
 	repaintAt      time.Time
-	sessionStarted bool
 }
 
 // New returns an App. It opens no window; see [App.Run].
@@ -397,18 +394,8 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 	}
 
 	if a.m.State == StateSession {
-		// The first frame of a session is the shell saying what it is about
-		// to do; the second hands the window over and blocks until the
-		// session ends. Splitting it in two is what stops the window sitting
-		// on a stale workspace list while a connection is negotiated.
-		if a.sessionStarted {
-			return a.runSession(ctx)
-		}
-		a.sessionStarted = true
-		a.dirty = true
-		return a.draw(ctx)
+		return a.runSession(ctx)
 	}
-	a.sessionStarted = false
 
 	a.tick(ctx, now)
 	if !a.dirty {
@@ -476,8 +463,6 @@ func (a *App) draw(ctx context.Context) error {
 		}
 	case StateSettings:
 		intent = a.drawSettingsScreen(a.canvas.Bounds())
-	case StateSession:
-		intent = a.drawConnectingScreen(a.canvas.Bounds())
 	}
 	a.ctx.End()
 

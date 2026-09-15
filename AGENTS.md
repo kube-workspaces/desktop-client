@@ -34,9 +34,11 @@ Implemented and working:
   bundle. All inputs and outputs are committed, so builds and CI never run
   Inkscape, ImageMagick or go-winres.
 - **Automatic reconnect** — implemented: a capped-exponential-backoff
-  supervisor (`internal/reconnect` + `internal/session`) swaps connections
-  underneath a window that is never destroyed.
-- Graphical shell: instance/login/workspace-list screens and in-window sessions.
+  supervisor (`internal/reconnect` + `internal/session`) swaps connections.
+- Graphical shell: instance/login/workspace-list screens.
+- **Multiple windows.** One process means one main thread. The shell and the
+  session viewer each open their own SDL window on that thread, sharing the SDL
+  library.
 
 Not implemented, and must not be described otherwise:
 
@@ -46,7 +48,7 @@ Not implemented, and must not be described otherwise:
   detect whether the VM has a sound device. No decoder, no playback.
 - **Tier 1, the in-guest transport** (Selkies agent, H.264 + Opus, via
   `kube-workspaces/proxy`). No code exists. Tier 0 (RFB) is the only transport.
-- Multiple concurrent sessions; one window means one session at a time.
+- Multiple concurrent sessions; one window per session, but only one session at a time.
 - **Code signing and notarisation.** Release binaries are unsigned; macOS
   Gatekeeper and Windows SmartScreen warn today. Backburnered on budget, not
   engineering — the plan and the load-bearing gotchas are under *Key Notes →
@@ -81,10 +83,10 @@ just use a real toolkit" is a question that will be asked again:
 - **The viewer already used SDL3.** Adding a second windowing stack for the
   shell would have meant two libraries, two event models, two main-thread
   owners, and a process boundary to design an IPC protocol across.
-- Sharing one window makes opening a session a repaint rather than a process
-  launch: no window disappearing and reappearing, no child to supervise, no
-  orphan after a crash. The shell parks its loop and lends its `viewer.Backend`
-  to the viewer (`internal/shell/session.go`, `borrowedBackend`).
+- Sharing one process and one SDL library makes opening a session a window
+  creation rather than a process launch: no child to supervise, no orphan after
+  a crash. The shell parks its loop while the session runs on the same main
+  thread.
 
 **The cost, stated honestly:** widgets are hand-rolled. `internal/ui` is a small
 immediate-mode toolkit that rasterises into an `image.RGBA` in software. That

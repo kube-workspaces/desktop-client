@@ -45,17 +45,13 @@ func (a *App) runSession(ctx context.Context) error {
 	return nil
 }
 
-// afterSession takes the window back.
+// afterSession cleans up the shell's state after a session ends.
 //
-// Three things have to be undone. The viewer resized the framebuffer texture
-// to the guest's resolution, so the shell's cached size is wrong and the next
-// frame must reallocate. The event queue holds whatever the session left in it
-// — at minimum the release of the key that ended it — and none of it is the
-// shell's. And the input state describes a pointer and a set of modifiers from
-// a window the user was doing something else in.
+// The event queue holds whatever happened to the shell's window while the
+// session was live, and none of it should be acted on. And the input state
+// describes a pointer and a set of modifiers from a window the user was not
+// interacting with.
 func (a *App) afterSession() {
-	a.sessionStarted = false
-	a.texW, a.texH = 0, 0
 	a.events = a.be.PollEvents(a.events[:0])
 	a.events = a.events[:0]
 	a.in = ui.Input{Focused: true}
@@ -65,9 +61,6 @@ func (a *App) afterSession() {
 	// whatever else happened in the meantime should be visible immediately.
 	a.nextRefresh = time.Time{}
 	a.dirty = true
-	if err := a.be.SetTitle(a.opts.Title); err != nil {
-		a.logf("restore window title: %v", err)
-	}
 }
 
 // SessionOptions tunes the display sessions the shell opens.
@@ -87,13 +80,8 @@ type SessionOptions struct {
 }
 
 // SessionConnector returns the production [Connector]: it opens a supervised
-// RFB session to a VM workspace and presents it in the shell's own window.
-//
-// It is the same machinery as the connect subcommand — session.DialReconnecting
-// under a viewer.Viewer — with one difference: the backend is borrowed rather
-// than created, so the session appears in the window the user is already
-// looking at instead of a second one.
-func SessionConnector(be viewer.Backend, client *kwclient.Client, title string, opts SessionOptions) Connector {
+// RFB session to a VM workspace and presents it in its own window.
+func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 	return func(ctx context.Context, ws kwclient.Workspace) error {
 		if !ws.IsVM() {
 			return fmt.Errorf("%s is a %s workspace and has no display", ws.Name, ws.Type)
@@ -111,13 +99,8 @@ func SessionConnector(be viewer.Backend, client *kwclient.Client, title string, 
 			Title:        ws.Key(),
 			ScaleQuality: opts.ScaleQuality,
 			Logf:         opts.Logf,
-			// The shell is behind this window and will redraw the moment the
-			// session ends, so there is nothing to linger for: a failure is
-			// reported on the workspace list instead, where the user can act
-			// on it.
-			FailureLinger: -1,
 		}
-		view := viewer.New(&borrowedBackend{Backend: be, title: title}, cfg)
+		view := viewer.New(viewer.NewSDLBackend(), cfg)
 
 		runCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -191,181 +174,3 @@ func reasonOrClosed(err error) string {
 	}
 	return err.Error()
 }
-
-// borrowedBackend lends the shell's window to a [viewer.Viewer].
-//
-// The viewer's contract is that it opens a window at the start of a session
-// and destroys it at the end. That is exactly right when the session is the
-// whole process, and exactly wrong here: the window belongs to the shell, it
-// was open before the session and has to survive it, and destroying it would
-// unload SDL and take the shell's surface with it.
-//
-// So Open, Close and SetSize are intercepted. Everything else — textures,
-// uploads, presentation, input, clipboard, fullscreen, audio — is forwarded
-// untouched, because all of it is per-session state the viewer is entitled to
-// manage. The shell repairs what it cares about afterwards; see
-// [App.afterSession].
-//
-// Audio needs a method on this wrapper, not just the interface embedding: the
-// viewer discovers an audio sink with a type assertion, and an embedded
-// [viewer.Backend] interface value only carries that interface's methods, so
-// [viewer.AudioSink] would be invisible here. The wrapper implements it and
-// forwards to the field behind the interface; a backend that cannot play audio
-// answers the same way the viewer treats any [viewer.AudioSink.OpenAudio]
-// error — audio disabled for that session.
-type borrowedBackend struct {
-	viewer.Backend
-	// title is the shell's own window title, restored on the way out.
-	title string
-
-	// restoreW/restoreH is the window size the shell was using when the
-	// session borrowed the window, and restore says whether it was captured.
-	restoreW, restoreH int
-	restore            bool
-
-	// userSized records that the window changed size during the session for a
-	// reason this wrapper did not cause. Since SetSize is refused outright,
-	// the only things left are the user dragging the frame, the window
-	// manager, and fullscreen transitions — and in every one of those cases
-	// the size on screen at the end is the one to keep.
-	userSized bool
-}
-
-// Open configures the existing window instead of creating one, and remembers
-// the size to give back at the end.
-//
-// The requested size is ignored: the window is already on screen at a size the
-// user chose, and resizing it to the viewer's default would make every session
-// jump. The viewer reads the real size back from Size and letterboxes into it.
-func (b *borrowedBackend) Open(opts viewer.WindowOptions) error {
-	// Through the embedded value, not through b: the point of this type is
-	// that some of these calls are overridden, and a reader should be able to
-	// see at a glance which window each one reaches.
-	be := b.Backend
-	b.restoreW, b.restoreH = be.Size()
-	b.restore = b.restoreW > 0 && b.restoreH > 0
-	b.userSized = false
-
-	if opts.Fullscreen && !be.Fullscreen() {
-		if err := be.SetFullscreen(true); err != nil {
-			return err
-		}
-	}
-	return be.SetTitle(opts.Title)
-}
-
-// SetSize refuses, because the shell's window is not the session's to resize.
-//
-// The viewer calls this once per session, to fit the window to the guest's
-// resolution. That is right when the session is the whole application — the
-// window was created for it a moment earlier — and wrong here: this window was
-// already on screen, at a size the user chose, showing a list they were
-// reading. Following the guest would resize it out from under them on connect,
-// and again for every workspace they open, none of which they asked for.
-//
-// Refusing is not a hack around the interface, it is the documented behaviour
-// of one: [viewer.Backend.SetSize] says a backend whose size is not its own to
-// choose may ignore the request, and that the viewer reads the size back
-// rather than assuming. It does, and letterboxes the guest into the window
-// instead — which is the same thing it does for a fullscreen session or a
-// tiling window manager, and is already the well-trodden path.
-//
-// The cost is that a guest whose resolution differs from the window is scaled
-// rather than shown 1:1 until the user resizes the window, at which point the
-// viewer's normal debounce asks the guest to match. That is a fair trade for a
-// window that never moves on its own.
-func (b *borrowedBackend) SetSize(int, int) error { return nil }
-
-// PollEvents forwards the session's input, watching it for resizes.
-func (b *borrowedBackend) PollEvents(dst []viewer.Event) []viewer.Event {
-	return b.noteResizes(b.Backend.PollEvents(dst))
-}
-
-// WaitEvents forwards the session's blocking wait, watching it for resizes.
-func (b *borrowedBackend) WaitEvents(dst []viewer.Event, timeout time.Duration) []viewer.Event {
-	return b.noteResizes(b.Backend.WaitEvents(dst, timeout))
-}
-
-// noteResizes records that the window changed size while the session had it.
-//
-// Watching the event stream is the only way to tell: a resize the user
-// performs is reported, not requested, and by the time [borrowedBackend.Close]
-// runs the two possible sizes are indistinguishable. Reading the events on
-// their way past costs a type switch over a batch that is almost always empty.
-func (b *borrowedBackend) noteResizes(events []viewer.Event) []viewer.Event {
-	if !b.restore || b.userSized {
-		return events
-	}
-	for _, ev := range events {
-		if r, ok := ev.(viewer.EventResize); ok && (r.W != b.restoreW || r.H != b.restoreH) {
-			b.userSized = true
-			return events
-		}
-	}
-	return events
-}
-
-// OpenAudio, PlayPCM and CloseAudio forward the shell's session audio through
-// to the window's backend when that backend can play it.
-//
-// The viewer only calls these on a session whose connection negotiated the
-// QEMU audio extension, which in turn only happens when the backend was
-// recognised as an [viewer.AudioSink] — so the audio path is inert unless the
-// window's backend implements it. A backend that does not (a headless test
-// fake, say) reports the failure just the way [viewer.AudioSink.OpenAudio]
-// asks: with an error, which the viewer turns into "audio off, keep the
-// session".
-func (b *borrowedBackend) OpenAudio(format viewer.AudioFormat) error {
-	if s, ok := b.Backend.(viewer.AudioSink); ok {
-		return s.OpenAudio(format)
-	}
-	return fmt.Errorf("viewer: window backend cannot play audio")
-}
-
-func (b *borrowedBackend) PlayPCM(data []byte) {
-	if s, ok := b.Backend.(viewer.AudioSink); ok {
-		s.PlayPCM(data)
-	}
-}
-
-func (b *borrowedBackend) CloseAudio() {
-	if s, ok := b.Backend.(viewer.AudioSink); ok {
-		s.CloseAudio()
-	}
-}
-
-// Close returns the window to the shell rather than destroying it, at the size
-// the shell was using.
-//
-// Restoring the size is the other half of refusing to change it: whatever did
-// change it — a fullscreen toggle, a window manager with opinions — belongs to
-// the session that has just ended, and the user's mental model is that they
-// left a list open and are coming back to it. The exception is a resize the
-// user performed themselves during the session: that was a deliberate act
-// about this window, not about this session, so it survives it.
-//
-// A fullscreen session that the user never resized comes back through the
-// leave-fullscreen path, which restores the pre-fullscreen size anyway; the
-// explicit restore below then finds nothing to do.
-func (b *borrowedBackend) Close() {
-	be := b.Backend
-	if be.Fullscreen() {
-		// The shell is not a fullscreen application; leaving it fullscreen
-		// because the last session was would be a surprising inheritance.
-		_ = be.SetFullscreen(false)
-	}
-	if b.restore && !b.userSized {
-		if w, h := be.Size(); w != b.restoreW || h != b.restoreH {
-			_ = be.SetSize(b.restoreW, b.restoreH)
-		}
-	}
-	_ = be.SetTitle(b.title)
-}
-
-// Compile-time proof that the wrapper is still a backend.
-var _ viewer.Backend = (*borrowedBackend)(nil)
-
-// Compile-time proof that a session opened from the shell can carry audio:
-// the viewer enables guest audio only for a backend it can assert as an
-// [viewer.AudioSink], and this wrapper is what the shell passes it.
-var _ viewer.AudioSink = (*borrowedBackend)(nil)

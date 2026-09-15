@@ -57,9 +57,9 @@ var _ API = (*kwclient.Client)(nil)
 
 // Connector opens a workspace's display session and returns when it ends.
 //
-// It blocks the shell's own loop on purpose: the session and the shell share
-// one window and one OS thread, so while a session is up the shell is not
-// drawing anything anyway. A nil error means the user closed the session
+// It blocks the shell's own loop on purpose: the session and the shell run on
+// the same main OS thread, so while a session is up the shell is not drawing
+// anything anyway. A nil error means the user closed the session window
 // normally, and the shell goes back to the workspace list.
 type Connector func(ctx context.Context, ws kwclient.Workspace) error
 

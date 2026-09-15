@@ -33,8 +33,9 @@ const (
 	// StateSettings is the settings screen: appearance preferences that live
 	// on this computer, not on any instance.
 	StateSettings
-	// StateSession means a display session owns the window. The shell's own
-	// loop is parked for the duration and resumes on StateWorkspaces.
+	// StateSession means a display session is running in its own window.
+	// The shell's own loop is parked for the duration and resumes on
+	// StateWorkspaces.
 	StateSession
 )
 
