@@ -19,7 +19,7 @@ import (
 )
 
 // Version is the client version reported in the default User-Agent.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 const (
 	// SessionCookieName is the cookie the API sets on login and accepts on
