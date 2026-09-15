@@ -326,7 +326,10 @@ func (r *ReconnectingSession) Close() error {
 // It is a nudge, not a command: calling it while a connection is live or the
 // session is closing does nothing.
 func (r *ReconnectingSession) RetryNow() {
-	select { case r.retry <- struct{}{}: default: }
+	select {
+	case r.retry <- struct{}{}:
+	default:
+	}
 }
 
 // run is the supervisor loop.

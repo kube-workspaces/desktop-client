@@ -322,12 +322,12 @@ var _ Backend = (*fakeBackend)(nil)
 // asked of them.
 type audioBackend struct {
 	*fakeBackend
-	audioMu  sync.Mutex
-	opened   int
-	gotFmt   *AudioFormat
-	played   []byte
-	openErr  error
-	closed   int
+	audioMu sync.Mutex
+	opened  int
+	gotFmt  *AudioFormat
+	played  []byte
+	openErr error
+	closed  int
 }
 
 func (a *audioBackend) OpenAudio(format AudioFormat) error {
@@ -1936,7 +1936,12 @@ func TestViewerTakeoverEnterRunsHandlerWhenDisplayInUse(t *testing.T) {
 
 	// Wait for the handler to complete.
 	waitFor(t, "takeover handler", func() bool {
-		select { case <-ran: return true; default: return false }
+		select {
+		case <-ran:
+			return true
+		default:
+			return false
+		}
 	})
 
 	// Verify the server didn't receive any key events (they were consumed internally).

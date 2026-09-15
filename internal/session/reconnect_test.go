@@ -710,22 +710,6 @@ func TestReconnectingSessionNamesACleanDisconnect(t *testing.T) {
 	}
 }
 
-// wantPrefixStates is like wantStates but only requires the recorded states to
-// begin with want, since a supervisor may keep announcing the same state.
-func wantPrefixStates(t *testing.T, rec *recorder, want ...State) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	var got []State
-	for time.Now().Before(deadline) {
-		got = rec.seen()
-		if len(got) >= len(want) && equalStates(got[:len(want)], want) {
-			return
-		}
-		time.Sleep(200 * time.Microsecond)
-	}
-	t.Errorf("states = %v, want prefix %v", got, want)
-}
-
 func TestReconnectingSessionRetryNowBreaksTheWait(t *testing.T) {
 	d := newDialer(step{err: fmt.Errorf("dial vnc bridge: %w", kwclient.ErrSessionInUse)})
 	rec := &recorder{}
@@ -771,7 +755,7 @@ func TestReconnectingSessionRetryNowIsASafeNudge(t *testing.T) {
 
 	r2 := start(t, context.Background(), opts2)
 
-	_ , _, err := r2.Attach(context.Background())
+	_, _, err := r2.Attach(context.Background())
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
