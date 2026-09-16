@@ -85,7 +85,10 @@ type SessionOptions struct {
 // in the client's own window. A VM gets its supervised RFB display session; any
 // other workspace gets the integrated terminal over the /exec bridge.
 func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
-	terminalConnector := TerminalConnector(client, TerminalOptions{Logf: opts.Logf})
+	terminalConnector := TerminalConnector(client, TerminalOptions{
+		Scale: 1, // the 5x8 bitmap at 1x (6x11 px cells); scale 2 reads too large
+		Logf:  opts.Logf,
+	})
 	return func(ctx context.Context, ws kwclient.Workspace) error {
 		if !ws.IsVM() {
 			return terminalConnector(ctx, ws)
@@ -151,6 +154,9 @@ type TerminalOptions struct {
 	// Theme is the palette for the terminal window; nil means the terminal
 	// package's dark default.
 	Theme *ui.Theme
+	// Scale is the integer grid scale; zero means the theme's Body scale.
+	// 1 gives 6x11 px cells, 2 gives 12x22 px cells.
+	Scale int
 	// Logf, if set, receives terminal diagnostics.
 	Logf func(format string, args ...any)
 }
@@ -173,6 +179,7 @@ func TerminalConnector(client *kwclient.Client, opts TerminalOptions) Connector 
 		return terminal.Run(ctx, dial, terminal.Options{
 			Title: ws.Key(),
 			Theme: opts.Theme,
+			Scale: opts.Scale,
 			Logf:  opts.Logf,
 		})
 	}

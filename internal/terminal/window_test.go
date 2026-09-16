@@ -470,6 +470,46 @@ func TestWindowResizeAnnouncesNewGrid(t *testing.T) {
 	_ = done
 }
 
+func TestRunHonorsScaleOption(t *testing.T) {
+	be := newFakeBackend()
+	ds := &dialServer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		err := Run(ctx, ds.dial, Options{Backend: be, Scale: 1})
+		done <- err
+	}()
+	defer cancel()
+
+	waitUntil(t, 2*time.Second, func() bool { return ds.callCount() == 1 }, "no dial")
+	conn := ds.last()
+
+	// Scale 1 stays 100x30 by default but every cell is 6x11 px, so the
+	// window opens at 600x330 instead of 1200x660.
+	be.mu.Lock()
+	w, h := be.w, be.h
+	be.mu.Unlock()
+	if w != 600 || h != 330 {
+		t.Fatalf("scale 1 window = %dx%d, want 600x330", w, h)
+	}
+
+	// Reflowing to 600x660 at 6px cells is a 100-column grid.
+	be.push(viewer.EventResize{W: 600, H: 660})
+	waitUntil(t, 2*time.Second, func() bool {
+		for _, p := range conn.readPhrases() {
+			if p == `{"type":"resize","cols":100,"rows":60}` {
+				return true
+			}
+		}
+		return false
+	}, "resize frame for scale-1 100-column grid not sent")
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v on cancel", err)
+	}
+}
+
 func TestTinyWindowClampsToOneCell(t *testing.T) {
 	be := newFakeBackend()
 	ds := &dialServer{}

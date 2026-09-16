@@ -23,6 +23,12 @@ type Options struct {
 	// the monospace bitmap face, whatever face the theme's widgets use.
 	Theme *ui.Theme
 
+	// Scale is the integer grid scale: one pixel of the 5x8 bitmap face per
+	// Scale pixel of cell. Zero means the theme's Body scale. 1 gives 6x11 px
+	// cells, 2 gives 12x22 px cells. A terminal often wants a smaller glyph
+	// than the shell's body text, which is why it is no longer wedded to it.
+	Scale int
+
 	// Title is the window title. It is shown plain while connected and with
 	// " — reconnecting" appended while the session is without a connection.
 	Title string
@@ -72,7 +78,10 @@ func Run(ctx context.Context, dial Dial, opts Options) error {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	scale := theme.Body
+	scale := opts.Scale
+	if scale < 1 {
+		scale = theme.Body
+	}
 	if scale < 1 {
 		scale = 1
 	}
