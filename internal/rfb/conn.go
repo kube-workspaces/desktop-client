@@ -36,6 +36,11 @@ type Config struct {
 	// Defaults to DefaultEncodings.
 	Encodings []Encoding
 
+	// Quality enables adaptive Tight quality/compression and lossless idle
+	// refresh. Start with DefaultQualityConfig. The transport must implement
+	// io.Closer; Run closes it on exit and joins the controller's writer.
+	Quality *QualityConfig
+
 	// Decoders overrides the decoder set. Defaults to DefaultDecoders.
 	Decoders []Decoder
 
@@ -160,6 +165,10 @@ type Conn struct {
 	statsMu sync.Mutex
 	stats   Stats
 
+	// quality is the adaptive quality controller for this connection, or nil
+	// when Config.Quality was not set.
+	quality *qualityController
+
 	closed atomic.Bool
 }
 
@@ -226,6 +235,16 @@ func (c *Conn) framebuffer() *Framebuffer { return c.fb }
 // rw is typically an adapter over a WebSocket, since that is how the
 // kube-workspaces API exposes the KubeVirt console, but any stream works.
 func NewConn(rw io.ReadWriter, cfg Config) (*Conn, error) {
+	if cfg.Quality != nil {
+		if _, ok := rw.(io.Closer); !ok {
+			return nil, fmt.Errorf("rfb: adaptive quality requires a closeable transport")
+		}
+		qcfg, err := normalizeQualityConfig(*cfg.Quality)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Quality = &qcfg
+	}
 	counting := &countingReader{r: rw}
 	c := &Conn{
 		cfg:      cfg,
@@ -285,6 +304,12 @@ func (c *Conn) handshake() error {
 		// protocol error on a server without audio and drops the link.
 		encs = append(append([]Encoding(nil), encs...), EncodingQEMUAudio)
 		c.setAudioFormat(*c.cfg.AudioFormat)
+	}
+	if c.cfg.Quality != nil {
+		// Preserve the full feature list (including audio), and advertise the
+		// opening tier in the first SetEncodings, before any update request.
+		c.quality = newQualityController(c, *c.cfg.Quality, encs)
+		encs = c.quality.encodingsFor(c.quality.appliedTier)
 	}
 	if err := c.SetEncodings(encs); err != nil {
 		return fmt.Errorf("rfb: set encodings: %w", err)
@@ -466,11 +491,14 @@ func (c *Conn) readString32() (string, error) {
 
 // send writes a complete client message under the write lock.
 func (c *Conn) send(payload []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if c.closed.Load() {
 		return net(ErrClosed)
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	if c.quality != nil && payload[0] == msgFramebufferUpdateRequest {
+		c.quality.noteRequest(time.Now())
+	}
 	if _, err := c.w.Write(payload); err != nil {
 		return err
 	}
@@ -604,6 +632,15 @@ func (c *Conn) RequestUpdateRect(incremental bool, r Rect) error {
 	return c.send(buf)
 }
 
+// QualityInterval returns the adaptive controller's recommended update request
+// cadence, or zero when disabled. Callers may sample this in their request loop.
+func (c *Conn) QualityInterval() time.Duration {
+	if c.quality == nil {
+		return 0
+	}
+	return time.Duration(c.quality.interval.Load())
+}
+
 // KeyEvent sends a key press or release. key is an X11 keysym.
 func (c *Conn) KeyEvent(key uint32, down bool) error {
 	buf := make([]byte, 8)
@@ -672,8 +709,28 @@ func toLatin1(s string) []byte {
 
 // Run reads and dispatches server messages until the context is cancelled, the
 // stream ends, or a protocol error occurs. It returns nil on a clean EOF.
-func (c *Conn) Run(ctx context.Context) error {
+func (c *Conn) Run(ctx context.Context) (runErr error) {
 	defer c.closed.Store(true)
+	if c.quality != nil {
+		qctx, cancel := context.WithCancel(ctx)
+		qdone := make(chan error, 1)
+		closer := c.rw.(io.Closer) // checked by NewConn
+		go func() {
+			err := c.quality.run(qctx)
+			if err != nil {
+				_ = closer.Close() // wake the read loop on a failed tuning write
+			}
+			qdone <- err
+		}()
+		defer func() {
+			cancel()
+			c.closed.Store(true)
+			_ = closer.Close() // also releases a blocked controller write on EOF
+			if err := <-qdone; err != nil && ctx.Err() == nil {
+				runErr = fmt.Errorf("rfb: adaptive quality: %w", err)
+			}
+		}()
+	}
 
 	// Cancellation works by closing the transport, which unblocks the read.
 	// The caller owns the transport, so it is their Close we rely on; we just
@@ -813,6 +870,13 @@ func (c *Conn) readAudioData() error {
 }
 
 func (c *Conn) readFramebufferUpdate() error {
+	var latency, decodeTime time.Duration
+	// Count consumed protocol bytes, not transport read-ahead, which may also
+	// contain audio or a later update. The message type has already been read.
+	beforeUpdate := c.counting.Count() - uint64(c.r.Buffered())
+	if c.quality != nil {
+		latency = c.quality.beginUpdate(time.Now())
+	}
 	head := make([]byte, 3)
 	if err := readFull(c.r, head); err != nil {
 		return fmt.Errorf("rfb: read update header: %w", err)
@@ -842,6 +906,7 @@ func (c *Conn) readFramebufferUpdate() error {
 		if err != nil {
 			return err
 		}
+		decodeTime += time.Since(start)
 
 		if c.cfg.OnRect != nil {
 			c.cfg.OnRect(enc, r, c.counting.Count()-before)
@@ -863,9 +928,15 @@ func (c *Conn) readFramebufferUpdate() error {
 	c.stats.Updates++
 	c.statsMu.Unlock()
 
-	if c.cfg.OnFramebufferUpdate != nil {
+	if c.cfg.OnFramebufferUpdate != nil || c.quality != nil {
 		damage := c.fb.TakeDamage()
-		c.cfg.OnFramebufferUpdate(c.fb, damage)
+		if c.quality != nil {
+			bytes := c.counting.Count() - uint64(c.r.Buffered()) - beforeUpdate + 1
+			c.quality.noteUpdate(damage, bytes, decodeTime, latency, uint64(c.fb.Width)*uint64(c.fb.Height))
+		}
+		if c.cfg.OnFramebufferUpdate != nil {
+			c.cfg.OnFramebufferUpdate(c.fb, damage)
+		}
 	}
 	return nil
 }
