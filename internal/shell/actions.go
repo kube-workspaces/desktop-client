@@ -46,6 +46,8 @@ const (
 	intentRefresh
 	intentActivate
 	intentOpenInBrowser
+	intentStartWorkspace
+	intentStopWorkspace
 	intentInfoWorkspace
 	intentInfoClose
 	intentSignOut
@@ -58,8 +60,8 @@ const (
 // intent is one frame's outcome.
 type intent struct {
 	kind intentKind
-	// workspace is the subject of intentActivate, intentOpenInBrowser and
-	// intentInfoWorkspace.
+	// workspace is the subject of intentActivate, intentOpenInBrowser,
+	// intentStartWorkspace, intentStopWorkspace and intentInfoWorkspace.
 	workspace kwclient.Workspace
 }
 
@@ -88,6 +90,14 @@ func (a *App) act(ctx context.Context, in intent) {
 	case intentOpenInBrowser:
 		if ws, ok := a.resolve(in.workspace); ok {
 			a.openInBrowser(ctx, ws)
+		}
+	case intentStartWorkspace:
+		if ws, ok := a.resolve(in.workspace); ok && ws.Stopped {
+			a.setStopped(ctx, ws, false)
+		}
+	case intentStopWorkspace:
+		if ws, ok := a.resolve(in.workspace); ok && ws.Running() {
+			a.setStopped(ctx, ws, true)
 		}
 	case intentInfoWorkspace:
 		if ws, ok := a.resolve(in.workspace); ok {
@@ -534,6 +544,52 @@ func (a *App) openInBrowser(ctx context.Context, ws kwclient.Workspace) {
 	})
 }
 
+// setStopped starts or stops a workspace and refreshes the list so the new
+// state shows up under the user.
+func (a *App) setStopped(ctx context.Context, ws kwclient.Workspace, stop bool) {
+	if a.api == nil {
+		return
+	}
+	api := a.api
+	what := "Starting"
+	if stop {
+		what = "Stopping"
+	}
+	a.m.Working(what + " " + ws.Name)
+	opCtx, cancel := context.WithTimeout(ctx, listTimeout)
+	a.cancelInFlight()
+	a.cancelPending = cancel
+	a.background(func() func() {
+		var err error
+		if stop {
+			_, err = api.StopWorkspace(opCtx, ws.Namespace, ws.Name)
+		} else {
+			_, err = api.StartWorkspace(opCtx, ws.Namespace, ws.Name)
+		}
+		return func() {
+			cancel()
+			a.cancelPending = nil
+			if a.m.State != StateWorkspaces {
+				return
+			}
+			a.m.Done()
+			if err != nil {
+				a.m.Err = Describe(err)
+				return
+			}
+			// The Info modal, when it is up, is about the workspace that just
+			// changed; close it rather than leave a stale sheet in the way.
+			a.m.CloseInfo()
+			done := "Started"
+			if stop {
+				done = "Stopped"
+			}
+			a.m.Notice = fmt.Sprintf("%s %s.", done, ws.Name)
+			a.refreshWorkspaces(ctx, true)
+		}
+	})
+}
+
 // signOut forgets the session but keeps the profile, so signing back in does
 // not mean retyping the server address.
 func (a *App) signOut() {
@@ -644,11 +700,14 @@ const (
 	idList          ui.FocusID = "workspaces"
 	idOpen          ui.FocusID = "open"
 	idOpenInBrowser ui.FocusID = "open-in-browser"
+	idStop          ui.FocusID = "stop"
 	idRefresh       ui.FocusID = "refresh"
 	idSignOut       ui.FocusID = "sign-out"
 
 	idInfo      ui.FocusID = "info"
 	idInfoClose ui.FocusID = "info-close"
+	idInfoStart ui.FocusID = "info-start"
+	idInfoStop  ui.FocusID = "info-stop"
 
 	idSettings     ui.FocusID = "settings"
 	idStyleBubbly  ui.FocusID = "style-bubbly"

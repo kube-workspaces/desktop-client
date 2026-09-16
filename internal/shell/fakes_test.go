@@ -312,6 +312,13 @@ type fakeAPI struct {
 	listCalls  int
 	images     []kwclient.Image
 
+	// lifecycleErr makes StartWorkspace/StopWorkspace fail.
+	lifecycleErr error
+	// startCalls records each StartWorkspace target as ns/name, stopCalls the
+	// StopWorkspace targets, so a test can assert on what was asked for.
+	startCalls []string
+	stopCalls  []string
+
 	// grantPaths records the redirect each GrantBrowserSession is asked for.
 	grantPaths []string
 	grantErr   error
@@ -422,6 +429,36 @@ func (f *fakeAPI) ListImages(context.Context) ([]kwclient.Image, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.images, nil
+}
+
+// startStop sets the named workspace's stopped state on the fake's copy, which
+// is what the real server does, so a refresh after the call shows the change.
+func (f *fakeAPI) startStop(namespace, name string, stopped bool) (*kwclient.Workspace, error) {
+	if f.lifecycleErr != nil {
+		return nil, f.lifecycleErr
+	}
+	for i := range f.workspaces {
+		if f.workspaces[i].Name == name && f.workspaces[i].Namespace == namespace {
+			f.workspaces[i].Stopped = stopped
+			ws := f.workspaces[i]
+			return &ws, nil
+		}
+	}
+	return nil, fmt.Errorf("fake: workspace %s/%s not found", namespace, name)
+}
+
+func (f *fakeAPI) StartWorkspace(_ context.Context, namespace, name string) (*kwclient.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startCalls = append(f.startCalls, namespace+"/"+name)
+	return f.startStop(namespace, name, false)
+}
+
+func (f *fakeAPI) StopWorkspace(_ context.Context, namespace, name string) (*kwclient.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCalls = append(f.stopCalls, namespace+"/"+name)
+	return f.startStop(namespace, name, true)
 }
 
 func (f *fakeAPI) WorkspaceURL(ws kwclient.Workspace, img *kwclient.Image) string {

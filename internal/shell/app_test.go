@@ -496,7 +496,10 @@ func TestOpenInBrowserGrantFailure(t *testing.T) {
 	}
 }
 
-func TestStoppedWorkspacesCannotBeOpened(t *testing.T) {
+// TestEnterOnStoppedWorkspaceStartsIt: Enter used to be refused on a stopped
+// workspace; now it is the prompt to bring it back up, which is the one thing a
+// stopped row is good for.
+func TestEnterOnStoppedWorkspaceStartsIt(t *testing.T) {
 	r := newRig(savedProfile(), "stored-token")
 	r.api.set(func(f *fakeAPI) {
 		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, false)}
@@ -505,16 +508,77 @@ func TestStoppedWorkspacesCannotBeOpened(t *testing.T) {
 
 	r.focus(idList)
 	r.clickFocused()
-	r.step()
+	r.settle()
 
-	if r.app.m.State != StateWorkspaces {
-		t.Fatalf("a stopped workspace was opened (%v)", r.app.m.State)
+	if want := []string{"team/vm-a"}; len(r.api.startCalls) != 1 || r.api.startCalls[0] != want[0] {
+		t.Fatalf("StartWorkspace calls = %v, want %v", r.api.startCalls, want)
 	}
-	if len(r.opened) != 0 || len(r.browsed) != 0 {
-		t.Fatal("a stopped workspace started something")
+	if r.app.m.Err != "" {
+		t.Fatalf("start failed: %s", r.app.m.Err)
 	}
-	if !strings.Contains(r.app.m.Err, "stopped") {
-		t.Fatalf("the refusal was explained as %q", r.app.m.Err)
+	if !strings.Contains(r.app.m.Notice, "Started") {
+		t.Fatalf("the user was not told it started: %q", r.app.m.Notice)
+	}
+	// The fake server flipped the stopped flag on its copy, so the refresh
+	// after the start shows the workspace no longer stopped.
+	if ws, ok := r.app.m.SelectedWorkspace(); !ok || ws.Stopped {
+		t.Fatalf("workspace is still stopped after StartWorkspace")
+	}
+}
+
+// TestStopRunningWorkspaceViaFooter: a running workspace's quiet inverse
+// action is Stop, and it feeds a refresh that shows the workspace stopped.
+func TestStopRunningWorkspaceViaFooter(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}
+	})
+	r.start()
+
+	r.focus(idStop)
+	r.clickFocused()
+	r.settle()
+
+	if len(r.api.stopCalls) != 1 || r.api.stopCalls[0] != "team/vm-a" {
+		t.Fatalf("StopWorkspace calls = %v, want [team/vm-a]", r.api.stopCalls)
+	}
+	if r.app.m.Err != "" {
+		t.Fatalf("stop failed: %s", r.app.m.Err)
+	}
+	if !strings.Contains(r.app.m.Notice, "Stopped") {
+		t.Fatalf("the user was not told it stopped: %q", r.app.m.Notice)
+	}
+	if ws, ok := r.app.m.SelectedWorkspace(); !ok || !ws.Stopped {
+		t.Fatalf("workspace is still running after StopWorkspace")
+	}
+}
+
+// TestInfoModalStartsAStoppedWorkspace: start/stop is the one action the
+// detail sheet is good for, and it works from behind the modal.
+func TestInfoModalStartsAStoppedWorkspace(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, false)}
+	})
+	r.start()
+
+	r.focus(idInfo)
+	r.clickFocused()
+	r.step()
+	if r.app.m.Info == nil {
+		t.Fatal("info modal did not open")
+	}
+	r.focus(idInfoStart)
+	r.clickFocused()
+	r.settle()
+
+	if len(r.api.startCalls) != 1 || r.api.startCalls[0] != "team/vm-a" {
+		t.Fatalf("StartWorkspace calls = %v, want [team/vm-a]", r.api.startCalls)
+	}
+	// Starting from the modal closes it, so there is no stale sheet after the
+	// action it took.
+	if r.app.m.Info != nil {
+		t.Fatal("info modal stayed open after the start")
 	}
 }
 

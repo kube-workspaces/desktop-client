@@ -206,6 +206,36 @@ func (c *Client) GetWorkspace(ctx context.Context, namespace, name string) (*Wor
 	return &out, nil
 }
 
+// StartWorkspace posts to /v1/workspaces/{name}/start, resuming a stopped
+// workspace, and returns the updated workspace.
+func (c *Client) StartWorkspace(ctx context.Context, namespace, name string) (*Workspace, error) {
+	return c.setStopped(ctx, namespace, name, false)
+}
+
+// StopWorkspace posts to /v1/workspaces/{name}/stop, scaling a running
+// workspace to zero, and returns the updated workspace.
+func (c *Client) StopWorkspace(ctx context.Context, namespace, name string) (*Workspace, error) {
+	return c.setStopped(ctx, namespace, name, true)
+}
+
+// setStopped runs the lifecycle action. start=false posts start, start=true
+// posts stop; both return the workspace the server reports after the change.
+func (c *Client) setStopped(ctx context.Context, namespace, name string, stop bool) (*Workspace, error) {
+	action := "start"
+	if stop {
+		action = "stop"
+	}
+	var out Workspace
+	if err := c.doJSON(ctx, requestSpec{
+		method: http.MethodPost,
+		path:   workspacePath(name, action),
+		query:  namespaceQuery(namespace),
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ListImages fetches GET /v1/images, the catalog of workspace images.
 func (c *Client) ListImages(ctx context.Context) ([]Image, error) {
 	var out []Image

@@ -465,6 +465,78 @@ func TestConsoleAndSSHSessionControl(t *testing.T) {
 	}
 }
 
+func TestStartStopWorkspace(t *testing.T) {
+	tests := []struct {
+		name  string
+		call  func(c *Client) (*Workspace, error)
+		path  string
+		state bool // whether the response workspace is stopped
+	}{
+		{
+			name: "start",
+			call: func(c *Client) (*Workspace, error) {
+				return c.StartWorkspace(context.Background(), "demo", "dev")
+			},
+			path:  "/v1/workspaces/dev/start",
+			state: false,
+		},
+		{
+			name: "stop",
+			call: func(c *Client) (*Workspace, error) {
+				return c.StopWorkspace(context.Background(), "demo", "dev")
+			},
+			path:  "/v1/workspaces/dev/stop",
+			state: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath, gotVerb, gotNS string
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				gotPath, gotVerb = r.URL.Path, r.Method
+				gotNS = r.URL.Query().Get("namespace")
+				writeJSON(t, w, http.StatusOK, `{"name":"dev","namespace":"demo","type":"container","ready_replicas":0,"stopped":`+boolStr(tc.state)+`}`)
+			})
+
+			ws, err := tc.call(c)
+			if err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if gotVerb != http.MethodPost || gotPath != tc.path {
+				t.Errorf("%s %s, want POST %s", gotVerb, gotPath, tc.path)
+			}
+			if gotNS != "demo" {
+				t.Errorf("namespace = %q, want demo", gotNS)
+			}
+			if ws == nil || ws.Name != "dev" {
+				t.Fatalf("workspace = %+v, want the updated workspace", ws)
+			}
+			if ws.Stopped != tc.state {
+				t.Errorf("Stopped = %v, want %v", ws.Stopped, tc.state)
+			}
+		})
+	}
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+func TestStartWorkspaceNotFound(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, `"workspace demo/dev not found"`)
+	})
+	_, err := c.StartWorkspace(context.Background(), "demo", "dev")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("err = %v, want 404 APIError", err)
+	}
+}
+
 func TestReboot(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		var gotPath, gotVerb string

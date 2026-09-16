@@ -41,6 +41,10 @@ type API interface {
 	// ListWorkspaces and ListImages populate the main screen.
 	ListWorkspaces(ctx context.Context, namespace string) ([]kwclient.Workspace, error)
 	ListImages(ctx context.Context) ([]kwclient.Image, error)
+	// StartWorkspace and StopWorkspace power the shell's start/stop controls.
+	// They report the workspace with its new stopped state.
+	StartWorkspace(ctx context.Context, namespace, name string) (*kwclient.Workspace, error)
+	StopWorkspace(ctx context.Context, namespace, name string) (*kwclient.Workspace, error)
 	// WorkspaceURL builds the URL a browser should open for a workspace.
 	WorkspaceURL(ws kwclient.Workspace, img *kwclient.Image) string
 	// GrantBrowserSession hands this client's session to the browser: the

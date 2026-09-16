@@ -511,7 +511,13 @@ func (a *App) drawList(r ui.Rect, rows []kwclient.Workspace, out *intent) {
 	}
 	if activated {
 		if ws, ok := a.m.SelectedWorkspace(); ok {
-			*out = intent{kind: intentActivate, workspace: ws}
+			// Enter on a stopped row asks to start it: opening is what it
+			// cannot do yet, and starting is the one thing worth doing to it.
+			kind := intentActivate
+			if ws.Stopped {
+				kind = intentStartWorkspace
+			}
+			*out = intent{kind: kind, workspace: ws}
 		}
 	}
 }
@@ -606,6 +612,9 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	switch {
 	case !has:
 		label = "Open"
+	case ws.Stopped:
+		kind = intentStartWorkspace
+		label = "Start"
 	case !ws.Running():
 		label = "Not running"
 	case ws.IsVM():
@@ -619,7 +628,7 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 		ID:       idOpen,
 		Text:     label,
 		Variant:  ui.ButtonPrimary,
-		Disabled: !has || !ws.Running(),
+		Disabled: !has || (kind == intentActivate && !ws.Running()),
 	}
 	// The browser stays: the web-application workspaces and any surface the
 	// client cannot render in a terminal still get the explicit hand-off.
@@ -628,11 +637,18 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if showBrowser {
 		browser = ui.Button{ID: idOpenInBrowser, Text: "Open in browser", Variant: ui.ButtonSecondary}
 	}
+	// Stop is the quiet inverse of the primary action, offered for exactly the
+	// workspaces that have one to stop: the running ones.
+	stop := ui.Button{ID: idStop, Text: "Stop", Variant: ui.ButtonSecondary}
+	showStop := has && ws.Running()
 	// Info is for looking, not acting, so it is secondary to the open button
 	// and disabled when there is no selection to look at.
 	info := ui.Button{ID: idInfo, Text: "Info", Variant: ui.ButtonSecondary, Disabled: !has}
 
 	widths := []int{max(180, open.Width(ctx))}
+	if showStop {
+		widths = append(widths, stop.Width(ctx))
+	}
 	if showBrowser {
 		widths = append(widths, browser.Width(ctx))
 	}
@@ -644,6 +660,12 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 		*out = intent{kind: kind, workspace: ws}
 	}
 	ci++
+	if showStop {
+		if stop.Layout(ctx, cols[ci]) {
+			*out = intent{kind: intentStopWorkspace, workspace: ws}
+		}
+		ci++
+	}
 	if showBrowser {
 		if browser.Layout(ctx, cols[ci]) {
 			*out = intent{kind: intentOpenInBrowser, workspace: ws}
@@ -757,7 +779,26 @@ func (a *App) drawWorkspaceInfoModal(bounds ui.Rect) intent {
 
 	footer := body.Next(parts[len(parts)-1])
 	closeRow := ui.Button{ID: idInfoClose, Text: "Close", Variant: ui.ButtonPrimary}
-	closeRect, _ := ui.CutRight(footer, closeRow.Width(ctx))
+	// Start/Stop is the one thing a detail sheet is worth acting on: the rest
+	// of the modal is for looking. It is omitted in the in-between state
+	// (neither stopped nor running) because neither action applies then.
+	toggleKind, toggleText, toggleID := intentNone, "", ui.FocusID("")
+	switch {
+	case ws.Stopped:
+		toggleKind, toggleText, toggleID = intentStartWorkspace, "Start", idInfoStart
+	case ws.Running():
+		toggleKind, toggleText, toggleID = intentStopWorkspace, "Stop", idInfoStop
+	}
+	rest := footer
+	if toggleKind != intentNone {
+		toggle := ui.Button{ID: toggleID, Text: toggleText, Variant: ui.ButtonSecondary}
+		toggleRect, remaining := ui.CutRight(footer, toggle.Width(ctx)+th.Gap)
+		if toggle.Layout(ctx, toggleRect) {
+			out = intent{kind: toggleKind, workspace: *ws}
+		}
+		rest = remaining
+	}
+	closeRect, _ := ui.CutRight(rest, closeRow.Width(ctx))
 	if closeRow.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentInfoClose}
 	}
