@@ -46,8 +46,11 @@ Not implemented, and must not be described otherwise:
   connect time. `rfb.Stats` exists to feed this later; nothing drives it.
 - **Audio.** `probe --audio` advertises the QEMU audio pseudo-encoding purely to
   detect whether the VM has a sound device. No decoder, no playback.
-- **Tier 1, the in-guest transport** (Selkies agent, H.264 + Opus, via
-  `kube-workspaces/proxy`). No code exists. Tier 0 (RFB) is the only transport.
+- **Tier 1 mission-cleared.** The in-guest transport (Selkies agent, H.264 +
+  Opus, via `kube-workspaces/proxy`) exists only as the headless
+  Spike D probe/protocol (`internal/selkies` + `cmd/selkies-probe`). It is not
+  wired into the graphical client, does not decode/render media or inject
+  input; Tier 0 (RFB) remains the only GUI transport.
 - Multiple concurrent sessions; one window per session, but only one session at a time.
 - **Code signing and notarisation.** Release binaries are unsigned; macOS
   Gatekeeper and Windows SmartScreen warn today. Backburnered on budget, not
@@ -113,6 +116,9 @@ is the accepted trade; it was the original argument for process separation.
 | `internal/viewer/` | The session viewer: `Backend` interface + backend-neutral events (`backend.go`), the SDL3 implementation (`sdl.go`, the **only** file importing an SDL binding), the session loop (`viewer.go`), damage tracking, overlay and bitmap font |
 | `internal/ui/` | Software immediate-mode widget layer (labels, buttons, text inputs, lists, layout, focus ring, theme) rasterising into an `image.RGBA` |
 | `internal/shell/` | The graphical shell: `Model` state machine (server → login → workspaces → session), pure drawing functions, the loop, and the `API`/`Store`/`Connector` seams that let all of it be tested without a display or a network |
+| `internal/transport/` | Transport-agnostic `Conn` interface wrapping the RFB connection (hides RFB specifics so viewer/session code is transport-independent) |
+| `internal/selkies/` | Tier 1 (Selkies) wire protocol + headless probe client (Spike D). cgo-free; no decoder/renderer; not wired into the GUI |
+| `cmd/selkies-probe/` | Standalone Spike D diagnostic binary: protocol handshake checks, payload statistics, JSON summaries |
 
 ## Commands
 

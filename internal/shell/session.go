@@ -94,6 +94,12 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 			return terminalConnector(ctx, ws)
 		}
 
+		if ws.RemoteDesktop != nil && ws.RemoteDesktop.Protocol == "selkies" {
+			opts.Logf("workspace %s supports Selkies Tier 1 transport", ws.Key())
+			// For Spike D we only prove reachability. A full implementation
+			// would swap the viewer/renderer here.
+		}
+
 		encodings := append([]rfb.Encoding(nil), rfb.DefaultEncodings...)
 		if opts.Quality >= 0 {
 			encodings = append(encodings, rfb.QualityLevel(opts.Quality))

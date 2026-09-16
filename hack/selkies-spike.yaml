@@ -1,0 +1,71 @@
+# Disposable upstream protocol fixture, not a workspace image or a VM benchmark.
+# kubectl create namespace kw-tier1-spike
+# kubectl create -f hack/selkies-spike.yaml
+# kubectl -n kw-tier1-spike port-forward pod/selkies-probe-agent 18080:8080
+# go run ./cmd/selkies-probe --direct http://127.0.0.1:18080 --duration 10s
+# kubectl delete namespace kw-tier1-spike
+#
+# The agent listens only on loopback; no Service/Ingress/platform token is used.
+# create (not apply) deliberately fails if a fixture with this name already exists.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: selkies-probe-agent
+  namespace: kw-tier1-spike
+  labels:
+    app.kubernetes.io/part-of: kw-tier1-spike
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 1800
+  automountServiceAccountToken: false
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  containers:
+    - name: agent
+      image: debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 512Mi
+        limits:
+          cpu: "4"
+          memory: 4Gi
+      env:
+        - name: DEBIAN_FRONTEND
+          value: noninteractive
+      readinessProbe:
+        exec:
+          command: ["/bin/sh", "-c", "curl --fail --silent http://127.0.0.1:8080/api/health >/dev/null"]
+        periodSeconds: 5
+      command: ["/bin/bash", "-ec"]
+      args:
+        - |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends ca-certificates curl xvfb x11-xserver-utils pulseaudio dbus-x11
+          curl --fail --location --retry 3 -o /tmp/selkies.deb \
+            https://github.com/selkies-project/selkies/releases/download/2.0.0rc0/selkies-2.0.0rc0-trixie-amd64.deb
+          printf '%s  %s\n' ca42bc605fcfd0e396886a88a3d2844ef976e0cf43ff8d97e90432c3a340c0b9 /tmp/selkies.deb | sha256sum --check
+          apt-get install -y --no-install-recommends /tmp/selkies.deb
+          useradd --create-home spike
+          install -d -o spike -g spike -m 700 /tmp/spike-runtime
+          install -d -m 1777 /tmp/.X11-unix
+          exec runuser -u spike -- env HOME=/home/spike XDG_RUNTIME_DIR=/tmp/spike-runtime \
+            DISPLAY=:99 SELKIES_ADDR=127.0.0.1 SELKIES_PORT=8080 \
+            SELKIES_MODE=websockets SELKIES_ENCODER=h264enc SELKIES_USE_CPU=true \
+            SELKIES_ENABLE_BASIC_AUTH=false SELKIES_GAMEPAD_ENABLED=false \
+            SELKIES_ENABLE_RESIZE=false SELKIES_ENABLE_DUAL_MODE=false \
+            SELKIES_ENABLE_CLIPBOARD=false SELKIES_AUDIO_REDUNDANCY=false \
+            dbus-run-session -- bash -ec '
+              Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+              trap "kill $(jobs -p) 2>/dev/null || true" EXIT
+              for i in {1..50}; do xset q >/dev/null 2>&1 && break; sleep 0.1; done
+              pulseaudio --start --exit-idle-time=-1
+              pactl load-module module-null-sink sink_name=spike
+              pactl set-default-sink spike
+              # Deterministic display changes exercise full-frame capture.
+              (while true; do
+                xsetroot -solid "#3366cc"; sleep 0.1
+                xsetroot -solid "#cc6633"; sleep 0.1
+              done) &
+              selkies
+            '

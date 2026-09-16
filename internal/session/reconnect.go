@@ -13,6 +13,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
+	"github.com/kube-workspaces/desktop-client/internal/transport"
 )
 
 // State is what a [ReconnectingSession] is currently doing.
@@ -62,16 +63,16 @@ func (s State) String() string {
 // Terminal reports whether no further state change can occur.
 func (s State) Terminal() bool { return s == StateFailed || s == StateClosed }
 
-// Link is one established RFB connection: a completed handshake plus the
-// transport underneath it.
+// Link is one established remote desktop connection: a completed handshake
+// plus the transport underneath it.
 //
 // It exists so that [ReconnectingSession] can be driven by a fake in tests —
 // the supervisor logic is where the interesting decisions live, and it should
-// not need a VNC server to exercise them. [*Session] is the production
-// implementation.
+// not need a real server to exercise them. [*Session] and SelkiesLink are the
+// production implementations.
 type Link interface {
-	// Conn returns the handshaken RFB connection.
-	Conn() *rfb.Conn
+	// Conn returns the handshaken remote desktop connection.
+	Conn() transport.Conn
 	// Run drives the read loop until ctx is cancelled or the stream ends. It
 	// returns nil on a clean close.
 	Run(ctx context.Context) error
@@ -254,12 +255,12 @@ func (r *ReconnectingSession) Workspace() string { return r.workspace }
 // Namespace returns the workspace's namespace.
 func (r *ReconnectingSession) Namespace() string { return r.namespace }
 
-// Conn returns the live RFB connection, or nil while there is none.
+// Conn returns the live remote desktop connection, or nil while there is none.
 //
 // The returned connection is only valid until the session reconnects. Code
 // that runs for the length of a connection should use
 // [ReconnectingSession.Attach] instead, which says when its connection ends.
-func (r *ReconnectingSession) Conn() *rfb.Conn {
+func (r *ReconnectingSession) Conn() transport.Conn {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.gen == nil {
@@ -284,7 +285,7 @@ func (r *ReconnectingSession) State() (State, error) {
 // returned context is done, attach again. Attach reports an error when the
 // session has failed for good or when ctx is cancelled first, so the loop
 // terminates on its own.
-func (r *ReconnectingSession) Attach(ctx context.Context) (*rfb.Conn, context.Context, error) {
+func (r *ReconnectingSession) Attach(ctx context.Context) (transport.Conn, context.Context, error) {
 	for {
 		r.mu.Lock()
 		gen, state, lastErr, changed := r.gen, r.state, r.lastErr, r.changed

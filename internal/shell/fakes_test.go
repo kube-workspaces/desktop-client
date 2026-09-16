@@ -202,15 +202,6 @@ func (f *fakeBackend) resize(w, h int) {
 	f.sized = append(f.sized, [2]int{w, h})
 }
 
-// userResize simulates the user dragging the window frame: the size changes
-// and the window manager reports it.
-func (f *fakeBackend) userResize(w, h int) {
-	f.mu.Lock()
-	f.w, f.h = w, h
-	f.mu.Unlock()
-	f.send(viewer.EventResize{W: w, H: h})
-}
-
 func (f *fakeBackend) setTitle(title string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

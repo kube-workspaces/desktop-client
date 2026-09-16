@@ -59,6 +59,16 @@ type VolumeMount struct {
 	MountPath string `json:"mount_path"`
 }
 
+// ImageRemoteDesktop describes an in-guest remote desktop agent.
+type ImageRemoteDesktop struct {
+	// Protocol name, e.g. "selkies".
+	Protocol string `json:"protocol"`
+	// Port the agent listens on in the guest.
+	Port int `json:"port"`
+	// Path relative to the agent's base URL.
+	Path *string `json:"path,omitempty"`
+}
+
 // Workspace is a workspace as returned by GET /v1/workspaces and
 // GET /v1/workspaces/{name}.
 //
@@ -98,6 +108,9 @@ type Workspace struct {
 	CreatedAt *string `json:"created_at,omitempty"`
 	// VolumeMounts are the workspace's volumes.
 	VolumeMounts []VolumeMount `json:"volume_mounts,omitempty"`
+	// RemoteDesktop is the in-guest agent configuration, if the workspace
+	// image supports it.
+	RemoteDesktop *ImageRemoteDesktop `json:"remote_desktop,omitempty"`
 }
 
 // Running reports whether the workspace can be connected to.
@@ -113,6 +126,11 @@ func (w *Workspace) Running() bool {
 // SSH and VNC endpoints apply to it.
 func (w *Workspace) IsVM() bool {
 	return w != nil && w.Type == WorkspaceTypeVM
+}
+
+// HasTier1 reports whether the workspace image advertises a Tier 1 transport.
+func (w *Workspace) HasTier1() bool {
+	return w != nil && w.RemoteDesktop != nil && w.RemoteDesktop.Protocol != ""
 }
 
 // Key returns "namespace/name", the canonical identifier for a workspace.
@@ -154,6 +172,9 @@ type Image struct {
 	DefaultUser string `json:"default_user"`
 	// WorkspaceTypes lists the workspace types this image supports.
 	WorkspaceTypes []string `json:"workspace_types"`
+	// RemoteDesktop is the in-guest agent configuration, if the image
+	// supports it.
+	RemoteDesktop *ImageRemoteDesktop `json:"remote_desktop,omitempty"`
 }
 
 // SupportsType reports whether the image can back the given workspace type.

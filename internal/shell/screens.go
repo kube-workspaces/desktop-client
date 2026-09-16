@@ -574,7 +574,11 @@ func (a *App) drawWorkspaceRow(r ui.Rect, ws kwclient.Workspace, state ui.RowSta
 	})
 
 	if meta.W > 0 {
-		ui.Label(ctx, meta, string(ws.Type), ui.LabelStyle{
+		text := string(ws.Type)
+		if ws.HasTier1() {
+			text += " · Tier 1"
+		}
+		ui.Label(ctx, meta, text, ui.LabelStyle{
 			Color: th.TextMuted, Scale: th.Small, Align: ui.AlignRight, Middle: true,
 		})
 	}
@@ -825,6 +829,13 @@ func workspaceInfoRows(ws *kwclient.Workspace) [][2]string {
 	add("Image", ws.Image)
 	if ws.Port != nil {
 		add("Port", fmt.Sprintf("%d", *ws.Port))
+	}
+	if rd := ws.RemoteDesktop; rd != nil {
+		path := "/"
+		if rd.Path != nil {
+			path = *rd.Path
+		}
+		add("Transport", fmt.Sprintf("%s (port %d, path %s)", rd.Protocol, rd.Port, path))
 	}
 	add("CPU", resourceRange(ws.CPURequest, ws.CPULimit))
 	add("Memory", resourceRange(ws.MemoryRequest, ws.MemoryLimit))

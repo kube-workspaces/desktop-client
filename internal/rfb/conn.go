@@ -505,6 +505,16 @@ func (c *Conn) send(payload []byte) error {
 	return c.w.Flush()
 }
 
+// Close tears down the connection. It closes the underlying transport if it
+// implements io.Closer.
+func (c *Conn) Close() error {
+	c.closed.Store(true)
+	if closer, ok := c.rw.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // ErrClosed is returned when using a Conn whose read loop has exited.
 var ErrClosed = errors.New("rfb: connection closed")
 

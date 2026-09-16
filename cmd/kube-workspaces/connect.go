@@ -229,7 +229,9 @@ func (u *sessionUI) onState(state session.State, err error) {
 		server := ""
 		if sess := u.sess.Load(); sess != nil {
 			if conn := sess.Conn(); conn != nil {
-				u.last.Store(conn)
+				if rfbConn, ok := conn.(*rfb.Conn); ok {
+					u.last.Store(rfbConn)
+				}
 				server = " — " + conn.ServerName()
 			}
 		}

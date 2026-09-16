@@ -11,6 +11,7 @@ import (
 
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
+	"github.com/kube-workspaces/desktop-client/internal/transport"
 )
 
 // These tests are about the one property the window has that a connection does
@@ -456,7 +457,7 @@ func TestViewerInputIsDroppedWhileDisconnected(t *testing.T) {
 // for a display somebody else holds looks like from here.
 type blockingSource struct{}
 
-func (blockingSource) Attach(ctx context.Context) (*rfb.Conn, context.Context, error) {
+func (blockingSource) Attach(ctx context.Context) (transport.Conn, context.Context, error) {
 	<-ctx.Done()
 	return nil, nil, ctx.Err()
 }
@@ -464,7 +465,7 @@ func (blockingSource) Attach(ctx context.Context) (*rfb.Conn, context.Context, e
 // failingSource is a session that has given up.
 type failingSource struct{ err error }
 
-func (s failingSource) Attach(context.Context) (*rfb.Conn, context.Context, error) {
+func (s failingSource) Attach(context.Context) (transport.Conn, context.Context, error) {
 	return nil, nil, s.err
 }
 

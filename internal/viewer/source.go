@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/kube-workspaces/desktop-client/internal/rfb"
+	"github.com/kube-workspaces/desktop-client/internal/transport"
 )
 
 // ConnSource yields the connections a viewer displays, one after another.
@@ -41,7 +41,7 @@ type ConnSource interface {
 	// before tearing the window down. An error is terminal — the viewer shows
 	// it and exits — so a source that intends to retry must do so internally
 	// rather than returning.
-	Attach(ctx context.Context) (*rfb.Conn, context.Context, error)
+	Attach(ctx context.Context) (transport.Conn, context.Context, error)
 }
 
 // SingleConn adapts one already-established connection to [ConnSource], for
@@ -52,14 +52,14 @@ type ConnSource interface {
 // loop ends. Once the connection has been handed over, Attach blocks until
 // then, so a dead connection leaves the last frame frozen rather than
 // silently closing the window.
-func SingleConn(conn *rfb.Conn) ConnSource { return &singleConn{conn: conn} }
+func SingleConn(conn transport.Conn) ConnSource { return &singleConn{conn: conn} }
 
 type singleConn struct {
 	mu   sync.Mutex
-	conn *rfb.Conn
+	conn transport.Conn
 }
 
-func (s *singleConn) Attach(ctx context.Context) (*rfb.Conn, context.Context, error) {
+func (s *singleConn) Attach(ctx context.Context) (transport.Conn, context.Context, error) {
 	s.mu.Lock()
 	conn := s.conn
 	s.conn = nil
@@ -105,7 +105,7 @@ func (v *Viewer) pump(ctx context.Context, src ConnSource) {
 
 // offer hands a new connection to the render loop, which picks it up at the
 // top of its next iteration.
-func (v *Viewer) offer(conn *rfb.Conn, connCtx context.Context) {
+func (v *Viewer) offer(conn transport.Conn, connCtx context.Context) {
 	v.inbox.Lock()
 	v.inbox.nextConn, v.inbox.nextCtx, v.inbox.hasNext = conn, connCtx, true
 	v.inbox.needsPresent = true

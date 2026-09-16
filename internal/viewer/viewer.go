@@ -12,6 +12,7 @@ import (
 
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
+	"github.com/kube-workspaces/desktop-client/internal/transport"
 )
 
 // Defaults for the timings in [Config]. They are separate constants because
@@ -241,7 +242,7 @@ type Viewer struct {
 
 		// nextConn/nextCtx is a connection the pump has taken out and not yet
 		// handed over.
-		nextConn *rfb.Conn
+		nextConn transport.Conn
 		nextCtx  context.Context
 		hasNext  bool
 
@@ -266,7 +267,7 @@ type Viewer struct {
 	// conn is the connection being displayed, or nil while there is none.
 	// connCtx bounds it: the render loop notices a drop by watching it rather
 	// than by being told, which removes a whole class of ordering bug.
-	conn    *rfb.Conn
+	conn    transport.Conn
 	connCtx context.Context
 
 	// audioSink is the backend narrowed to its audio capability, or nil when
@@ -595,7 +596,7 @@ func (v *Viewer) Run(ctx context.Context, src ConnSource) error {
 
 // RunConn drives the viewer against a single connection, for callers that do
 // not supervise reconnection. See [SingleConn] for the lifetime rules.
-func (v *Viewer) RunConn(ctx context.Context, conn *rfb.Conn) error {
+func (v *Viewer) RunConn(ctx context.Context, conn transport.Conn) error {
 	if conn == nil {
 		return fmt.Errorf("viewer: nil connection")
 	}
@@ -796,7 +797,7 @@ func (v *Viewer) syncConn(now time.Time) {
 }
 
 // attach installs a new connection under the existing window.
-func (v *Viewer) attach(conn *rfb.Conn, connCtx context.Context, now time.Time) {
+func (v *Viewer) attach(conn transport.Conn, connCtx context.Context, now time.Time) {
 	if v.conn != nil {
 		v.dropConn(nil)
 	}

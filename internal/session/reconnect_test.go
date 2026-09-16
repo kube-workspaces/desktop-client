@@ -17,6 +17,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
+	"github.com/kube-workspaces/desktop-client/internal/transport"
 )
 
 // --- fakes ------------------------------------------------------------------
@@ -39,7 +40,7 @@ func newFakeLink() *fakeLink {
 	return &fakeLink{release: make(chan struct{})}
 }
 
-func (l *fakeLink) Conn() *rfb.Conn { return nil }
+func (l *fakeLink) Conn() transport.Conn { return nil }
 
 func (l *fakeLink) Run(ctx context.Context) error {
 	select {
