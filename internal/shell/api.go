@@ -55,12 +55,13 @@ type API interface {
 // The production client is the interface, with no adapter in between.
 var _ API = (*kwclient.Client)(nil)
 
-// Connector opens a workspace's display session and returns when it ends.
+// Connector opens a workspace's session and returns when it ends.
 //
 // It blocks the shell's own loop on purpose: the session and the shell run on
 // the same main OS thread, so while a session is up the shell is not drawing
 // anything anyway. A nil error means the user closed the session window
-// normally, and the shell goes back to the workspace list.
+// normally, and the shell goes back to the workspace list. A VM workspace gets
+// its display session; a non-VM workspace opens an integrated terminal.
 type Connector func(ctx context.Context, ws kwclient.Workspace) error
 
 // ClientFactory builds the client for an instance, and the connector that goes

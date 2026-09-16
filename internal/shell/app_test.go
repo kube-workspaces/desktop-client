@@ -384,9 +384,10 @@ func TestSessionEndingWithAnExpiredTokenGoesToLogin(t *testing.T) {
 	}
 }
 
-// TestNonVMWorkspacesOpenInABrowser: a container workspace is a web
-// application, and pretending to display it would be a lie.
-func TestNonVMWorkspacesOpenInABrowser(t *testing.T) {
+// TestContainerWorkspaceOpensInApp: a container workspace now opens an
+// integrated terminal in the client's own window, exactly like a VM opens its
+// display. The browser is the explicit secondary action, not the default.
+func TestContainerWorkspaceOpensInApp(t *testing.T) {
 	r := newRig(savedProfile(), "stored-token")
 	web := workspace("team", "code", kwclient.WorkspaceTypeContainer, true)
 	r.api.set(func(f *fakeAPI) {
@@ -397,20 +398,32 @@ func TestNonVMWorkspacesOpenInABrowser(t *testing.T) {
 
 	r.focus(idList)
 	r.clickFocused()
-	r.step()
+	r.settle()
 
+	if len(r.opened) != 1 || r.opened[0].Key() != "team/code" {
+		t.Fatalf("the connector was called with %v, want team/code", r.opened)
+	}
 	if r.app.m.State != StateWorkspaces {
-		t.Fatalf("a container workspace opened a display session (%v)", r.app.m.State)
+		t.Fatalf("after the session, state = %v; the shell must not exit", r.app.m.State)
 	}
-	if len(r.browsed) != 1 {
-		t.Fatalf("the browser was opened %d times", len(r.browsed))
+	if len(r.browsed) != 0 {
+		t.Fatalf("the primary action handed the workspace to the browser: %v", r.browsed)
 	}
+	if !strings.Contains(r.app.m.Notice, "team/code") {
+		t.Fatalf("the session end was not reported: %q", r.app.m.Notice)
+	}
+
+	// The secondary "Open in browser" button is the explicit browser hand-off.
 	// The client's session is a header the browser never saw, so opening the
 	// bare proxy URL would land on a 401. The browser is opened at the
 	// single-use redeem URL instead, which sets the kw-session cookie and
 	// redirects to the workspace.
-	if want := "https://kw.example.com/auth/browser-session?code=grant-code"; r.browsed[0] != want {
-		t.Fatalf("opened %q, want %q", r.browsed[0], want)
+	r.focus(idOpenInBrowser)
+	r.clickFocused()
+	r.settle()
+
+	if want := "https://kw.example.com/auth/browser-session?code=grant-code"; len(r.browsed) != 1 || r.browsed[0] != want {
+		t.Fatalf("opened %v, want %q", r.browsed, want)
 	}
 	// ...and the grant asked to land on the proxy path plus the catalog's
 	// default path.
@@ -433,7 +446,7 @@ func TestOpenInBrowserWaitsForGrant(t *testing.T) {
 	})
 	r.start()
 
-	r.focus(idList)
+	r.focus(idOpenInBrowser)
 	r.clickFocused()
 	for i := 0; i < 5; i++ {
 		r.step()
@@ -468,7 +481,7 @@ func TestOpenInBrowserGrantFailure(t *testing.T) {
 	})
 	r.start()
 
-	r.focus(idList)
+	r.focus(idOpenInBrowser)
 	r.clickFocused()
 	r.settle()
 

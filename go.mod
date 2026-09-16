@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/Zyko0/go-sdl3 v0.1.1
+	github.com/gitpod-io/xterm-go v0.0.0-20260907130418-dae5128cb6b3
 	github.com/gorilla/websocket v1.5.3
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/image v0.46.0

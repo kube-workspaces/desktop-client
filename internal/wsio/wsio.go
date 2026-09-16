@@ -124,6 +124,29 @@ func (c *Conn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// WriteText sends p as a single text WebSocket message.
+//
+// The /exec bridge treats the two frame types differently, so a stream using
+// it must be able to pick: binary frames are the raw stdin relay, while a
+// text frame carrying JSON is a control message (the terminal resize). A
+// control message sent as binary would be fed to the shell as keystrokes.
+// WriteText shares the write lock with Write, so the two can never interleave
+// frames on the wire.
+func (c *Conn) WriteText(p []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if c.writeTimeout > 0 {
+		if err := c.ws.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
+			return 0, translateErr(err)
+		}
+	}
+	if err := c.ws.WriteMessage(websocket.TextMessage, p); err != nil {
+		return 0, translateErr(err)
+	}
+	return len(p), nil
+}
+
 // Close closes the WebSocket. It attempts a courteous close handshake first so
 // the server's session registry releases the slot promptly, which matters
 // because the KubeVirt VNC console is single-session: a connection left to time

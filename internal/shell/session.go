@@ -6,19 +6,21 @@ package shell
 import (
 	"context"
 	"errors"
-	"fmt"
+	"io"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
 	"github.com/kube-workspaces/desktop-client/internal/session"
+	"github.com/kube-workspaces/desktop-client/internal/terminal"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
+	"github.com/kube-workspaces/desktop-client/internal/wsio"
 )
 
-// runSession hands the window to the display viewer and blocks until the
-// session ends.
+// runSession hands the window to the session viewer and blocks until the
+// session ends: a display for a VM, an integrated terminal otherwise.
 //
 // It runs on the loop's goroutine, which is the goroutine that owns the
 // window, which is what the viewer requires. Blocking here is the design:
@@ -28,7 +30,7 @@ func (a *App) runSession(ctx context.Context) error {
 	ws := a.m.Opening
 	if a.connect == nil {
 		a.afterSession()
-		a.m.SessionEnded(errors.New("this build cannot open display sessions"))
+		a.m.SessionEnded(errors.New("this build cannot open sessions"))
 		return nil
 	}
 
@@ -79,12 +81,14 @@ type SessionOptions struct {
 	Logf func(format string, args ...any)
 }
 
-// SessionConnector returns the production [Connector]: it opens a supervised
-// RFB session to a VM workspace and presents it in its own window.
+// SessionConnector returns the production [Connector]: it opens the workspace
+// in the client's own window. A VM gets its supervised RFB display session; any
+// other workspace gets the integrated terminal over the /exec bridge.
 func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
+	terminalConnector := TerminalConnector(client, TerminalOptions{Logf: opts.Logf})
 	return func(ctx context.Context, ws kwclient.Workspace) error {
 		if !ws.IsVM() {
-			return fmt.Errorf("%s is a %s workspace and has no display", ws.Name, ws.Type)
+			return terminalConnector(ctx, ws)
 		}
 
 		encodings := append([]rfb.Encoding(nil), rfb.DefaultEncodings...)
@@ -139,6 +143,38 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 			return nil
 		}
 		return runErr
+	}
+}
+
+// TerminalOptions tunes the integrated terminal sessions the shell opens.
+type TerminalOptions struct {
+	// Theme is the palette for the terminal window; nil means the terminal
+	// package's dark default.
+	Theme *ui.Theme
+	// Logf, if set, receives terminal diagnostics.
+	Logf func(format string, args ...any)
+}
+
+// TerminalConnector returns the production [Connector] for non-VM workspaces:
+// it dials the /exec bridge and presents it in an integrated terminal window.
+//
+// The terminal owns reconnecting: [terminal.Run] redials DialExec with backoff
+// after a transport failure, and returns nil when the shell exits cleanly,
+// the user quits, or the session is torn down.
+func TerminalConnector(client *kwclient.Client, opts TerminalOptions) Connector {
+	return func(ctx context.Context, ws kwclient.Workspace) error {
+		dial := func(ctx context.Context, cols, rows uint16) (io.ReadWriteCloser, error) {
+			conn, err := client.DialExec(ctx, ws.Namespace, ws.Name, cols, rows)
+			if err != nil {
+				return nil, err
+			}
+			return wsio.New(conn), nil
+		}
+		return terminal.Run(ctx, dial, terminal.Options{
+			Title: ws.Key(),
+			Theme: opts.Theme,
+			Logf:  opts.Logf,
+		})
 	}
 }
 

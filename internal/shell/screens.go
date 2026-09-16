@@ -600,6 +600,9 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 
 	kind := intentActivate
 	var label string
+	// A running non-VM workspace opens in-app now; the browser is the explicit
+	// secondary choice, not the silently chosen default.
+	inBrowser := false
 	switch {
 	case !has:
 		label = "Open"
@@ -608,8 +611,8 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	case ws.IsVM():
 		label = "Open display"
 	default:
-		label = "Open in browser"
-		kind = intentOpenInBrowser
+		label = "Open"
+		inBrowser = true
 	}
 
 	open := ui.Button{
@@ -618,22 +621,45 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 		Variant:  ui.ButtonPrimary,
 		Disabled: !has || !ws.Running(),
 	}
+	// The browser stays: the web-application workspaces and any surface the
+	// client cannot render in a terminal still get the explicit hand-off.
+	browser := ui.Button{}
+	showBrowser := has && ws.Running() && inBrowser
+	if showBrowser {
+		browser = ui.Button{ID: idOpenInBrowser, Text: "Open in browser", Variant: ui.ButtonSecondary}
+	}
 	// Info is for looking, not acting, so it is secondary to the open button
 	// and disabled when there is no selection to look at.
 	info := ui.Button{ID: idInfo, Text: "Info", Variant: ui.ButtonSecondary, Disabled: !has}
-	cols := ui.Row(r, th.Gap, max(180, open.Width(ctx)), info.Width(ctx), 0)
-	if open.Layout(ctx, cols[0]) {
+
+	widths := []int{max(180, open.Width(ctx))}
+	if showBrowser {
+		widths = append(widths, browser.Width(ctx))
+	}
+	widths = append(widths, info.Width(ctx), 0)
+	cols := ui.Row(r, th.Gap, widths...)
+
+	ci := 0
+	if open.Layout(ctx, cols[ci]) {
 		*out = intent{kind: kind, workspace: ws}
 	}
-	if info.Layout(ctx, cols[1]) {
+	ci++
+	if showBrowser {
+		if browser.Layout(ctx, cols[ci]) {
+			*out = intent{kind: intentOpenInBrowser, workspace: ws}
+		}
+		ci++
+	}
+	if info.Layout(ctx, cols[ci]) {
 		*out = intent{kind: intentInfoWorkspace, workspace: ws}
 	}
+	ci++
 
 	hint := "Enter opens  ·  F5 refreshes  ·  Ctrl-F filters  ·  Tab moves"
 	if !a.m.LastRefresh.IsZero() {
 		hint = "Updated " + since(a.m.LastRefresh, a.ctx.Input.Now) + "  ·  " + hint
 	}
-	ui.Label(ctx, ui.InsetXY(cols[2], th.Gap, 0), hint, ui.LabelStyle{
+	ui.Label(ctx, ui.InsetXY(cols[ci], th.Gap, 0), hint, ui.LabelStyle{
 		Color:  th.TextMuted,
 		Scale:  th.Small,
 		Align:  ui.AlignRight,

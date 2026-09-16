@@ -467,19 +467,20 @@ func (a *App) resolve(ws kwclient.Workspace) (kwclient.Workspace, bool) {
 	return a.m.SelectedWorkspace()
 }
 
-// activate opens a workspace: a display session for a VM, the browser for
-// anything else.
+// activate opens a workspace in-app: a display session for a VM, an integrated
+// terminal for container and scratch workspaces. Workspace types the client
+// cannot render yet fall back to the browser rather than pretending to.
 func (a *App) activate(ctx context.Context, ws kwclient.Workspace) {
 	switch {
 	case !ws.Running():
 		a.m.Notice = ""
 		a.m.Err = fmt.Sprintf("%s is %s and cannot be opened yet.", ws.Name, StatusText(ws))
-	case ws.IsVM():
+	case ws.IsVM(), ws.Type == kwclient.WorkspaceTypeContainer, ws.Type == kwclient.WorkspaceTypeScratch:
 		a.m.Open(ws)
 	default:
-		// Container and scratch workspaces are web applications served
-		// through the proxy. Rendering one here would mean shipping a
-		// browser; offering the user their own is the honest option.
+		// A workspace the client cannot open in-app yet, so it still gets the
+		// browser: the grant flow hands the user's session to their browser,
+		// which is the honest option for a surface we do not render.
 		a.openInBrowser(ctx, ws)
 	}
 }
@@ -639,11 +640,12 @@ const (
 	idCancel   ui.FocusID = "cancel"
 	idBack     ui.FocusID = "back"
 
-	idFilter  ui.FocusID = "filter"
-	idList    ui.FocusID = "workspaces"
-	idOpen    ui.FocusID = "open"
-	idRefresh ui.FocusID = "refresh"
-	idSignOut ui.FocusID = "sign-out"
+	idFilter        ui.FocusID = "filter"
+	idList          ui.FocusID = "workspaces"
+	idOpen          ui.FocusID = "open"
+	idOpenInBrowser ui.FocusID = "open-in-browser"
+	idRefresh       ui.FocusID = "refresh"
+	idSignOut       ui.FocusID = "sign-out"
 
 	idInfo      ui.FocusID = "info"
 	idInfoClose ui.FocusID = "info-close"
