@@ -611,7 +611,7 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	case ws.IsVM():
 		label = "Open display"
 	default:
-		label = "Open"
+		label = "Console"
 		inBrowser = true
 	}
 
