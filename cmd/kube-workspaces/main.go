@@ -44,6 +44,7 @@ func main() {
 		{"whoami", "Show the authenticated identity", runWhoAmI},
 		{"list", "List workspaces", runList},
 		connectCommand(),
+		webCommand(),
 		{"probe", "Probe a VM workspace's display capabilities and bandwidth", runProbe},
 		{"screenshot", "Capture a VM workspace's display to a PNG file", runScreenshot},
 		{"version", "Print the client version", runVersion},

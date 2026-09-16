@@ -567,6 +567,7 @@ type rig struct {
 	opened  []kwclient.Workspace
 	connect func(context.Context, kwclient.Workspace) error
 	browsed []string
+	webbed  []kwclient.Workspace
 }
 
 func newRig(profile *config.Profile, token string) *rig {
@@ -594,6 +595,10 @@ func newRig(profile *config.Profile, token string) *rig {
 		Store: r.store,
 		OpenBrowser: func(rawURL string) error {
 			r.browsed = append(r.browsed, rawURL)
+			return nil
+		},
+		OpenWeb: func(namespace, name string) error {
+			r.webbed = append(r.webbed, kwclient.Workspace{Namespace: namespace, Name: name})
 			return nil
 		},
 		// Off by default: the tests that want a refresh ask for one, and the

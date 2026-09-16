@@ -96,6 +96,10 @@ type Options struct {
 	// the platform's default handler.
 	OpenBrowser func(rawURL string) error
 
+	// OpenWeb spawns the embedded-webview child process (the binary's `web`
+	// subcommand) for a non-VM workspace. Nil means [spawnWeb].
+	OpenWeb func(namespace, name string) error
+
 	// Theme overrides the palette. Nil means [ui.DefaultTheme].
 	Theme *ui.Theme
 
@@ -134,6 +138,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.OpenBrowser == nil {
 		o.OpenBrowser = openBrowser
+	}
+	if o.OpenWeb == nil {
+		o.OpenWeb = spawnWeb
 	}
 }
 

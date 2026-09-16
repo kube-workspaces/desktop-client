@@ -38,7 +38,9 @@ Implemented and working:
 - Graphical shell: instance/login/workspace-list screens.
 - **Multiple windows.** One process means one main thread. The shell and the
   session viewer each open their own SDL window on that thread, sharing the SDL
-  library.
+  library. Non-VM workspaces open in the embedded webview child process (Track
+  B); a child binary (`internal/web` via `webview_go`) owns the browser
+  engine's cgo/windowing stack so the shell stays cgo-free.
 
 Not implemented, and must not be described otherwise:
 
@@ -105,7 +107,7 @@ is the accepted trade; it was the original argument for process separation.
 
 | Directory | Purpose |
 |-----------|---------|
-| `cmd/kube-workspaces/` | Single binary. **No arguments opens the graphical shell**; subcommands (`shell`, `login`, `logout`, `profile`, `whoami`, `list`, `connect`, `probe`, `screenshot`, `version`) are for scripting and diagnosis |
+| `cmd/kube-workspaces/` | Single binary. **No arguments opens the graphical shell**; subcommands (`shell`, `login`, `logout`, `profile`, `whoami`, `list`, `connect`, `web`, `probe`, `screenshot`, `version`) are for scripting and diagnosis |
 | `internal/kwclient/` | REST + WebSocket client for the platform API: auth (local and RFC 8252 browser), workspaces, images, console/ssh status & takeover, the `/vnc`, `/exec` and `/ssh` bridges |
 | `internal/rfb/` | RFB (VNC) protocol client: handshake, pixel formats, encodings/decoders, framebuffer, cursor, stats. No UI, no cgo |
 | `internal/keysym/` | Backend-neutral key enumeration → X11 keysyms, modifier tracking and chords (Ctrl-Alt-Del). Imports no windowing library |
@@ -116,8 +118,10 @@ is the accepted trade; it was the original argument for process separation.
 | `internal/viewer/` | The session viewer: `Backend` interface + backend-neutral events (`backend.go`), the SDL3 implementation (`sdl.go`, the **only** file importing an SDL binding), the session loop (`viewer.go`), damage tracking, overlay and bitmap font |
 | `internal/ui/` | Software immediate-mode widget layer (labels, buttons, text inputs, lists, layout, focus ring, theme) rasterising into an `image.RGBA` |
 | `internal/shell/` | The graphical shell: `Model` state machine (server → login → workspaces → session), pure drawing functions, the loop, and the `API`/`Store`/`Connector` seams that let all of it be tested without a display or a network |
+| `internal/terminal/` | Integrated terminal over the `/exec` bridge (Track A): pure-Go xterm-go emulator, SDL window loop; the "Console" surface for container/scratch workspaces |
 | `internal/transport/` | Transport-agnostic `Conn` interface wrapping the RFB connection (hides RFB specifics so viewer/session code is transport-independent) |
 | `internal/selkies/` | Tier 1 (Selkies) wire protocol + headless probe client (Spike D). cgo-free; no decoder/renderer; not wired into the GUI |
+| `internal/web/` | Embedded-webview child for non-VM workspaces (Track B): `webview_go` behind cgo build tags |
 | `cmd/selkies-probe/` | Standalone Spike D diagnostic binary: protocol handshake checks, payload statistics, JSON summaries |
 
 ## Commands

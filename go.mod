@@ -16,6 +16,7 @@ require (
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
+	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )

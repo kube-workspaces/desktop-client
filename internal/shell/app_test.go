@@ -384,9 +384,9 @@ func TestSessionEndingWithAnExpiredTokenGoesToLogin(t *testing.T) {
 	}
 }
 
-// TestContainerWorkspaceOpensInApp: a container workspace now opens an
-// integrated terminal in the client's own window, exactly like a VM opens its
-// display. The browser is the explicit secondary action, not the default.
+// TestContainerWorkspaceOpensInApp: a container workspace's primary in-app
+// surface is the embedded webview (Track B); the integrated terminal (Track A)
+// and the system browser remain as explicit secondary actions.
 func TestContainerWorkspaceOpensInApp(t *testing.T) {
 	r := newRig(savedProfile(), "stored-token")
 	web := workspace("team", "code", kwclient.WorkspaceTypeContainer, true)
@@ -396,28 +396,40 @@ func TestContainerWorkspaceOpensInApp(t *testing.T) {
 	})
 	r.start()
 
+	// The primary action (row Enter / the primary footer button) spawns the
+	// embedded webview child; the in-app terminal session and the browser stay
+	// strictly secondary.
 	r.focus(idList)
 	r.clickFocused()
 	r.settle()
 
-	if len(r.opened) != 1 || r.opened[0].Key() != "team/code" {
-		t.Fatalf("the connector was called with %v, want team/code", r.opened)
+	if len(r.webbed) != 1 || r.webbed[0].Key() != "team/code" {
+		t.Fatalf("opening spawned webview children %v, want team/code", r.webbed)
 	}
-	if r.app.m.State != StateWorkspaces {
-		t.Fatalf("after the session, state = %v; the shell must not exit", r.app.m.State)
+	if len(r.opened) != 0 {
+		t.Fatalf("the primary action connected a session: %v", r.opened)
 	}
 	if len(r.browsed) != 0 {
 		t.Fatalf("the primary action handed the workspace to the browser: %v", r.browsed)
 	}
-	if !strings.Contains(r.app.m.Notice, "team/code") {
-		t.Fatalf("the session end was not reported: %q", r.app.m.Notice)
+	if !strings.Contains(r.app.m.Notice, "web") {
+		t.Fatalf("the spawn was not reported: %q", r.app.m.Notice)
 	}
 
-	// The secondary "Open in browser" button is the explicit browser hand-off.
-	// The client's session is a header the browser never saw, so opening the
-	// bare proxy URL would land on a 401. The browser is opened at the
-	// single-use redeem URL instead, which sets the kw-session cookie and
-	// redirects to the workspace.
+	// Secondary "Console" runs the in-app terminal connector (Track A).
+	r.focus(idConsole)
+	r.clickFocused()
+	r.settle()
+
+	if len(r.opened) != 1 || r.opened[0].Key() != "team/code" {
+		t.Fatalf("the secondary action opened session %v, want team/code", r.opened)
+	}
+	if r.app.m.State != StateWorkspaces {
+		t.Fatalf("after the session, state = %v; the shell must not exit", r.app.m.State)
+	}
+
+	// Tertiary "Open in browser" is the explicit browser hand-off, at the
+	// single-use redeem URL.
 	r.focus(idOpenInBrowser)
 	r.clickFocused()
 	r.settle()

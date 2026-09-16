@@ -511,11 +511,15 @@ func (a *App) drawList(r ui.Rect, rows []kwclient.Workspace, out *intent) {
 	}
 	if activated {
 		if ws, ok := a.m.SelectedWorkspace(); ok {
-			// Enter on a stopped row asks to start it: opening is what it
-			// cannot do yet, and starting is the one thing worth doing to it.
+			// Enter on a stopped row asks to start it. Enter on a running row
+			// opens the workspace's primary in-app surface — VM display,
+			// embedded webview for a non-VM workspace.
 			kind := intentActivate
-			if ws.Stopped {
+			switch {
+			case ws.Stopped:
 				kind = intentStartWorkspace
+			case !ws.IsVM() && ws.Running() && (ws.Type == kwclient.WorkspaceTypeContainer || ws.Type == kwclient.WorkspaceTypeScratch):
+				kind = intentOpenWeb
 			}
 			*out = intent{kind: kind, workspace: ws}
 		}
@@ -610,9 +614,10 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 
 	kind := intentActivate
 	var label string
-	// A running non-VM workspace opens in-app now; the browser is the explicit
-	// secondary choice, not the silently chosen default.
-	inBrowser := false
+	// A running non-VM workspace gets the embedded webview as the primary
+	// hand-off (Track B), with the integrated terminal and the system
+	// browser as explicit secondary choices on the same row.
+	console, browser := false, false
 	switch {
 	case !has:
 		label = "Open"
@@ -623,23 +628,29 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 		label = "Not running"
 	case ws.IsVM():
 		label = "Open display"
+	case ws.Type == kwclient.WorkspaceTypeContainer, ws.Type == kwclient.WorkspaceTypeScratch:
+		kind = intentOpenWeb
+		label = "Open web"
+		console, browser = true, true
 	default:
-		label = "Console"
-		inBrowser = true
+		browser = true
 	}
 
 	open := ui.Button{
 		ID:       idOpen,
 		Text:     label,
 		Variant:  ui.ButtonPrimary,
-		Disabled: !has || (kind == intentActivate && !ws.Running()),
+		Disabled: !has || ((kind == intentActivate || kind == intentOpenWeb) && !ws.Running()),
 	}
-	// The browser stays: the web-application workspaces and any surface the
-	// client cannot render in a terminal still get the explicit hand-off.
-	browser := ui.Button{}
-	showBrowser := has && ws.Running() && inBrowser
-	if showBrowser {
-		browser = ui.Button{ID: idOpenInBrowser, Text: "Open in browser", Variant: ui.ButtonSecondary}
+	// Secondary alternatives, both offered for any running non-VM workspace:
+	// the integrated terminal (Track A) and the system-browser grant path.
+	consoleBtn := ui.Button{}
+	if console {
+		consoleBtn = ui.Button{ID: idConsole, Text: "Console", Variant: ui.ButtonSecondary}
+	}
+	browserBtn := ui.Button{}
+	if browser {
+		browserBtn = ui.Button{ID: idOpenInBrowser, Text: "Open in browser", Variant: ui.ButtonSecondary}
 	}
 	// Stop is the quiet inverse of the primary action, offered for exactly the
 	// workspaces that have one to stop: the running ones.
@@ -650,11 +661,14 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	info := ui.Button{ID: idInfo, Text: "Info", Variant: ui.ButtonSecondary, Disabled: !has}
 
 	widths := []int{max(180, open.Width(ctx))}
+	if console {
+		widths = append(widths, consoleBtn.Width(ctx))
+	}
+	if browser {
+		widths = append(widths, browserBtn.Width(ctx))
+	}
 	if showStop {
 		widths = append(widths, stop.Width(ctx))
-	}
-	if showBrowser {
-		widths = append(widths, browser.Width(ctx))
 	}
 	widths = append(widths, info.Width(ctx), 0)
 	cols := ui.Row(r, th.Gap, widths...)
@@ -664,15 +678,21 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 		*out = intent{kind: kind, workspace: ws}
 	}
 	ci++
-	if showStop {
-		if stop.Layout(ctx, cols[ci]) {
-			*out = intent{kind: intentStopWorkspace, workspace: ws}
+	if console {
+		if consoleBtn.Layout(ctx, cols[ci]) {
+			*out = intent{kind: intentActivate, workspace: ws}
 		}
 		ci++
 	}
-	if showBrowser {
-		if browser.Layout(ctx, cols[ci]) {
+	if browser {
+		if browserBtn.Layout(ctx, cols[ci]) {
 			*out = intent{kind: intentOpenInBrowser, workspace: ws}
+		}
+		ci++
+	}
+	if showStop {
+		if stop.Layout(ctx, cols[ci]) {
+			*out = intent{kind: intentStopWorkspace, workspace: ws}
 		}
 		ci++
 	}

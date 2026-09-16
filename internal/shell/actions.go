@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -45,6 +46,7 @@ const (
 	intentCancel
 	intentRefresh
 	intentActivate
+	intentOpenWeb
 	intentOpenInBrowser
 	intentStartWorkspace
 	intentStopWorkspace
@@ -86,6 +88,10 @@ func (a *App) act(ctx context.Context, in intent) {
 	case intentActivate:
 		if ws, ok := a.resolve(in.workspace); ok {
 			a.activate(ctx, ws)
+		}
+	case intentOpenWeb:
+		if ws, ok := a.resolve(in.workspace); ok {
+			a.openWeb(ctx, ws)
 		}
 	case intentOpenInBrowser:
 		if ws, ok := a.resolve(in.workspace); ok {
@@ -495,6 +501,26 @@ func (a *App) activate(ctx context.Context, ws kwclient.Workspace) {
 	}
 }
 
+// openWeb spawns the embedded-webview child process (`web` subcommand) for a
+// non-VM workspace. Track B of integrated-container-workspaces-plan.md: the
+// child scopes the browser engine's cgo/windowing requirements away from the
+// shell, which therefore stays cgo-free and single-threaded (SDL). A spawn
+// failure is reported like any in-app failure — never silently falls back.
+func (a *App) openWeb(ctx context.Context, ws kwclient.Workspace) {
+	if !ws.Running() {
+		a.m.Notice = ""
+		a.m.Err = fmt.Sprintf("%s is %s and cannot be opened yet.", ws.Name, StatusText(ws))
+		return
+	}
+	if err := a.opts.OpenWeb(ws.Namespace, ws.Name); err != nil {
+		a.m.Notice = ""
+		a.m.Err = fmt.Sprintf("Web view could not be started (%v). The browser path still works.", err)
+		return
+	}
+	a.m.Err = ""
+	a.m.Notice = "Opened " + ws.Name + " in the web view."
+}
+
 // openInBrowser opens a container workspace's web UI in the user's browser.
 //
 // The browser has never seen this client's session — the client logged in over
@@ -645,6 +671,24 @@ func NormaliseServer(s string) string {
 	return strings.TrimRight(s, "/")
 }
 
+// spawnWeb is the default [Options.OpenWeb]: run this same binary's `web`
+// subcommand in a child process where the browser engine (cgo + a second
+// windowing stack) can live safely off the SDL main thread. Same spawn model
+// as openBrowser — argv elements only, never a shell.
+func spawnWeb(namespace, name string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "web", namespace+"/"+name)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start web subcommand: %w", err)
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
 // openBrowser is the default [Options.OpenBrowser].
 //
 // The URL is passed as its own argv element and never through a shell, so
@@ -700,6 +744,7 @@ const (
 	idList          ui.FocusID = "workspaces"
 	idOpen          ui.FocusID = "open"
 	idOpenInBrowser ui.FocusID = "open-in-browser"
+	idConsole       ui.FocusID = "console"
 	idStop          ui.FocusID = "stop"
 	idRefresh       ui.FocusID = "refresh"
 	idSignOut       ui.FocusID = "sign-out"
