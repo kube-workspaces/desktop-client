@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -37,10 +36,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := webcmd.RunWeb(ctx, version, os.Args[1:]); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return
-		}
+	err := webcmd.RunWeb(ctx, version, os.Args[1:])
+
+	// A canceled context means a signal interrupted the webview, not a failure
+	// worth printing, so on cancel the exit code just stays quiet. The error is
+	// compared through exitErr because the cgo-less variant of this child never
+	// returns nil and would look to staticcheck like a constant comparison.
+	exitErr := err
+	if ctx.Err() != nil {
+		exitErr = nil
+	}
+	if exitErr != nil {
 		fmt.Fprintf(os.Stderr, "kube-workspaces-web: %v\n", err)
 		os.Exit(1)
 	}
