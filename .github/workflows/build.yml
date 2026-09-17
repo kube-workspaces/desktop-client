@@ -142,6 +142,11 @@ jobs:
     # webkit2gtk-4.0 (dropped from Ubuntu 24.04, still on jammy), the macOS one
     # the Xcode SDK, the Windows one MinGW. Cross-compiling cgo to other OSes
     # from a single host is exactly what we do NOT want to hand-tool here.
+    defaults:
+      run:
+        # The jammy container runs steps under sh by default; our steps need
+        # bash (set -o pipefail). The Windows step overrides shell: pwsh.
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
