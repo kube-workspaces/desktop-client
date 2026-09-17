@@ -1,9 +1,10 @@
 // Copyright The kube-workspaces Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package selkies implements the initial, headless Tier 1 transport probe.
+// Package selkies implements the Tier 1 transport diagnostic.
 // It targets Selkies 2.0.0rc0, not the incompatible video framing on upstream
-// main. It does not decode, present, or inject input into the guest desktop.
+// main. ProbeMedia optionally decodes through internal/media; interactive
+// input and normal GUI transport selection are not implemented here.
 package selkies
 
 import (

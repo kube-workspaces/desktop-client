@@ -98,6 +98,10 @@ type incoming struct {
 // startup budget. A successful result requires sustained video (at least two
 // frames), and Opus when requested. It does not imply successful media decoding.
 func Probe(ctx context.Context, conn *websocket.Conn, cfg ProbeConfig) (stats ProbeStats, err error) {
+	return probe(ctx, conn, cfg, nil)
+}
+
+func probe(ctx context.Context, conn *websocket.Conn, cfg ProbeConfig, consume func(Packet) error) (stats ProbeStats, err error) {
 	defer func() { _ = conn.Close() }()
 	settings, err := cfg.settings()
 	if err != nil {
@@ -234,6 +238,11 @@ func Probe(ctx context.Context, conn *websocket.Conn, cfg ProbeConfig) (stats Pr
 					return stats, err
 				}
 				if p.Kind == Audio {
+					if cfg.Audio && consume != nil && !measuring.IsZero() {
+						if err := consume(p); err != nil {
+							return stats, err
+						}
+					}
 					if !measuring.IsZero() {
 						stats.AudioPackets++
 						stats.AudioBytes += uint64(len(p.Payload))
@@ -260,6 +269,11 @@ func Probe(ctx context.Context, conn *websocket.Conn, cfg ProbeConfig) (stats Pr
 					timer.Reset(cfg.Duration)
 				}
 				stats.Width, stats.Height = p.Width, p.Height
+				if consume != nil {
+					if err := consume(p); err != nil {
+						return stats, err
+					}
+				}
 				stats.VideoFrames++
 				stats.VideoBytes += uint64(len(p.Payload))
 				if p.Key {

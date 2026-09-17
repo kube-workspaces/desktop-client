@@ -51,8 +51,11 @@ Not implemented, and must not be described otherwise:
 - **Tier 1 mission-cleared.** The in-guest transport (Selkies agent, H.264 +
   Opus, via `kube-workspaces/proxy`) exists only as the headless
   Spike D probe/protocol (`internal/selkies` + `cmd/selkies-probe`). It is not
-  wired into the graphical client, does not decode/render media or inject
-  input; Tier 0 (RFB) remains the only GUI transport.
+  wired into automatic graphical-client selection or input. The diagnostic
+  now decodes H.264/Opus via `internal/media` and can present through
+  `internal/viewer/media.go` (`selkies-probe --decode` / `--present`). Tier 0
+  (RFB) remains the normal GUI transport; six-target native runtime validation
+  and cross-service ownership remain open.
 - Multiple concurrent sessions; one window per session, but only one session at a time.
 - **Code signing and notarisation.** Release binaries are unsigned; macOS
   Gatekeeper and Windows SmartScreen warn today. Backburnered on budget, not
@@ -120,7 +123,8 @@ is the accepted trade; it was the original argument for process separation.
 | `internal/shell/` | The graphical shell: `Model` state machine (server → login → workspaces → session), pure drawing functions, the loop, and the `API`/`Store`/`Connector` seams that let all of it be tested without a display or a network |
 | `internal/terminal/` | Integrated terminal over the `/exec` bridge (Track A): pure-Go xterm-go emulator, SDL window loop; the "Console" surface for container/scratch workspaces |
 | `internal/transport/` | Transport-agnostic `Conn` interface wrapping the RFB connection (hides RFB specifics so viewer/session code is transport-independent) |
-| `internal/selkies/` | Tier 1 (Selkies) wire protocol + headless probe client (Spike D). cgo-free; no decoder/renderer; not wired into the GUI |
+| `internal/selkies/` | Tier 1 wire protocol + diagnostic; optional native decode callbacks, not wired into normal GUI selection |
+| `internal/media/` | cgo-free dynamic libavcodec 59 / libavutil 57 + libopus decode; ABI-gated and bounded; used by the Tier 1 diagnostic |
 | `internal/web/` | Embedded-webview child for non-VM workspaces (Track B): `webview_go` behind cgo build tags |
 | `cmd/selkies-probe/` | Standalone Spike D diagnostic binary: protocol handshake checks, payload statistics, JSON summaries |
 
@@ -148,6 +152,14 @@ CI enforces exactly this set; run it locally first:
 go build ./... && go vet ./... && go test -race ./... && gofmt -l .
 golangci-lint run
 ```
+
+When changing native decoding, also run
+`KW_NATIVE_MEDIA_TEST=1 CGO_ENABLED=0 go test -v ./internal/media ./cmd/selkies-probe`
+on Linux with the runtime libraries and FFmpeg's libx264 fixture encoder.
+This exercises SDL dummy-driver presentation, not a real desktop/audio device.
+Use `KW_NATIVE_MEDIA_TEST=1 go test -race ./...` for native lifecycle/race checks.
+The native tests otherwise skip explicitly. All six `CGO_ENABLED=0` cross-builds
+must still pass; each OS/architecture's library loading also needs native evidence.
 
 `gofmt -l .` must print nothing. `golangci-lint` must be **v2.13.2 or newer**:
 it refuses to load a config when the Go toolchain it was built with is older

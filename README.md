@@ -42,6 +42,13 @@ bundled with the binding and unpacked to a temporary directory at startup. You
 do not need SDL, X11 or Wayland development packages to build, and the target
 machine does not need SDL installed to run.
 
+The optional Tier 1 **diagnostic** now supports native H.264/Opus decoding
+(`go run ./cmd/selkies-probe --decode`) and SDL playback (`--present`). These
+modes require FFmpeg libavcodec 59 / libavutil 57 and libopus at runtime;
+they are not bundled. Normal GUI connections still use Tier 0. See the
+[pilot/runtime guide](https://github.com/kube-workspaces/deploy/blob/main/docs/tier1.md)
+for commands, platform validation gates and rollout requirements.
+
 A Linux desktop session (X11 or Wayland) is of course still needed at *runtime*
 for the shell and the session viewer. The CLI subcommands that do not open a
 window — `login`, `logout`, `profile`, `whoami`, `list`, `probe`, `screenshot`,

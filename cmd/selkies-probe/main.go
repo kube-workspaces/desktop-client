@@ -14,15 +14,18 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/selkies"
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
 func main() {
+	runtime.LockOSThread()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:]); err != nil {
@@ -39,6 +42,8 @@ func run(ctx context.Context, args []string) error {
 	namespace := fs.String("namespace", "", "spike workspace namespace")
 	workspace := fs.String("workspace", "", "spike workspace name")
 	base := fs.String("base-path", "/", "agent-relative base path")
+	decode := fs.Bool("decode", false, "decode H.264/Opus using native libraries")
+	present := fs.Bool("present", false, "present decoded video/audio in SDL (implies --decode; diagnostic only)")
 	fs.BoolVar(&cfg.Takeover, "takeover", false, "take over the session if in use")
 	fs.IntVar(&cfg.Width, "width", cfg.Width, "requested desktop width")
 	fs.IntVar(&cfg.Height, "height", cfg.Height, "requested desktop height")
@@ -48,7 +53,7 @@ func run(ctx context.Context, args []string) error {
 	fs.DurationVar(&cfg.StartupTimeout, "startup-timeout", cfg.StartupTimeout, "budget for first H.264 keyframe")
 	fs.DurationVar(&cfg.Duration, "duration", cfg.Duration, "measurement interval after first keyframe")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: selkies-probe --server OR --direct [flags]\n\nTargets Selkies "+selkies.Revision+".\nChanges capture settings/resolution: use a dedicated spike guest.\nCounts received payload and frames; does not decode, play, or measure input latency.")
+		fmt.Fprintln(fs.Output(), "Usage: selkies-probe --server OR --direct [flags]\n\nTargets Selkies "+selkies.Revision+".\nChanges capture settings/resolution: use a dedicated spike guest.\nUse --decode for native decode, --present for SDL playback. Does not measure input latency.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -102,12 +107,36 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	stats, probeErr := selkies.Probe(ctx, conn, cfg)
+	var stats selkies.ProbeStats
+	var decoded selkies.DecodeStats
+	var presented viewer.MediaPresentationStats
+	var probeErr error
+	switch {
+	case *present:
+		presented, probeErr = viewer.PlayMedia(ctx, viewer.NewSDLBackend(), cfg.Audio, func(ctx context.Context, q *viewer.MediaFrames) error {
+			var err error
+			stats, decoded, err = selkies.ProbeMedia(ctx, conn, cfg, selkies.MediaSink{Video: q.Video, Audio: q.Audio})
+			return err
+		})
+		_ = conn.Close()
+	case *decode:
+		stats, decoded, probeErr = selkies.ProbeMedia(ctx, conn, cfg, selkies.MediaSink{})
+	default:
+		stats, probeErr = selkies.Probe(ctx, conn, cfg)
+	}
 	result := struct {
-		Complete bool                `json:"complete"`
-		Config   selkies.ProbeConfig `json:"requested"`
-		Stats    selkies.ProbeStats  `json:"stats"`
+		Complete  bool                           `json:"complete"`
+		Config    selkies.ProbeConfig            `json:"requested"`
+		Stats     selkies.ProbeStats             `json:"stats"`
+		Decoded   *selkies.DecodeStats           `json:"decode,omitempty"`
+		Presented *viewer.MediaPresentationStats `json:"presentation,omitempty"`
 	}{Complete: probeErr == nil, Config: cfg, Stats: stats}
+	if *decode || *present {
+		result.Decoded = &decoded
+	}
+	if *present {
+		result.Presented = &presented
+	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(result); err != nil {
