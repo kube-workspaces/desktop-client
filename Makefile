@@ -139,8 +139,8 @@ lint: ## Run golangci-lint if it is installed, otherwise skip
 		echo "golangci-lint not found; skipping (install: https://golangci-lint.run/welcome/install/)"; \
 	fi
 
-fmt: ## Format all Go source with gofmt
-	gofmt -w -s .
+fmt: ## Format all Go source with gofmt (third_party/webview_go fork is pruned so it can stay a one-line diff)
+	gofmt -w -s $(shell find . -path './third_party' -prune -o -name '*.go' -print)
 
 tidy: ## Tidy and verify go.mod / go.sum
 	go mod tidy

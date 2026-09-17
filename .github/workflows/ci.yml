@@ -28,9 +28,13 @@ jobs:
           go-version: "1.26"
           cache: true
 
+      # third_party/webview_go is a separate module kept as close to its
+      # upstream pin as possible (a one-line pkg-config change, excluded from
+      # lint the same way), so `go list ./...` — which enumerates only the main
+      # module's package dirs — drives the gofmt check instead of a bare '.'.
       - name: Check formatting
         run: |
-          unformatted="$(gofmt -l .)"
+          unformatted="$(gofmt -l $(go list -f '{{.Dir}}' ./...))"
           if [ -n "$unformatted" ]; then
             echo "::error::these files are not gofmt'd; run 'make fmt'"
             echo "$unformatted"
