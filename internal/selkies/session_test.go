@@ -288,9 +288,19 @@ func TestSessionHandshakeAndFirstFrame(t *testing.T) {
 		t.Fatal("EventSettings not delivered")
 	}
 
-	// ACK flows after first video.
-	if ack := p.read(t, "CLIENT_FRAME_ACK 1 "); !strings.Contains(ack, "1") {
-		t.Fatalf("bad ACK: %q", ack)
+	// After the first frame the link carries an ACK and the restored native
+	// cursor (p,1), in either order; the read helper skips non-matching
+	// messages, so wait for both explicitly.
+	seenAck, seenCursor := false, false
+	ackDeadline := time.After(2 * time.Second)
+	for !seenAck || !seenCursor {
+		select {
+		case msg := <-p.fromClient:
+			seenAck = seenAck || strings.HasPrefix(msg, "CLIENT_FRAME_ACK 1 ")
+			seenCursor = seenCursor || msg == "p,1"
+		case <-ackDeadline:
+			t.Fatalf("read: timeout waiting for ACK=%v cursor-restored=%v", seenAck, seenCursor)
+		}
 	}
 
 	// The Control adapter stays live during Run.

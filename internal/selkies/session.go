@@ -244,7 +244,7 @@ func (s *Session) run(ctx context.Context) error {
 	defer timer.Stop()
 	ackTick := time.NewTicker(keyHeartbeatInterval)
 	defer ackTick.Stop()
-	var gotMode, haveVideo bool
+	var gotMode, haveVideo, cursorVisible bool
 	var frameID uint16
 	var frameAt time.Time
 
@@ -331,6 +331,14 @@ func (s *Session) run(ctx context.Context) error {
 				return fmt.Errorf("%w: decoded dimensions disagree with wire header", ErrMalformed)
 			}
 			s.sink.video(frame)
+			if !cursorVisible {
+				cursorVisible = true
+				// The client does not render a cursor of its own yet, so keep
+				// the guest's native one visible as soon as paint starts.
+				if err := s.ctrl.SetCursorVisible(true); err != nil {
+					return fmt.Errorf("selkies: cursor-visible write: %w", err)
+				}
+			}
 			return nil
 
 		default:
