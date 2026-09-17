@@ -83,12 +83,15 @@ build-windows-cgo: ## Cross-build a Windows amd64 binary WITH cgo into ./kw-cgo.
 	@# via $(CGO_CXX); Go adds -mthreads, which the native g++ knows nothing
 	@# about), so the `web` subcommand can open container workspaces in the
 	@# embedded webview on the Windows host (real-display check 29).
+	@# WebView2.h pulls in EventToken.h, which MinGW does not ship: the
+	@# ABI-equivalent shim lives at internal/web/mswebview2/EventToken.h and is
+	@# injected via CGO_CXXFLAGS below.
 	@# build-windows above stays CGO_ENABLED=0 to match the shipped six-target
 	@# artifacts.
 	@command -v $(CGO_CC) >/dev/null 2>&1 || { echo "error: $(CGO_CC) not found (apt: gcc-mingw-w64-x86-64)" >&2; exit 1; }
 	@command -v $(CGO_CXX) >/dev/null 2>&1 || { echo "error: $(CGO_CXX) not found (apt: g++-mingw-w64-x86-64)" >&2; exit 1; }
 	$(WINRES) make --in winres.json --out cmd/kube-workspaces/rsrc --arch=amd64,arm64 --product-version=git-tag --file-version=git-tag
-	CC=$(CGO_CC) CXX=$(CGO_CXX) CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
+	CC=$(CGO_CC) CXX=$(CGO_CXX) CGO_CXXFLAGS="-I$(abspath internal/web/mswebview2)" CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
 		go build -trimpath -ldflags "$(WINDOWS_LDFLAGS)" -o kw-cgo.exe $(CMD)
 
 winres: ## Regenerate the Windows .syso resources (icon + version info) for cmd/kube-workspaces
