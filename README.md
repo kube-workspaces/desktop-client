@@ -46,11 +46,16 @@ Non-VM (container/scratch) workspaces open in an **embedded webview** that
 round-trips the browser engine's cgo/windowing stack — WebKitGTK, WebKit or
 WebView2 depending on the platform — out of the shell and into its own
 per-OS child binary, `kube-workspaces-web`. That child is the one artifact
-built with `CGO_ENABLED=1`; it needs the platform dev packages
-(`libwebkit2gtk-4.0-dev` on Linux, the Mingw-w64 pair for Windows), is built
-with `make build-web` / `make build-web-windows`, and ships beside the
-cgo-free shell so `spawnWeb` finds it. `make build-all` itself remains
-shell-only.
+built with `CGO_ENABLED=1` (local: `make build-web` / `make build-web-windows`,
+needing `libwebkit2gtk-4.0-dev` on Linux and the Mingw-w64 pair for Windows,
+respectively). The CI **Build** workflow builds it natively on a per-OS runner
+matrix and injects it into the release archives next to the shell, so
+`spawnWeb` finds it in shipped builds (`scripts/insert-web-child.sh` performs
+the injection for local archive staging). `make build-all` itself remains
+shell-only, and Windows/arm64 has no webview toolchain on the runners yet, so
+that one archive ships without the child. On Linux the child needs the
+WebKitGTK 2.4 runtime (`libwebkit2gtk-4.0`) on the machine running it; macOS
+and Windows use the engines the OS already provides (WebKit, WebView2).
 
 The optional Tier 1 **diagnostic** now supports native H.264/Opus decoding
 (`go run ./cmd/selkies-probe --decode`) and SDL playback (`--present`). These
@@ -83,7 +88,11 @@ make help           # all targets
 `make build-all` produces the release archives: Linux tarballs with the plain
 binary, a **`Kube Workspaces.app` bundle** (icon, `Info.plist`, bundle layout)
 for macOS, and Windows zips whose `.exe` carries the app icon and version
-metadata in its PE resources. `make icons` needs `inkscape` and ImageMagick's
+metadata in its PE resources. The archive layout matches assembly in CI: every
+platform (except Windows/arm64) gets its `kube-workspaces-web` child injected
+beside the shell; to replicate locally,
+`scripts/insert-web-child.sh dist/kube-workspaces-*.tar.gz <child>` (see the
+script header). `make icons` needs `inkscape` and ImageMagick's
 `convert` on the machine running it; `make build-all` runs `go-winres` (fetched
 automatically) to build the Windows resources. The generated artwork is
 committed, so plain `make build`/`build-all` need none of those tools.

@@ -10,9 +10,12 @@ name: Build
 # runner: the SDL3 binding is purego and bundles the library, so `make build-all`
 # needs no cgo and no per-OS runners for the six shell targets. The one cgo
 # artifact is the embedded-webview child (cmd/kube-workspaces-web); it must be
-# built per OS where the webview toolchain lives (WebKitGTK, WebKit, WebView2),
-# so a future job adds it from a per-OS matrix before the archives are staged.
-
+# built per OS where the webview toolchain lives (WebKitGTK, WebKit, WebView2).
+# The web-child matrix job builds it natively per OS (Linux/amd64+arm64 in a
+# jammy container that still ships webkit2gtk-4.0, both macOS arches on a Mac
+# runner, Windows/amd64 with MinGW), and the assemble job drops each child next
+# to its shell before the archives are staged. Branches without a child (see
+# the matrix comments for the toolchain gaps) stay shell-only.
 on:
   push:
     branches: [main]
@@ -23,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -85,6 +89,258 @@ jobs:
           PY
           done
 
+      # Raw shell-only archives: the public artifacts (see the assemble job)
+      # are these plus the injected web child. Keeping the two stages separate
+      # means a webview toolchain regression unblocks the shell release.
+      - name: Upload linux/amd64
+        uses: actions/upload-artifact@v5
+        with:
+          name: shell-linux-amd64
+          path: dist/*-linux-amd64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload linux/arm64
+        uses: actions/upload-artifact@v5
+        with:
+          name: shell-linux-arm64
+          path: dist/*-linux-arm64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload darwin/amd64
+        uses: actions/upload-artifact@v5
+        with:
+          name: shell-darwin-amd64
+          path: dist/*-darwin-amd64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload darwin/arm64
+        uses: actions/upload-artifact@v5
+        with:
+          name: shell-darwin-arm64
+          path: dist/*-darwin-arm64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload windows/amd64
+        uses: actions/upload-artifact@v5
+        with:
+          name: shell-windows-amd64
+          path: dist/*-windows-amd64.zip
+          if-no-files-found: error
+
+      - name: Upload windows/arm64
+        uses: actions/upload-artifact@v5
+        with:
+          name: shell-windows-arm64
+          path: dist/*-windows-arm64.zip
+          if-no-files-found: error
+
+  web-child:
+    name: Web child (${{ matrix.platform }})
+    runs-on: ${{ matrix.runs-on }}
+    container: ${{ matrix.container }}
+    # Each webview toolchain is best built natively: the Linux child needs
+    # webkit2gtk-4.0 (dropped from Ubuntu 24.04, still on jammy), the macOS one
+    # the Xcode SDK, the Windows one MinGW. Cross-compiling cgo to other OSes
+    # from a single host is exactly what we do NOT want to hand-tool here.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            os: linux
+            arch: amd64
+            runs-on: ubuntu-latest
+            container: ubuntu:22.04
+          # ARM64 GitHub runners are available for public repos (ubuntu-24.04-arm),
+          # and the jammy container resolves to its arm64 variant there.
+          - platform: linux-arm64
+            os: linux
+            arch: arm64
+            runs-on: ubuntu-24.04-arm
+            container: ubuntu:22.04
+          # macOS cgo cross-builds are native enough on a single runner: the
+          # Xcode SDK builds both arches, so one macos-latest covers both GOARCH.
+          - platform: darwin-amd64
+            os: darwin
+            arch: amd64
+            runs-on: macos-latest
+          - platform: darwin-arm64
+            os: darwin
+            arch: arm64
+            runs-on: macos-latest
+          - platform: windows-amd64
+            os: windows
+            arch: amd64
+            runs-on: windows-latest
+          # windows/arm64 has no maintainable cross toolchain on GitHub runners
+          # (no ARM64 MinGW), so it stays shell-only until one exists.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux webview toolchain
+        if: startsWith(matrix.os, 'linux')
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Ensure MinGW on Windows
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          if (-not (Get-Command gcc -ErrorAction SilentlyContinue) -or
+              -not (Get-Command g++ -ErrorAction SilentlyContinue)) {
+            choco install mingw -y --no-progress
+            $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+            "PATH=$machinePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          }
+          gcc --version | Select-Object -First 1
+
+      - name: Build web child (Linux/macOS)
+        if: ${{ !startsWith(matrix.os, 'windows') }}
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=1 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
+            go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            -o kube-workspaces-web ./cmd/kube-workspaces-web
+
+      - name: Build web child (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        env:
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          $msweb = ("${{ github.workspace }}/internal/web/mswebview2").Replace('\','/')
+          $env:CGO_CXXFLAGS = "-I$msweb"
+          go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }} -H=windowsgui" `
+            -o kube-workspaces-web.exe ./cmd/kube-workspaces-web
+
+      - name: Upload web child
+        uses: actions/upload-artifact@v5
+        with:
+          name: web-child-${{ matrix.platform }}
+          path: kube-workspaces-web*
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble archives
+    runs-on: ubuntu-latest
+    needs: [build, web-child]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # The injection script ships in the repo, and git describe must agree
+          # with the build job's version string (same ref, clean tree).
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+
+      - name: Download shell archives
+        uses: actions/download-artifact@v5
+        with:
+          pattern: shell-*
+          path: shell
+          github-token: ${{ github.token }}
+
+      - name: Download web children
+        uses: actions/download-artifact@v5
+        with:
+          pattern: web-child-*
+          path: web
+          github-token: ${{ github.token }}
+
+      # The web child ships inside the archive only when a native toolchain
+      # built one for that platform (windows/arm64 never has; linux/arm64 does
+      # if the ARM runner is available). Shell-only targets go out as-is.
+      - name: Inject web children and regenerate checksums
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          mkdir -p final
+          for plat in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64; do
+            os=${plat%-*}
+            ext=tar.gz
+            [ "$os" = windows ] && ext=zip
+            archive="kube-workspaces-$version-$plat.$ext"
+            cp "shell/shell-$plat/$archive" "final/$archive"
+            child="$(ls web/web-child-$plat/* 2>/dev/null | head -1 || true)"
+            if [ -n "$child" ]; then
+              scripts/insert-web-child.sh "final/$archive" "$child"
+            else
+              echo "assemble: no web child for $plat; shipping shell-only archive"
+            fi
+          done
+          (cd final && sha256sum *.tar.gz *.zip > SHA256SUMS)
+          cat final/SHA256SUMS
+
+      - name: Upload linux/amd64
+        uses: actions/upload-artifact@v5
+        with:
+          name: kube-workspaces-linux-amd64
+          path: final/kube-workspaces-*-linux-amd64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload linux/arm64
+        uses: actions/upload-artifact@v5
+        with:
+          name: kube-workspaces-linux-arm64
+          path: final/kube-workspaces-*-linux-arm64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload darwin/amd64
+        uses: actions/upload-artifact@v5
+        with:
+          name: kube-workspaces-darwin-amd64
+          path: final/kube-workspaces-*-darwin-amd64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload darwin/arm64
+        uses: actions/upload-artifact@v5
+        with:
+          name: kube-workspaces-darwin-arm64
+          path: final/kube-workspaces-*-darwin-arm64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload windows/amd64
+        uses: actions/upload-artifact@v5
+        with:
+          name: kube-workspaces-windows-amd64
+          path: final/kube-workspaces-*-windows-amd64.zip
+          if-no-files-found: error
+
+      - name: Upload windows/arm64
+        uses: actions/upload-artifact@v5
+        with:
+          name: kube-workspaces-windows-arm64
+          path: final/kube-workspaces-*-windows-arm64.zip
+          if-no-files-found: error
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v5
+        with:
+          name: SHA256SUMS
+          path: final/SHA256SUMS
+          if-no-files-found: error
+
       - name: Summary
         run: |
           {
@@ -93,69 +349,19 @@ jobs:
             echo "Download an archive from the **Artifacts** section of this run."
             echo
             echo '```'
-            cat dist/SHA256SUMS
+            cat final/SHA256SUMS
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      # One artifact per platform, so testers download only what they need
-      # rather than a 40MB bundle of six.
-      - name: Upload linux/amd64
-        uses: actions/upload-artifact@v5
-        with:
-          name: kube-workspaces-linux-amd64
-          path: dist/*-linux-amd64.tar.gz
-          if-no-files-found: error
-
-      - name: Upload linux/arm64
-        uses: actions/upload-artifact@v5
-        with:
-          name: kube-workspaces-linux-arm64
-          path: dist/*-linux-arm64.tar.gz
-          if-no-files-found: error
-
-      - name: Upload darwin/amd64
-        uses: actions/upload-artifact@v5
-        with:
-          name: kube-workspaces-darwin-amd64
-          path: dist/*-darwin-amd64.tar.gz
-          if-no-files-found: error
-
-      - name: Upload darwin/arm64
-        uses: actions/upload-artifact@v5
-        with:
-          name: kube-workspaces-darwin-arm64
-          path: dist/*-darwin-arm64.tar.gz
-          if-no-files-found: error
-
-      - name: Upload windows/amd64
-        uses: actions/upload-artifact@v5
-        with:
-          name: kube-workspaces-windows-amd64
-          path: dist/*-windows-amd64.zip
-          if-no-files-found: error
-
-      - name: Upload windows/arm64
-        uses: actions/upload-artifact@v5
-        with:
-          name: kube-workspaces-windows-arm64
-          path: dist/*-windows-arm64.zip
-          if-no-files-found: error
-
-      - name: Upload checksums
-        uses: actions/upload-artifact@v5
-        with:
-          name: SHA256SUMS
-          path: dist/SHA256SUMS
-          if-no-files-found: error
 
   release:
     name: Publish release
     # Only for tag pushes. Tags are created deliberately, never by automation.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, web-child]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -170,6 +376,31 @@ jobs:
 
       - name: Build all targets
         run: make build-all VERSION=${{ github.ref_name }}
+
+      - name: Download web children
+        uses: actions/download-artifact@v5
+        with:
+          pattern: web-child-*
+          path: web
+          github-token: ${{ github.token }}
+
+      - name: Inject web children into the tag archives
+        run: |
+          set -euo pipefail
+          version="${{ github.ref_name }}"
+          for plat in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64; do
+            os=${plat%-*}
+            ext=tar.gz
+            [ "$os" = windows ] && ext=zip
+            archive="kube-workspaces-$version-$plat.$ext"
+            child="$(ls web/web-child-$plat/* 2>/dev/null | head -1 || true)"
+            if [ -n "$child" ]; then
+              scripts/insert-web-child.sh "dist/$archive" "$child"
+            else
+              echo "release: no web child for $plat; releasing shell-only archive"
+            fi
+          done
+          (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS)
 
       # Notes are assembled here rather than left to --generate-notes alone:
       # a desktop binary needs download links and install steps, and these
@@ -225,8 +456,10 @@ jobs:
             echo "> Finder → right-click → Open. Windows SmartScreen will warn: choose"
             echo "> \"More info\" → \"Run anyway\". Signing and notarisation are not yet set up."
             echo
-            echo "No runtime dependencies: SDL is bundled into the binary and there is no cgo,"
-            echo "so nothing needs installing on the target machine."
+            echo "The shell is cgo-free and bundles SDL. Container/scratch workspaces open in the"
+            echo "embedded webview child (\`kube-workspaces-web\`) that ships inside each archive;"
+            echo "on Linux that child needs WebKitGTK 2.4 (\`libwebkit2gtk-4.0\`). macOS and Windows"
+            echo "use their bundled engines (WebKit, WebView2)."
             echo
             echo "## Getting started"
             echo
@@ -252,7 +485,7 @@ jobs:
             echo "- **No adaptive quality.** Encoding quality is fixed, not bandwidth-driven."
             echo "- **No in-guest agent (Tier 1).** Sessions use the hypervisor console, which"
             echo "  has no video codec — fine for desktops and text, poor for full-motion video."
-            echo "- **Container workspaces open in a browser**, not in the client."
+            echo "- **Container workspaces still open in a browser**, not in the client."
             echo "- **Single session at a time per VM.** The hypervisor display is single-session"
             echo "  server-side; the client can open multiple windows for different VMs."
             echo "- No HiDPI scaling, no text selection in input fields, ASCII-only text."

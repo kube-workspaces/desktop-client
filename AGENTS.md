@@ -365,10 +365,14 @@ time, since actions and pricing drift.
   shell binary; it must stay that way, because the single-machine cross-build
   is the whole build story. The one permitted cgo artifact is the
   embedded-webview child, `cmd/kube-workspaces-web` (`internal/web` via
-  `webview_go`): it is built per-OS with its platform webview toolchain and
-  shipped beside the shell, which `spawnWeb` prefers. Anything that would add
-  more cgo back into the shell (a native toolkit, libavcodec for H.264) needs
-  this decision reopened first.
+  `webview_go`): it is built per-OS with its platform webview toolchain by the
+  Build workflow's `web-child` matrix (jammy container for Linux so
+  webkit2gtk-4.0 is available, a Mac runner for both darwin arches, MinGW for
+  Windows), then injected next to its shell by `assemble`
+  (`scripts/insert-web-child.sh`), which `spawnWeb` prefers. Windows/arm64 has
+  no runner toolchain and ships shell-only until one exists. Anything that would
+  add more cgo back into the shell (a native toolkit, libavcodec for H.264)
+  needs this decision reopened first.
 - Keep `internal/rfb`, `internal/kwclient`, `internal/keysym`, `internal/wsio`
   and `internal/reconnect` free of UI dependencies so they stay testable
   without a display.
@@ -378,13 +382,18 @@ time, since actions and pricing drift.
 
 ## CI
 
-- `.github/workflows/build.yml` — cross-builds all six targets on every push to
-  `main` and uploads them as workflow artifacts; on a `v*` tag the same archives
-  are published as a GitHub Release. The generated release notes state the
-  binaries are unsigned. The version is resolved from `git describe`, so a
-  release build reports the tag rather than a bare sha. When signing is funded,
-  `sign-macos`/`sign-windows` jobs slot in between `build` and `release` (see
-  the Deferred section above).
+- `.github/workflows/build.yml` — the `build` job cross-builds all six shell
+  targets on every push to `main` and uploads them as `shell-*` artifacts; the
+  `web-child` matrix builds the webview child natively per OS (linux/amd64+arm64
+  in a jammy `ubuntu:22.04` container, darwin/amd64+arm64 on `macos-latest`,
+  windows/amd64 on `windows-latest` with MinGW); `assemble` injects each child
+  beside its shell and uploads the final `kube-workspaces-*` archives with a
+  regenerated `SHA256SUMS`. On a `v*` tag the `release` job injects the children
+  into the tag archives and publishes them as a GitHub Release. The generated
+  release notes state the binaries are unsigned. The version is resolved from
+  `git describe`, so a release build reports the tag rather than a bare sha.
+  When signing is funded, `sign-macos`/`sign-windows` jobs slot in between
+  `assemble` and `release` (see the Deferred section above).
 - `.github/workflows/ci.yml` — gofmt check, `go build ./...`, `go vet ./...`,
   `go test -race` with a coverage step-summary, plus a `cross` matrix job that
   builds on ubuntu, macOS and windows runners. The matrix is belt-and-braces
@@ -401,5 +410,6 @@ that cross-builds are "pure-Go packages only" have been corrected in the
 binary, viewer included, for all six targets. Keep the cross-build comments
 honest on the same lines when next editing them: `make build-all` is "no cgo,
 so one host builds all six shell targets"; the one cgo artifact is the
-embedded-webview child (TODO #0 in the tracking repo), which needs per-OS
-builds and is *not* part of the six-target build yet.
+embedded-webview child (TODO #0 in the tracking repo), built per-OS by the
+Build workflow's `web-child` matrix, which `assemble`/`release` inject into the
+archives next to the shell (windows/arm64 excluded — no runner toolchain).
