@@ -485,6 +485,17 @@ func TestClipboardSmallText(t *testing.T) {
 	}
 }
 
+func TestSetClipboardAliasesClipboardText(t *testing.T) {
+	ws, rd := controlPeer(t)
+	c := NewControl(ws, false)
+	if err := c.SetClipboard("hello"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rd.readText(t); got != "cw,"+base64.StdEncoding.EncodeToString([]byte("hello")) {
+		t.Fatalf("SetClipboard: got %q", got)
+	}
+}
+
 func TestClipboardSmallBinary(t *testing.T) {
 	ws, rd := controlPeer(t)
 	c := NewControl(ws, false)

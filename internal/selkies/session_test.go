@@ -399,3 +399,18 @@ func TestSessionRunIsIdempotent(t *testing.T) {
 		t.Fatalf("second Run returned %v, want %v", again, err)
 	}
 }
+
+func TestSessionAgentRefusalWrapsErrRefused(t *testing.T) {
+	cfg := SessionConfig{StartupTimeout: 2 * time.Second, VideoDec: &fakeVideoDec{}}
+	s, p, _ := testSession(t, cfg, Sink{})
+	done := runSession(t, s, p)
+	p.read(t, "SETTINGS,")
+	p.sendText(t, "KILL stale session, reconnect")
+	err := <-done
+	if err == nil || !errors.Is(err, ErrRefused) {
+		t.Fatalf("KILL returned %v, want an error wrapping ErrRefused", err)
+	}
+	if !strings.Contains(err.Error(), "stale session") {
+		t.Fatalf("refusal lost the agent's reason: %v", err)
+	}
+}

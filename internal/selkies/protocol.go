@@ -31,6 +31,11 @@ var (
 	ErrMalformed = errors.New("selkies: malformed message")
 	// ErrUnsupported indicates a wire feature this implementation did not negotiate.
 	ErrUnsupported = errors.New("selkies: unsupported protocol feature")
+	// ErrRefused marks a session the agent itself turned away (a KILL or
+	// AUTH_ERROR control verb). It is separate from transport failures so a
+	// caller can prove the peer rejected the session rather than the link
+	// dropping, and decide against routing around that refusal.
+	ErrRefused = errors.New("selkies: agent refused session")
 )
 
 // Packet borrows its Payload from the input buffer; callers must not mutate it

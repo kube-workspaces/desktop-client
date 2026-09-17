@@ -272,6 +272,11 @@ func (c *Control) SetCursorVisible(visible bool) error {
 	return c.Send(fmt.Sprintf("p,%d", v))
 }
 
+// SetClipboard sends text to the guest clipboard under its browser-facing
+// name. It is the input-surface alias for [Control.ClipboardText], so a
+// [Control] satisfies the viewer's Tier 1 input interface as-is.
+func (c *Control) SetClipboard(text string) error { return c.ClipboardText(text) }
+
 // ClipboardText sends UTF-8 text to the guest clipboard. Payloads above
 // simpleClipboardMax use the multipart cws/cwd/cwe transfer so the single
 // frame stays small.

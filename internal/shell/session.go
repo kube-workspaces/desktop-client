@@ -12,12 +12,17 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
+	"github.com/kube-workspaces/desktop-client/internal/selkies"
 	"github.com/kube-workspaces/desktop-client/internal/session"
 	"github.com/kube-workspaces/desktop-client/internal/terminal"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 	"github.com/kube-workspaces/desktop-client/internal/wsio"
 )
+
+// Control is a [viewer.Tier1Input]: the run of every input method it needs
+// exists on the adapter with exactly the window-facing signatures.
+var _ viewer.Tier1Input = (*selkies.Control)(nil)
 
 // runSession hands the window to the session viewer and blocks until the
 // session ends: a display for a VM, an integrated terminal otherwise.
@@ -95,9 +100,20 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 		}
 
 		if ws.RemoteDesktop != nil && ws.RemoteDesktop.Protocol == "selkies" {
-			opts.Logf("workspace %s supports Selkies Tier 1 transport", ws.Key())
-			// For Spike D we only prove reachability. A full implementation
-			// would swap the viewer/renderer here.
+			opts.Logf("workspace %s advertises Selkies Tier 1 transport", ws.Key())
+			err := connectTier1(ctx, client, ws, opts)
+			if err == nil {
+				return nil
+			}
+			if errors.Is(err, session.ErrNoFallback) {
+				// A refused agent, a rejected credential or a display owned
+				// elsewhere must surface, not be routed around.
+				return err
+			}
+			// Recoverable: dial, negotiation, startup or decode failed. Fall
+			// back to Tier 0 for the rest of this connection — once we drop a
+			// tier we do not probe it again mid-session (plan §7.2).
+			opts.Logf("Tier 1 to %s failed (%v); falling back to Tier 0", ws.Key(), err)
 		}
 
 		encodings := append([]rfb.Encoding(nil), rfb.DefaultEncodings...)
@@ -153,6 +169,22 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 		}
 		return runErr
 	}
+}
+
+// connectTier1 opens an interactive Tier 1 (Selkies) session in a fresh window
+// for a workspace whose image advertises the selkies protocol. The window
+// belongs to this call and this call only, like the RFB viewer's own window.
+func connectTier1(ctx context.Context, client *kwclient.Client, ws kwclient.Workspace, opts SessionOptions) error {
+	agentBase := ""
+	if ws.RemoteDesktop != nil && ws.RemoteDesktop.Path != nil {
+		agentBase = *ws.RemoteDesktop.Path
+	}
+	return session.RunTier1(ctx, client, ws.Namespace, ws.Name, agentBase,
+		viewer.NewSDLBackend(), session.Tier1Config{
+			Title: ws.Key(),
+			Audio: true,
+			Logf:  opts.Logf,
+		})
 }
 
 // TerminalOptions tunes the integrated terminal sessions the shell opens.

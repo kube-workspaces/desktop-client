@@ -48,14 +48,16 @@ Not implemented, and must not be described otherwise:
   connect time. `rfb.Stats` exists to feed this later; nothing drives it.
 - **Audio.** `probe --audio` advertises the QEMU audio pseudo-encoding purely to
   detect whether the VM has a sound device. No decoder, no playback.
-- **Tier 1 mission-cleared.** The in-guest transport (Selkies agent, H.264 +
-  Opus, via `kube-workspaces/proxy`) exists only as the headless
-  Spike D probe/protocol (`internal/selkies` + `cmd/selkies-probe`). It is not
-  wired into automatic graphical-client selection or input. The diagnostic
-  now decodes H.264/Opus via `internal/media` and can present through
-  `internal/viewer/media.go` (`selkies-probe --decode` / `--present`). Tier 0
-  (RFB) remains the normal GUI transport; six-target native runtime validation
-  and cross-service ownership remain open.
+- **Tier 1 live-connection recovery.** The in-guest transport (Selkies agent,
+  H.264 + Opus, via `kube-workspaces/proxy`) is wired into automatic
+  graphical-client selection via `session.RunTier1`
+  (`internal/session/tier1.go`): interactive GUI plus clipboard, with sticky
+  fallback to Tier 0 (RFB) on any establishment-time failure. Agent refusal
+  (KILL/AUTH_ERROR) and dial 401/403/409 never fall back; they surface as
+  `session.ErrNoFallback`. The native H.264/Opus decoders gate runtime tests
+  behind `KW_NATIVE_MEDIA_TEST=1`. Forward parity (live-drop bounded-reconnect
+  supervisor, in-session transport recovery) and six-target native runtime
+  validation remain open.
 - Multiple concurrent sessions; one window per session, but only one session at a time.
 - **Code signing and notarisation.** Release binaries are unsigned; macOS
   Gatekeeper and Windows SmartScreen warn today. Backburnered on budget, not

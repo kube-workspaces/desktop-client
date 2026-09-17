@@ -95,6 +95,42 @@ func runConnect(ctx context.Context, args []string) error {
 	// lock is never released: the process exits when the session ends.
 	runtime.LockOSThread()
 
+	// A workspace on the Selkies transport is opened through the Tier 1 path
+	// first, honouring the plan's fallback: any recoverable establishment
+	// failure drops to Tier 0 for the rest of this connection, while a refused
+	// agent or a rejected credential is surfaced rather than routed around.
+	// The workspace fetch here is the same one a Tier 0 dial performs, so a
+	// Tier 0 fallback costs nothing extra.
+	if ws, err := client.GetWorkspace(ctx, ns, name); err == nil &&
+		ws.RemoteDesktop != nil && ws.RemoteDesktop.Protocol == "selkies" {
+
+		agentBase := ""
+		if ws.RemoteDesktop.Path != nil {
+			agentBase = *ws.RemoteDesktop.Path
+		}
+		tier1 := session.RunTier1(ctx, client, ns, name, agentBase, viewer.NewSDLBackend(), session.Tier1Config{
+			Title:        ns + "/" + name,
+			Audio:        true,
+			Fullscreen:   *fullscreen,
+			ScaleQuality: scale,
+			NoVSync:      *noVSync,
+			Width:        *width,
+			Height:       *height,
+			Logf: func(format string, a ...any) {
+				if *verbose {
+					fmt.Fprintf(os.Stderr, "connect: "+format+"\n", a...)
+				}
+			},
+		})
+		if tier1 == nil {
+			return nil
+		}
+		if errors.Is(tier1, session.ErrNoFallback) {
+			return tier1
+		}
+		fmt.Fprintf(os.Stderr, "connect: Tier 1 unavailable (%v); falling back to Tier 0\n", tier1)
+	}
+
 	cfg := viewer.Config{
 		Title:        ns + "/" + name,
 		Width:        *width,

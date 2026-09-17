@@ -266,7 +266,7 @@ func (s *Session) run(ctx context.Context) error {
 			}
 			text := string(message.data)
 			if strings.HasPrefix(text, "KILL ") || strings.HasPrefix(text, "AUTH_ERROR") {
-				return errors.New("selkies: agent refused session")
+				return fmt.Errorf("%w: %s", ErrRefused, text)
 			}
 			if text == "AUDIO_DISABLED" {
 				s.cfg.logf("selkies: agent has no audio device")
