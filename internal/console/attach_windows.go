@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package console
 
 import (
 	"os"
@@ -18,11 +18,11 @@ import (
 // links the Windows targets with `-H=windowsgui`, which marks them as
 // IMAGE_SUBSYSTEM_WINDOWS_GUI, and no console is created.
 //
-// That alone would trade one bug for a worse one. This binary is both a
+// That alone would trade one bug for a worse one. The shell binary is both a
 // desktop application and a CLI — `kube-workspaces list`, `probe`,
 // `screenshot`, `login`, `version` and `--help` all print — and a GUI
 // subsystem process started from cmd.exe or PowerShell inherits no console, so
-// every one of those would become a silent no-op. attachParentConsole puts the
+// every one of those would become a silent no-op. AttachParent puts the
 // output back by attaching to the console the process was launched from.
 //
 // Known and accepted trade-off, so that the next person does not file it as a
@@ -53,8 +53,8 @@ var (
 	procSetStdHandle  = kernel32.NewProc("SetStdHandle")
 )
 
-// attachParentConsole reconnects os.Stdout, os.Stderr and os.Stdin to the
-// console this process was launched from, if there was one.
+// AttachParent reconnects os.Stdout, os.Stderr and os.Stdin to the console the
+// process was launched from, if there was one.
 //
 // It is called unconditionally from main, before any output, rather than only
 // when a subcommand was given (`len(os.Args) > 1`). The reasoning:
@@ -77,11 +77,10 @@ var (
 // It is best-effort throughout: every failure means "carry on with the streams
 // we already have". Nothing here can make output worse than it already is, and
 // the GUI must start even on a machine where the console API misbehaves.
-func attachParentConsole() {
+func AttachParent() {
 	// Snapshot the standard handles *before* attaching. AttachConsole may
 	// install console handles of its own, which would erase the evidence of a
-	// shell-supplied redirection that must be preserved. See
-	// consoleHandleUsable.
+	// shell-supplied redirection that must be preserved. See HandleUsable.
 	preIn := stdHandle(syscall.STD_INPUT_HANDLE)
 	preOut := stdHandle(syscall.STD_OUTPUT_HANDLE)
 	preErr := stdHandle(syscall.STD_ERROR_HANDLE)
@@ -102,12 +101,12 @@ func attachParentConsole() {
 	// screen buffer and input buffer regardless of how the standard handles
 	// are set, which is why they are opened by name rather than reusing
 	// whatever AttachConsole left behind.
-	if !consoleHandleUsable(preOut) {
+	if !HandleUsable(preOut) {
 		if f := openConsoleStream(`CONOUT$`, syscall.STD_OUTPUT_HANDLE); f != nil {
 			os.Stdout = f
 		}
 	}
-	if !consoleHandleUsable(preErr) {
+	if !HandleUsable(preErr) {
 		// A second, independent handle rather than a copy of the stdout one, so
 		// that `kube-workspaces list > out.txt` still shows errors on the
 		// console while stdout goes to the file.
@@ -115,7 +114,7 @@ func attachParentConsole() {
 			os.Stderr = f
 		}
 	}
-	if !consoleHandleUsable(preIn) {
+	if !HandleUsable(preIn) {
 		if f := openConsoleStream(`CONIN$`, syscall.STD_INPUT_HANDLE); f != nil {
 			os.Stdin = f
 		}
@@ -124,8 +123,7 @@ func attachParentConsole() {
 
 // stdHandle returns the current value of one of the process's standard
 // handles, or 0 if it cannot be read. A failure and an unset handle are the
-// same thing to the caller, so both collapse to a value consoleHandleUsable
-// rejects.
+// same thing to the caller, so both collapse to a value HandleUsable rejects.
 func stdHandle(id int) uintptr {
 	h, err := syscall.GetStdHandle(id)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
 	"github.com/kube-workspaces/desktop-client/internal/session"
@@ -32,7 +33,7 @@ func runScreenshot(ctx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces screenshot <workspace> [-o out.png]\n\n")
 		fs.PrintDefaults()
 	}
-	if err := parseFlags(fs, args); err != nil {
+	if err := cmdutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -45,11 +46,11 @@ func runScreenshot(ctx context.Context, args []string) error {
 		path = name + ".png"
 	}
 
-	client, profile, err := clientFor(*profileName)
+	client, profile, err := cmdutil.For(version, *profileName)
 	if err != nil {
 		return err
 	}
-	ns, err := resolveNamespace(ctx, client, profile, *namespace, name)
+	ns, err := cmdutil.ResolveNamespace(ctx, client, profile, *namespace, name)
 	if err != nil {
 		return err
 	}

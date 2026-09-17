@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/shell"
@@ -46,7 +47,7 @@ func runShell(ctx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "Running kube-workspaces with no arguments does the same thing.\n\n")
 		fs.PrintDefaults()
 	}
-	if err := parseFlags(fs, args); err != nil {
+	if err := cmdutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
 

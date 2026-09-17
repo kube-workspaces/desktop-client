@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -501,18 +502,23 @@ func (a *App) activate(ctx context.Context, ws kwclient.Workspace) {
 	}
 }
 
-// openWeb spawns the embedded-webview child process (`web` subcommand) for a
-// non-VM workspace. Track B of integrated-container-workspaces-plan.md: the
-// child scopes the browser engine's cgo/windowing requirements away from the
-// shell, which therefore stays cgo-free and single-threaded (SDL). A spawn
-// failure is reported like any in-app failure — never silently falls back.
+// openWeb spawns the embedded-webview child process (the `web` child binary,
+// or the `web` subcommand of a developer copy) for a non-VM workspace. Track B
+// of integrated-container-workspaces-plan.md: the child scopes the browser
+// engine's cgo/windowing requirements away from the shell, which therefore
+// stays cgo-free and single-threaded (SDL). A spawn failure is reported like
+// any in-app failure — never silently falls back.
 func (a *App) openWeb(ctx context.Context, ws kwclient.Workspace) {
 	if !ws.Running() {
 		a.m.Notice = ""
 		a.m.Err = fmt.Sprintf("%s is %s and cannot be opened yet.", ws.Name, StatusText(ws))
 		return
 	}
-	if err := a.opts.OpenWeb(ws.Namespace, ws.Name); err != nil {
+	profile := ""
+	if a.profile != nil {
+		profile = a.profile.Name
+	}
+	if err := a.opts.OpenWeb(profile, ws.Namespace, ws.Name); err != nil {
 		a.m.Notice = ""
 		a.m.Err = fmt.Sprintf("Web view could not be started (%v). The browser path still works.", err)
 		return
@@ -671,22 +677,66 @@ func NormaliseServer(s string) string {
 	return strings.TrimRight(s, "/")
 }
 
-// spawnWeb is the default [Options.OpenWeb]: run this same binary's `web`
-// subcommand in a child process where the browser engine (cgo + a second
-// windowing stack) can live safely off the SDL main thread. Same spawn model
-// as openBrowser — argv elements only, never a shell.
-func spawnWeb(namespace, name string) error {
+// spawnWeb is the default [Options.OpenWeb]: run a `web` child process where
+// the browser engine (cgo + a second windowing stack) can live safely off the
+// SDL main thread. The preferred child is the standalone embedded-webview
+// binary, kube-workspaces-web, shipped next to this executable; a developer
+// copy built from source has no such sibling and falls back to this same
+// binary's `web` subcommand. Same spawn model as openBrowser — argv elements
+// only, never a shell. The profile pin is forwarded as --profile so the child
+// opens the instance the shell is showing.
+func spawnWeb(profile, namespace, name string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "web", namespace+"/"+name)
+	return spawnWebExe(exe, profile, namespace, name)
+}
+
+// spawnWebExe is spawnWeb against a caller-supplied shell path, for tests that
+// stage a pretend installation.
+func spawnWebExe(exe, profile, namespace, name string) error {
+	positional := []string{namespace + "/" + name}
+	var flags []string
+	if profile != "" {
+		flags = []string{"--profile", profile}
+	}
+	if child := webChildPath(exe); child != "" {
+		cmd := exec.Command(child, append(flags, positional...)...)
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start web child: %w", err)
+		}
+		go func() { _ = cmd.Wait() }()
+		return nil
+	}
+	cmd := exec.Command(exe, append([]string{"web"}, append(flags, positional...)...)...)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start web subcommand: %w", err)
 	}
 	go func() { _ = cmd.Wait() }()
 	return nil
+}
+
+// webChildPath returns the path of the standalone embedded-webview child
+// binary (kube-workspaces-web) sitting next to exe, or "" when there is none.
+// Releases ship the child beside the cgo-free shell so webview support can
+// carry cgo without making the shell; `go run`/`go build` developer copies
+// have only the one binary and fall back to the `web` subcommand.
+func webChildPath(exe string) string {
+	if exe == "" {
+		return ""
+	}
+	name := "kube-workspaces-web"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	child := filepath.Join(filepath.Dir(exe), name)
+	if fi, err := os.Stat(child); err == nil && !fi.IsDir() {
+		return child
+	}
+	return ""
 }
 
 // openBrowser is the default [Options.OpenBrowser].

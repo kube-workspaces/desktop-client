@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
 	"github.com/kube-workspaces/desktop-client/internal/session"
@@ -60,7 +61,7 @@ func runConnect(ctx context.Context, args []string) error {
 			fmt.Fprintf(os.Stderr, "  %s\n", line)
 		}
 	}
-	if err := parseFlags(fs, args); err != nil {
+	if err := cmdutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -74,11 +75,11 @@ func runConnect(ctx context.Context, args []string) error {
 		return err
 	}
 
-	client, profile, err := clientFor(*profileName)
+	client, profile, err := cmdutil.For(version, *profileName)
 	if err != nil {
 		return err
 	}
-	ns, err := resolveNamespace(ctx, client, profile, *namespace, name)
+	ns, err := cmdutil.ResolveNamespace(ctx, client, profile, *namespace, name)
 	if err != nil {
 		return err
 	}

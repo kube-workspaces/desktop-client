@@ -6,11 +6,12 @@ name: Build
 # build can be downloaded and tested without cutting a release. Pushing a `v*`
 # tag additionally publishes those same archives as a GitHub Release.
 #
-# The whole binary, session viewer included, cross-builds from a single Linux
-# runner: the SDL3 binding is purego and bundles the library, so there is no
-# cgo anywhere in the tree and no per-OS runners are needed. If cgo is ever
-# reintroduced (H.264 decode via libavcodec is the likely cause), this job
-# stops working and the build has to move to a per-OS matrix.
+# The shell binary, session viewer included, cross-builds from a single Linux
+# runner: the SDL3 binding is purego and bundles the library, so `make build-all`
+# needs no cgo and no per-OS runners for the six shell targets. The one cgo
+# artifact is the embedded-webview child (cmd/kube-workspaces-web); it must be
+# built per OS where the webview toolchain lives (WebKitGTK, WebKit, WebView2),
+# so a future job adds it from a per-OS matrix before the archives are staged.
 
 on:
   push:

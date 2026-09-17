@@ -1,13 +1,16 @@
-package main
+// Copyright The kube-workspaces Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package console
 
 import "testing"
 
-// TestConsoleHandleUsable covers the predicate that decides whether
-// attachParentConsole may replace a standard stream with the parent console.
-// Getting it wrong in the permissive direction breaks shell redirection, which
-// is the failure mode worth a test: `kube-workspaces.exe list > out.txt` would
-// silently write to the console and leave out.txt empty.
-func TestConsoleHandleUsable(t *testing.T) {
+// TestHandleUsable covers the predicate that decides whether AttachParent may
+// replace a standard stream with the parent console. Getting it wrong in the
+// permissive direction breaks shell redirection, which is the failure mode
+// worth a test: `kube-workspaces.exe list > out.txt` would silently write to
+// the console and leave out.txt empty.
+func TestHandleUsable(t *testing.T) {
 	tests := []struct {
 		name   string
 		handle uintptr
@@ -45,8 +48,8 @@ func TestConsoleHandleUsable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := consoleHandleUsable(tt.handle); got != tt.want {
-				t.Errorf("consoleHandleUsable(%#x) = %v, want %v", tt.handle, got, tt.want)
+			if got := HandleUsable(tt.handle); got != tt.want {
+				t.Errorf("HandleUsable(%#x) = %v, want %v", tt.handle, got, tt.want)
 			}
 		})
 	}

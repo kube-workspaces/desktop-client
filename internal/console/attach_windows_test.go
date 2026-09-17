@@ -1,6 +1,9 @@
 //go:build windows
 
-package main
+// Copyright The kube-workspaces Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package console
 
 import (
 	"os"
@@ -12,25 +15,25 @@ import (
 // adopting the console of the shell that launched it — cannot be exercised by
 // `go test`. Test binaries are linked as console subsystem executables, so the
 // process already owns a console, AttachConsole returns ERROR_ACCESS_DENIED and
-// attachParentConsole takes its early return. Verifying the real path needs a
+// AttachParent takes its early return. Verifying the real path needs a
 // binary built with `-H=windowsgui` and run by hand from cmd.exe, PowerShell
 // and Explorer.
 //
 // What is worth asserting here, and does run on the windows-latest CI runner,
 // is that the early return is genuinely inert: a process that already has
-// working standard streams must come out of attachParentConsole with exactly
-// those streams.
+// working standard streams must come out of AttachParent with exactly those
+// streams.
 
-// TestAttachParentConsoleWithExistingConsoleIsInert checks that calling
-// attachParentConsole from a process that already has a console leaves the
-// standard streams untouched.
-func TestAttachParentConsoleWithExistingConsoleIsInert(t *testing.T) {
+// TestAttachParentWithExistingConsoleIsInert checks that calling AttachParent
+// from a process that already has a console leaves the standard streams
+// untouched.
+func TestAttachParentWithExistingConsoleIsInert(t *testing.T) {
 	in, out, errStream := os.Stdin, os.Stdout, os.Stderr
 	// Restore regardless, so that a surprise on some future Windows build
 	// cannot take the rest of the test binary's output down with it.
 	defer func() { os.Stdin, os.Stdout, os.Stderr = in, out, errStream }()
 
-	attachParentConsole()
+	AttachParent()
 
 	if os.Stdout != out {
 		t.Errorf("os.Stdout was replaced: got %p, want %p", os.Stdout, out)
@@ -63,8 +66,8 @@ func TestStdHandleMatchesSyscallPackage(t *testing.T) {
 			if got != uintptr(tt.want) {
 				t.Errorf("stdHandle(%d) = %#x, want %#x", tt.id, got, uintptr(tt.want))
 			}
-			if !consoleHandleUsable(got) {
-				t.Errorf("stdHandle(%d) = %#x, which consoleHandleUsable rejects; a test "+
+			if !HandleUsable(got) {
+				t.Errorf("stdHandle(%d) = %#x, which HandleUsable rejects; a test "+
 					"binary has all three standard streams", tt.id, got)
 			}
 		})

@@ -96,9 +96,12 @@ type Options struct {
 	// the platform's default handler.
 	OpenBrowser func(rawURL string) error
 
-	// OpenWeb spawns the embedded-webview child process (the binary's `web`
-	// subcommand) for a non-VM workspace. Nil means [spawnWeb].
-	OpenWeb func(namespace, name string) error
+	// OpenWeb spawns the embedded-webview child process for a non-VM
+	// workspace: the standalone kube-workspaces-web binary when it ships
+	// beside this executable (releases), otherwise this binary's own `web`
+	// subcommand (developer copies). The profile pin travels with the spawn so
+	// the child opens the very instance the shell shows. Nil means [spawnWeb].
+	OpenWeb func(profile, namespace, name string) error
 
 	// Theme overrides the palette. Nil means [ui.DefaultTheme].
 	Theme *ui.Theme

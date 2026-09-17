@@ -597,7 +597,7 @@ func newRig(profile *config.Profile, token string) *rig {
 			r.browsed = append(r.browsed, rawURL)
 			return nil
 		},
-		OpenWeb: func(namespace, name string) error {
+		OpenWeb: func(profile, namespace, name string) error {
 			r.webbed = append(r.webbed, kwclient.Workspace{Namespace: namespace, Name: name})
 			return nil
 		},

@@ -9,13 +9,14 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"text/tabwriter"
+
+	"github.com/kube-workspaces/desktop-client/internal/console"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -33,8 +34,8 @@ func main() {
 	// stray console window alongside the shell; the cost is that the
 	// subcommands below inherit no standard streams when they are run from
 	// cmd.exe or PowerShell. This reattaches them. No-op everywhere else —
-	// see console_windows.go and console_other.go.
-	attachParentConsole()
+	// see internal/console.
+	console.AttachParent()
 
 	commands := []command{
 		shellCommand(),
@@ -109,45 +110,4 @@ func usage(commands []command) {
 func runVersion(_ context.Context, _ []string) error {
 	fmt.Println(version)
 	return nil
-}
-
-// parseFlags parses args allowing flags and positional arguments to appear in
-// any order.
-//
-// The standard flag package stops parsing at the first non-flag argument, so
-// `screenshot my-vm -o out.png` would silently ignore -o. Users reasonably
-// expect the subject of a command to come first, so permute the arguments and
-// hand flag a list it can handle.
-func parseFlags(fs *flag.FlagSet, args []string) error {
-	var flags, positional []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			positional = append(positional, args[i+1:]...)
-			break
-		}
-		if len(arg) < 2 || arg[0] != '-' {
-			positional = append(positional, arg)
-			continue
-		}
-		flags = append(flags, arg)
-		// "-flag=value" carries its own value; "-flag value" consumes the next
-		// argument, but only for flags that actually take one.
-		if strings.Contains(arg, "=") {
-			continue
-		}
-		name := strings.TrimLeft(arg, "-")
-		if f := fs.Lookup(name); f != nil && !isBoolFlag(f) && i+1 < len(args) {
-			i++
-			flags = append(flags, args[i])
-		}
-	}
-	return fs.Parse(append(flags, positional...))
-}
-
-// isBoolFlag reports whether a flag is a boolean, which the flag package
-// signals through an optional method on the value.
-func isBoolFlag(f *flag.Flag) bool {
-	bf, ok := f.Value.(interface{ IsBoolFlag() bool })
-	return ok && bf.IsBoolFlag()
 }

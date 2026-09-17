@@ -12,51 +12,10 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 )
-
-// clientFor builds an API client for the named profile, or the active one when
-// name is empty. The stored session token is attached if present.
-func clientFor(profileName string) (*kwclient.Client, *config.Profile, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, nil, err
-	}
-	var profile *config.Profile
-	if profileName != "" {
-		profile = cfg.Get(profileName)
-		if profile == nil {
-			return nil, nil, fmt.Errorf("no such profile %q", profileName)
-		}
-	} else {
-		profile, err = cfg.Active()
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	opts := []kwclient.Option{kwclient.WithUserAgent("kube-workspaces-desktop/" + version)}
-	if profile.InsecureSkipVerify {
-		opts = append(opts, kwclient.WithInsecureSkipVerify(true))
-	}
-	token, err := config.LoadToken(profile.Name)
-	switch {
-	case err == nil:
-		opts = append(opts, kwclient.WithToken(token))
-	case errors.Is(err, config.ErrNoToken):
-		// Leave the client unauthenticated; the caller reports the failure in
-		// context, which is friendlier than erroring here.
-	default:
-		return nil, nil, err
-	}
-
-	client, err := kwclient.New(profile.Server, opts...)
-	if err != nil {
-		return nil, nil, err
-	}
-	return client, profile, nil
-}
 
 func runLogin(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
@@ -71,7 +30,7 @@ func runLogin(ctx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces login --server <url> [--email <email>] [--browser]\n\n")
 		fs.PrintDefaults()
 	}
-	if err := parseFlags(fs, args); err != nil {
+	if err := cmdutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -291,7 +250,7 @@ func promptPassword(label string) (string, error) {
 func runLogout(_ context.Context, args []string) error {
 	fs := flag.NewFlagSet("logout", flag.ExitOnError)
 	profileName := fs.String("profile", "", "profile to log out of (defaults to the active profile)")
-	if err := parseFlags(fs, args); err != nil {
+	if err := cmdutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
 	cfg, err := config.Load()
@@ -318,10 +277,10 @@ func runLogout(_ context.Context, args []string) error {
 func runWhoAmI(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("whoami", flag.ExitOnError)
 	profileName := fs.String("profile", "", "profile to use")
-	if err := parseFlags(fs, args); err != nil {
+	if err := cmdutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
-	client, profile, err := clientFor(*profileName)
+	client, profile, err := cmdutil.For(version, *profileName)
 	if err != nil {
 		return err
 	}
@@ -361,7 +320,7 @@ func runProfile(_ context.Context, args []string) error {
 			"  kube-workspaces profile use <name>\n"+
 			"  kube-workspaces profile remove <name>\n")
 	}
-	if err := parseFlags(fs, args); err != nil {
+	if err := cmdutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
 

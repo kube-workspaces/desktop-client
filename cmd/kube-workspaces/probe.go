@@ -10,8 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/kube-workspaces/desktop-client/internal/config"
-	"github.com/kube-workspaces/desktop-client/internal/kwclient"
+	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
 	"github.com/kube-workspaces/desktop-client/internal/session"
 )
@@ -39,7 +38,7 @@ func runProbe(ctx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces probe <workspace> [flags]\n\n")
 		fs.PrintDefaults()
 	}
-	if err := parseFlags(fs, args); err != nil {
+	if err := cmdutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -48,11 +47,11 @@ func runProbe(ctx context.Context, args []string) error {
 	}
 	name := fs.Arg(0)
 
-	client, profile, err := clientFor(*profileName)
+	client, profile, err := cmdutil.For(version, *profileName)
 	if err != nil {
 		return err
 	}
-	ns, err := resolveNamespace(ctx, client, profile, *namespace, name)
+	ns, err := cmdutil.ResolveNamespace(ctx, client, profile, *namespace, name)
 	if err != nil {
 		return err
 	}
@@ -281,41 +280,6 @@ func securityName(t uint8) string {
 		return "VNC Authentication (2)"
 	default:
 		return fmt.Sprintf("%d", t)
-	}
-}
-
-// resolveNamespace determines which namespace a workspace lives in, looking it
-// up when the user did not say. Workspaces live in per-user namespaces, so
-// requiring the flag every time would be tedious.
-func resolveNamespace(ctx context.Context, client *kwclient.Client, profile *config.Profile, explicit, name string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	if profile.Namespace != "" {
-		return profile.Namespace, nil
-	}
-	workspaces, err := client.ListWorkspaces(ctx, kwclient.AllNamespaces)
-	if err != nil {
-		return "", fmt.Errorf("look up workspace namespace: %w", err)
-	}
-	var matches []kwclient.Workspace
-	for _, ws := range workspaces {
-		if ws.Name == name {
-			matches = append(matches, ws)
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return "", fmt.Errorf("no workspace named %q found", name)
-	case 1:
-		return matches[0].Namespace, nil
-	default:
-		var ns []string
-		for _, m := range matches {
-			ns = append(ns, m.Namespace)
-		}
-		return "", fmt.Errorf("workspace %q exists in several namespaces (%s); pass --namespace",
-			name, strings.Join(ns, ", "))
 	}
 }
 

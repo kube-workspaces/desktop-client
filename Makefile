@@ -55,7 +55,7 @@ WINRES ?= go run github.com/tc-hib/go-winres@v0.3.3
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
-.PHONY: help build build-windows build-windows-cgo run test vet lint fmt tidy cover icons winres clean build-all
+.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres clean build-all
 
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -93,6 +93,32 @@ build-windows-cgo: ## Cross-build a Windows amd64 binary WITH cgo into ./kw-cgo.
 	$(WINRES) make --in winres.json --out cmd/kube-workspaces/rsrc --arch=amd64,arm64 --product-version=git-tag --file-version=git-tag
 	CC=$(CGO_CC) CXX=$(CGO_CXX) CGO_CXXFLAGS="-I$(abspath internal/web/mswebview2)" CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
 		go build -trimpath -ldflags "$(WINDOWS_LDFLAGS)" -o kw-cgo.exe $(CMD)
+
+# The embedded-webview child binary (cmd/kube-workspaces-web). Track B of
+# integrated-container-workspaces-plan.md §6.2/§6.3: the browser engine
+# (webview_go: WebKitGTK / WebKit / WebView2) lives in its own per-OS binary
+# built with CGO_ENABLED=1, shipped beside the cgo-free shell. The shell's
+# spawnWeb prefers this sibling and falls back to the shell's own `web`
+# subcommand only for developer copies that have no child next to them.
+# build-all above stays CGO_ENABLED=0; the child gets built per-OS there (CI
+# runners on every target) rather than cross-compiled from one host.
+build-web: ## Build the Linux embedded-webview child into bin/kube-workspaces-web
+	@command -v pkg-config >/dev/null 2>&1 || { echo "error: pkg-config not found (apt: pkg-config, libwebkit2gtk-4.0-dev, libgtk-3-dev)" >&2; exit 1; }
+	@pkg-config --exists 'webkit2gtk-4.0 gtk+-3.0' || { echo "error: webkit2gtk-4.0/gtk+-3.0 not found (apt: libwebkit2gtk-4.0-dev libgtk-3-dev)" >&2; exit 1; }
+	@mkdir -p $(BIN_DIR)
+	@echo "CGO_ENABLED=1 go build -trimpath -ldflags \"$(LDFLAGS)\" -o $(BIN_DIR)/kube-workspaces-web ./cmd/kube-workspaces-web"
+	CGO_ENABLED=1 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/kube-workspaces-web ./cmd/kube-workspaces-web
+
+build-web-windows: ## Cross-build the Windows amd64 web child into ./kw-web.exe
+	@# Needs the Mingw-w64 cross toolchain, like build-windows-cgo, because the
+	@# child compiles internal/web's webview_go C++ shim (EventToken.h injected
+	@# via CGO_CXXFLAGS; Go adds -mthreads, which native g++ rejects). Linked
+	@# GUI-subsystem so the shell spawning it never flashes a console window.
+	@# No winres resources: the child has no taskbar identity of its own.
+	@command -v $(CGO_CC) >/dev/null 2>&1 || { echo "error: $(CGO_CC) not found (apt: gcc-mingw-w64-x86-64)" >&2; exit 1; }
+	@command -v $(CGO_CXX) >/dev/null 2>&1 || { echo "error: $(CGO_CXX) not found (apt: g++-mingw-w64-x86-64)" >&2; exit 1; }
+	CC=$(CGO_CC) CXX=$(CGO_CXX) CGO_CXXFLAGS="-I$(abspath internal/web/mswebview2)" CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
+		go build -trimpath -ldflags "$(WINDOWS_LDFLAGS)" -o kw-web.exe ./cmd/kube-workspaces-web
 
 winres: ## Regenerate the Windows .syso resources (icon + version info) for cmd/kube-workspaces
 	$(WINRES) make --in winres.json --out cmd/kube-workspaces/rsrc --arch=amd64,arm64 --product-version=git-tag --file-version=git-tag

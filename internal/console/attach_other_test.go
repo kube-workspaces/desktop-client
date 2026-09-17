@@ -1,27 +1,30 @@
 //go:build !windows
 
-package main
+// Copyright The kube-workspaces Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package console
 
 import (
 	"os"
 	"testing"
 )
 
-// TestAttachParentConsoleIsNoOp asserts that the non-Windows build of
-// attachParentConsole leaves the process exactly as it found it.
+// TestAttachParentIsNoOp asserts that the non-Windows build of AttachParent
+// leaves the process exactly as it found it.
 //
-// main calls it unconditionally on every platform, so the thing that must hold
-// on Linux and macOS is that nothing changes: the same *os.File values stay in
-// place and the standard streams keep working. A regression here — a stub that
-// reassigned os.Stdout, say — would break every subcommand on the two
-// platforms the client is developed on.
-func TestAttachParentConsoleIsNoOp(t *testing.T) {
+// Every binary main calls it unconditionally on every platform, so the thing
+// that must hold on Linux and macOS is that nothing changes: the same *os.File
+// values stay in place and the standard streams keep working. A regression
+// here — a stub that reassigned os.Stdout, say — would break every subcommand
+// on the two platforms the client is developed on.
+func TestAttachParentIsNoOp(t *testing.T) {
 	in, out, errStream := os.Stdin, os.Stdout, os.Stderr
 
 	// Twice, because main is not the only possible caller and an
 	// implementation that is only idempotent the first time is a trap.
-	attachParentConsole()
-	attachParentConsole()
+	AttachParent()
+	AttachParent()
 
 	if os.Stdin != in {
 		t.Errorf("os.Stdin was replaced: got %p, want %p", os.Stdin, in)
@@ -38,7 +41,7 @@ func TestAttachParentConsoleIsNoOp(t *testing.T) {
 // values but still usable, by writing through the one the CLI subcommands
 // print to.
 func TestStdoutStillWritesAfterAttach(t *testing.T) {
-	attachParentConsole()
+	AttachParent()
 
 	r, w, err := os.Pipe()
 	if err != nil {

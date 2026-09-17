@@ -8,6 +8,7 @@ import (
 	"sort"
 	"text/tabwriter"
 
+	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 )
 
@@ -17,11 +18,11 @@ func runList(ctx context.Context, args []string) error {
 	namespace := fs.String("namespace", "", "namespace to list (defaults to the profile's, or all)")
 	runningOnly := fs.Bool("running", false, "only show workspaces that can be connected to")
 	wide := fs.Bool("wide", false, "show image and resource columns")
-	if err := parseFlags(fs, args); err != nil {
+	if err := cmdutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
 
-	client, profile, err := clientFor(*profileName)
+	client, profile, err := cmdutil.For(version, *profileName)
 	if err != nil {
 		return err
 	}

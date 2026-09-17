@@ -39,8 +39,9 @@ Implemented and working:
 - **Multiple windows.** One process means one main thread. The shell and the
   session viewer each open their own SDL window on that thread, sharing the SDL
   library. Non-VM workspaces open in the embedded webview child process (Track
-  B); a child binary (`internal/web` via `webview_go`) owns the browser
-  engine's cgo/windowing stack so the shell stays cgo-free.
+  B); the child binary (`cmd/kube-workspaces-web` + `internal/web` via
+  `webview_go`) owns the browser engine's cgo/windowing stack so the shell
+  stays cgo-free.
 
 Not implemented, and must not be described otherwise:
 
@@ -127,7 +128,10 @@ is the accepted trade; it was the original argument for process separation.
 | `internal/transport/` | Transport-agnostic `Conn` interface wrapping the RFB connection (hides RFB specifics so viewer/session code is transport-independent) |
 | `internal/selkies/` | Tier 1 wire protocol + diagnostic; optional native decode callbacks, not wired into normal GUI selection |
 | `internal/media/` | cgo-free dynamic libavcodec 59 / libavutil 57 + libopus decode; ABI-gated and bounded; used by the Tier 1 diagnostic |
-| `internal/web/` | Embedded-webview child for non-VM workspaces (Track B): `webview_go` behind cgo build tags |
+| `internal/cmdutil/` | Command-line plumbing shared by both binaries: `ParseFlags`, `For` (profile→client), `ResolveNamespace` |
+| `internal/webcmd/` | Body of the `web` command (shared by the shell subcommand and the web child); `internal/web` on top |
+| `internal/web/` | Embedded-webview engine for non-VM workspaces (Track B): `webview_go` behind cgo build tags; `mswebview2/EventToken.h` shim for Windows |
+| `cmd/kube-workspaces-web/` | The embedded-webview **child binary** (TODO #0 in tracking): same `web` command as the shell, built `CGO_ENABLED=1` per OS, spawned by `spawnWeb`; the only cgo artifact |
 | `cmd/selkies-probe/` | Standalone Spike D diagnostic binary: protocol handshake checks, payload statistics, JSON summaries |
 
 ## Commands
@@ -142,7 +146,9 @@ make fmt                        # gofmt -w -s .
 make cover                      # coverage summary
 make icons                      # regenerate icon artwork (needs inkscape + ImageMagick)
 make winres                     # regenerate the Windows .syso resources
-make build-all                  # cross-build all 6 targets into dist/
+make build-all                  # cross-build all 6 targets into dist/ (shell only, cgo-free)
+make build-web                  # Linux embedded-webview child into bin/kube-workspaces-web (needs webkit2gtk-4.0)
+make build-web-windows          # Windows amd64 web child into kw-web.exe (needs mingw-w64)
 make help                       # list every target
 ```
 
@@ -354,10 +360,15 @@ time, since actions and pricing drift.
   deliberately, never by automation. Cutting a release (or bumping
   `internal/kwclient.Version`) still needs explicit instruction, same as on the
   other component repos.
-- **The tree is cgo-free and must stay that way.** `CGO_ENABLED=0` cross-builds
-  all six targets; anything that would reintroduce cgo (a native toolkit,
-  libavcodec for H.264) needs this decision reopened first, because it would
-  cost the single-machine cross-build that the whole build story rests on.
+- **The shell is cgo-free and must stay that way, with one carve-out.** The
+  `CGO_ENABLED=0` cross-build of all six targets is the `cmd/kube-workspaces`
+  shell binary; it must stay that way, because the single-machine cross-build
+  is the whole build story. The one permitted cgo artifact is the
+  embedded-webview child, `cmd/kube-workspaces-web` (`internal/web` via
+  `webview_go`): it is built per-OS with its platform webview toolchain and
+  shipped beside the shell, which `spawnWeb` prefers. Anything that would add
+  more cgo back into the shell (a native toolkit, libavcodec for H.264) needs
+  this decision reopened first.
 - Keep `internal/rfb`, `internal/kwclient`, `internal/keysym`, `internal/wsio`
   and `internal/reconnect` free of UI dependencies so they stay testable
   without a display.
@@ -377,7 +388,7 @@ time, since actions and pricing drift.
 - `.github/workflows/ci.yml` — gofmt check, `go build ./...`, `go vet ./...`,
   `go test -race` with a coverage step-summary, plus a `cross` matrix job that
   builds on ubuntu, macOS and windows runners. The matrix is belt-and-braces
-  now that the tree is cgo-free and cross-builds from one host; it still catches
+  now that the shell cross-builds from one host; it still catches
   platform-specific build tags and stdlib differences.
 - `.github/workflows/lint.yml` — golangci-lint (v9 action, pinned v2.13.2). See
   the version note under *Verification before pushing*.
@@ -386,7 +397,9 @@ time, since actions and pricing drift.
 
 The pre-SDL3 claims that the session viewer "cannot be cross-compiled" and
 that cross-builds are "pure-Go packages only" have been corrected in the
-`Makefile` and both workflows — `make build-all` builds the entire binary,
-viewer included, for all six targets. Keep the cross-build comments honest on
-the same lines when next editing them: the claim is "no cgo anywhere, so one
-host builds all six targets".
+`Makefile` and both workflows — `make build-all` builds the entire shell
+binary, viewer included, for all six targets. Keep the cross-build comments
+honest on the same lines when next editing them: `make build-all` is "no cgo,
+so one host builds all six shell targets"; the one cgo artifact is the
+embedded-webview child (TODO #0 in the tracking repo), which needs per-OS
+builds and is *not* part of the six-target build yet.

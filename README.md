@@ -34,13 +34,23 @@ WorkSpaces client — for `spec.type: vm` workspaces in particular.
 
 Six targets: **linux, macOS and Windows** × **amd64 and arm64**.
 
-All six cross-build from a single machine with `CGO_ENABLED=0`. The client has
+All six cross-build from a single machine with `CGO_ENABLED=0`. The shell has
 **no cgo and no system library dependencies**: the SDL3 binding
 ([`Zyko0/go-sdl3`](https://github.com/Zyko0/go-sdl3)) is pure Go over
 [purego](https://github.com/ebitengine/purego), and the SDL3 library itself is
 bundled with the binding and unpacked to a temporary directory at startup. You
 do not need SDL, X11 or Wayland development packages to build, and the target
 machine does not need SDL installed to run.
+
+Non-VM (container/scratch) workspaces open in an **embedded webview** that
+round-trips the browser engine's cgo/windowing stack — WebKitGTK, WebKit or
+WebView2 depending on the platform — out of the shell and into its own
+per-OS child binary, `kube-workspaces-web`. That child is the one artifact
+built with `CGO_ENABLED=1`; it needs the platform dev packages
+(`libwebkit2gtk-4.0-dev` on Linux, the Mingw-w64 pair for Windows), is built
+with `make build-web` / `make build-web-windows`, and ships beside the
+cgo-free shell so `spawnWeb` finds it. `make build-all` itself remains
+shell-only.
 
 The optional Tier 1 **diagnostic** now supports native H.264/Opus decoding
 (`go run ./cmd/selkies-probe --decode`) and SDL playback (`--present`). These
@@ -59,10 +69,12 @@ window — `login`, `logout`, `profile`, `whoami`, `list`, `probe`, `screenshot`
 Requires Go 1.26+. No code generation, no container image, no system packages.
 
 ```bash
-make build          # -> bin/kube-workspaces
+make build          # -> bin/kube-workspaces (shell + CLI, cgo-free)
 make icons          # regenerate the icon artwork from assets/icon.svg
 make build-all      # cross-build all six targets into dist/
-make build-windows-cgo  # cgo-enabled Windows amd64 into ./kw-cgo.exe (embedded webview, needs mingw-w64)
+make build-web      # Linux embedded-webview child -> bin/kube-workspaces-web (needs webkit2gtk-4.0)
+make build-web-windows  # Windows amd64 web child into ./kw-web.exe (needs mingw-w64)
+make build-windows-cgo  # cgo Windows amd64 of the whole binary into ./kw-cgo.exe (needs mingw-w64)
 make test           # go test -race ./...
 make lint           # golangci-lint, skipped if not installed
 make help           # all targets
@@ -106,8 +118,10 @@ On the workspace list:
 | `Tab` | Move focus |
 
 Opening a **VM** workspace starts a display session in the window. Opening a
-**container** workspace opens its proxy URL in your system browser, because
-those are web applications.
+**container** workspace opens its web UI in the embedded webview — the
+`kube-workspaces-web` child binary where it ships, else the shell's own `web`
+subcommand on a developer copy; the in-app terminal (Console) and the system
+browser are the secondary actions.
 
 ### The CLI
 
