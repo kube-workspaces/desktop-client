@@ -2,6 +2,12 @@ module github.com/kube-workspaces/desktop-client
 
 go 1.26.0
 
+// The webview_go module is replaced by a local fork (third_party/webview_go)
+// that pins the Linux backend to webkit2gtk-4.1: Ubuntu 24.04+ / Debian 12+
+// only ship WebKitGTK 4.1 (libsoup3) and the upstream 4.0 pin cannot load
+// anywhere modern. See the fork's webview.go header for the exact diff.
+replace github.com/webview/webview_go => ./third_party/webview_go
+
 require (
 	github.com/Zyko0/go-sdl3 v0.1.1
 	github.com/ebitengine/purego v0.10.0

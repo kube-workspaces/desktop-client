@@ -7,11 +7,11 @@ on:
     branches: [main]
 
 jobs:
-  # The most recently updated runner image (24.04) no longer packages
-  # webkit2gtk-4.0, which github.com/webview/webview_go compiles against (it
-  # wants the GTK3-era 4.0 headers, not 4.1). The Linux path is therefore built
-  # cgo-free — web_nocgo.go — which is exactly the variant the release archives
-  # ship, and macOS and Windows (see the cross job) cover the real cgo webview.
+  # The Linux path is deliberately built cgo-free — web_nocgo.go — which is
+  # exactly the variant the release archives ship (the webview's cgo stack,
+  # webkit2gtk-4.1 via the third_party/webview_go fork, lives only in the
+  # kube-workspaces-web child, built natively per OS in the Build workflow),
+  # and macOS and Windows (see the cross job) cover the real cgo webview.
   #
   # The -race step is the one place cgo has to stay on for the detector; it
   # skips the packages that would otherwise drag webview_go into the build.
@@ -83,9 +83,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux builds cgo-free: webview_go needs webkit2gtk-4.0, which the
-        # current runner image no longer packages, and the Linux artifacts ship
-        # web_nocgo anyway. macOS and Windows compile the real cgo webview.
+        # Linux builds cgo-free (web_nocgo.go), which is what the release
+        # archives ship: the webview's cgo stack lives in the per-OS
+        # kube-workspaces-web child (see the Build workflow), not in the shell.
+        # macOS and Windows compile the real cgo webview.
         include:
           - os: ubuntu-latest
             cgo: "0"

@@ -47,15 +47,18 @@ round-trips the browser engine's cgo/windowing stack — WebKitGTK, WebKit or
 WebView2 depending on the platform — out of the shell and into its own
 per-OS child binary, `kube-workspaces-web`. That child is the one artifact
 built with `CGO_ENABLED=1` (local: `make build-web` / `make build-web-windows`,
-needing `libwebkit2gtk-4.0-dev` on Linux and the Mingw-w64 pair for Windows,
+needing `libwebkit2gtk-4.1-dev` on Linux and the Mingw-w64 pair for Windows,
 respectively). The CI **Build** workflow builds it natively on a per-OS runner
 matrix and injects it into the release archives next to the shell, so
 `spawnWeb` finds it in shipped builds (`scripts/insert-web-child.sh` performs
 the injection for local archive staging). `make build-all` itself remains
 shell-only, and Windows/arm64 has no webview toolchain on the runners yet, so
 that one archive ships without the child. On Linux the child needs the
-WebKitGTK 2.4 runtime (`libwebkit2gtk-4.0`) on the machine running it; macOS
-and Windows use the engines the OS already provides (WebKit, WebView2).
+WebKitGTK 4.1 runtime (`libwebkit2gtk-4.1`, Ubuntu 23.10+/Debian 12+) on the
+machine running it; macOS and Windows use the engines the OS already provides
+(WebKit, WebView2). The Linux backend is provided by a tiny local fork of
+`webview_go` (`third_party/webview_go`) that pins `webkit2gtk-4.1` — the
+upstream 4.0 pin cannot load on Ubuntu 24.04+ or Debian 12+.
 
 The optional Tier 1 **diagnostic** now supports native H.264/Opus decoding
 (`go run ./cmd/selkies-probe --decode`) and SDL playback (`--present`). These
@@ -77,7 +80,7 @@ Requires Go 1.26+. No code generation, no container image, no system packages.
 make build          # -> bin/kube-workspaces (shell + CLI, cgo-free)
 make icons          # regenerate the icon artwork from assets/icon.svg
 make build-all      # cross-build all six targets into dist/
-make build-web      # Linux embedded-webview child -> bin/kube-workspaces-web (needs webkit2gtk-4.0)
+make build-web      # Linux embedded-webview child -> bin/kube-workspaces-web (needs webkit2gtk-4.1)
 make build-web-windows  # Windows amd64 web child into ./kw-web.exe (needs mingw-w64)
 make build-windows-cgo  # cgo Windows amd64 of the whole binary into ./kw-cgo.exe (needs mingw-w64)
 make test           # go test -race ./...

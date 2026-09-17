@@ -147,7 +147,7 @@ make cover                      # coverage summary
 make icons                      # regenerate icon artwork (needs inkscape + ImageMagick)
 make winres                     # regenerate the Windows .syso resources
 make build-all                  # cross-build all 6 targets into dist/ (shell only, cgo-free)
-make build-web                  # Linux embedded-webview child into bin/kube-workspaces-web (needs webkit2gtk-4.0)
+make build-web                  # Linux embedded-webview child into bin/kube-workspaces-web (needs webkit2gtk-4.1)
 make build-web-windows          # Windows amd64 web child into kw-web.exe (needs mingw-w64)
 make help                       # list every target
 ```
@@ -366,13 +366,21 @@ time, since actions and pricing drift.
   is the whole build story. The one permitted cgo artifact is the
   embedded-webview child, `cmd/kube-workspaces-web` (`internal/web` via
   `webview_go`): it is built per-OS with its platform webview toolchain by the
-  Build workflow's `web-child` matrix (jammy container for Linux so
-  webkit2gtk-4.0 is available, a Mac runner for both darwin arches, MinGW for
-  Windows), then injected next to its shell by `assemble`
-  (`scripts/insert-web-child.sh`), which `spawnWeb` prefers. Windows/arm64 has
-  no runner toolchain and ships shell-only until one exists. Anything that would
-  add more cgo back into the shell (a native toolkit, libavcodec for H.264)
-  needs this decision reopened first.
+  Build workflow's `web-child` matrix (a noble container for Linux — the
+  `webkit2gtk-4.1` dev stack, since the 4.0 runtime is gone from Ubuntu 24.04+
+  / Debian 12+ — a Mac runner for both darwin arches, MinGW for Windows), then
+  injected next to its shell by `assemble` (`scripts/insert-web-child.sh`),
+  which `spawnWeb` prefers. Windows/arm64 has no runner toolchain and ships
+  shell-only until one exists. Anything that would add more cgo back into the
+  shell (a native toolkit, libavcodec for H.264) needs this decision reopened
+  first.
+- **`third_party/webview_go` is a one-line fork of `github.com/webview/webview_go`
+  (pinned version in go.mod)**: it swaps the Linux `pkg-config` pin from
+  `webkit2gtk-4.0` to `webkit2gtk-4.1` so the child runs on modern distros.
+  Upstream still pins 4.0. Keep the diff to that single line (the Windows and
+  macOS backends are upstream-identical); when upstream ever ships 4.1/6.0
+  support, drop the fork and the `replace` directive. It is excluded from
+  lint/formatting via `.golangci.yml`'s `third_party$` path rule.
 - Keep `internal/rfb`, `internal/kwclient`, `internal/keysym`, `internal/wsio`
   and `internal/reconnect` free of UI dependencies so they stay testable
   without a display.
@@ -385,7 +393,7 @@ time, since actions and pricing drift.
 - `.github/workflows/build.yml` — the `build` job cross-builds all six shell
   targets on every push to `main` and uploads them as `shell-*` artifacts; the
   `web-child` matrix builds the webview child natively per OS (linux/amd64+arm64
-  in a jammy `ubuntu:22.04` container, darwin/amd64+arm64 on `macos-latest`,
+  in a noble `ubuntu:24.04` container, darwin/amd64+arm64 on `macos-latest`,
   windows/amd64 on `windows-latest` with MinGW); `assemble` injects each child
   beside its shell and uploads the final `kube-workspaces-*` archives with a
   regenerated `SHA256SUMS`. On a `v*` tag the `release` job injects the children

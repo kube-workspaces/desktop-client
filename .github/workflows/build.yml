@@ -12,7 +12,7 @@ name: Build
 # artifact is the embedded-webview child (cmd/kube-workspaces-web); it must be
 # built per OS where the webview toolchain lives (WebKitGTK, WebKit, WebView2).
 # The web-child matrix job builds it natively per OS (Linux/amd64+arm64 in a
-# jammy container that still ships webkit2gtk-4.0, both macOS arches on a Mac
+# noble container that ships webkit2gtk-4.1, both macOS arches on a Mac
 # runner, Windows/amd64 with MinGW), and the assemble job drops each child next
 # to its shell before the archives are staged. Branches without a child (see
 # the matrix comments for the toolchain gaps) stay shell-only.
@@ -138,13 +138,15 @@ jobs:
     name: Web child (${{ matrix.platform }})
     runs-on: ${{ matrix.runs-on }}
     container: ${{ matrix.container }}
-    # Each webview toolchain is best built natively: the Linux child needs
-    # webkit2gtk-4.0 (dropped from Ubuntu 24.04, still on jammy), the macOS one
-    # the Xcode SDK, the Windows one MinGW. Cross-compiling cgo to other OSes
-    # from a single host is exactly what we do NOT want to hand-tool here.
+    # Each webview toolchain is best built natively: the Linux child needs a
+    # webkit2gtk-4.1 dev stack (the 4.0 runtime is gone from modern distros —
+    # Ubuntu 24.04+, Debian 12+ — so the fork in third_party/webview_go pins
+    # 4.1), the macOS one the Xcode SDK, the Windows one MinGW. Cross-compiling
+    # cgo to other OSes from a single host is exactly what we do NOT want to
+    # hand-tool here.
     defaults:
       run:
-        # The jammy container runs steps under sh by default; our steps need
+        # The noble container runs steps under sh by default; our steps need
         # bash (set -o pipefail). The Windows step overrides shell: pwsh.
         shell: bash
     strategy:
@@ -155,14 +157,14 @@ jobs:
             os: linux
             arch: amd64
             runs-on: ubuntu-latest
-            container: ubuntu:22.04
+            container: ubuntu:24.04
           # ARM64 GitHub runners are available for public repos (ubuntu-24.04-arm),
-          # and the jammy container resolves to its arm64 variant there.
+          # and the noble container resolves to its arm64 variant there.
           - platform: linux-arm64
             os: linux
             arch: arm64
             runs-on: ubuntu-24.04-arm
-            container: ubuntu:22.04
+            container: ubuntu:24.04
           # macOS cgo cross-builds are native enough on a single runner: the
           # Xcode SDK builds both arches, so one macos-latest covers both GOARCH.
           - platform: darwin-amd64
@@ -201,7 +203,7 @@ jobs:
           set -euo pipefail
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev \
+            build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev \
             ca-certificates
 
       - name: Ensure MinGW on Windows
@@ -464,7 +466,7 @@ jobs:
             echo
             echo "The shell is cgo-free and bundles SDL. Container/scratch workspaces open in the"
             echo "embedded webview child (\`kube-workspaces-web\`) that ships inside each archive;"
-            echo "on Linux that child needs WebKitGTK 2.4 (\`libwebkit2gtk-4.0\`). macOS and Windows"
+            echo "on Linux that child needs WebKitGTK 4.1 (\`libwebkit2gtk-4.1\`). macOS and Windows"
             echo "use their bundled engines (WebKit, WebView2)."
             echo
             echo "## Getting started"

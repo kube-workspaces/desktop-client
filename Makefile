@@ -103,8 +103,8 @@ build-windows-cgo: ## Cross-build a Windows amd64 binary WITH cgo into ./kw-cgo.
 # build-all above stays CGO_ENABLED=0; the child gets built per-OS there (CI
 # runners on every target) rather than cross-compiled from one host.
 build-web: ## Build the Linux embedded-webview child into bin/kube-workspaces-web
-	@command -v pkg-config >/dev/null 2>&1 || { echo "error: pkg-config not found (apt: pkg-config, libwebkit2gtk-4.0-dev, libgtk-3-dev)" >&2; exit 1; }
-	@pkg-config --exists 'webkit2gtk-4.0 gtk+-3.0' || { echo "error: webkit2gtk-4.0/gtk+-3.0 not found (apt: libwebkit2gtk-4.0-dev libgtk-3-dev)" >&2; exit 1; }
+	@command -v pkg-config >/dev/null 2>&1 || { echo "error: pkg-config not found (apt: pkg-config, libwebkit2gtk-4.1-dev, libgtk-3-dev)" >&2; exit 1; }
+	@pkg-config --exists 'webkit2gtk-4.1 gtk+-3.0' || { echo "error: webkit2gtk-4.1/gtk+-3.0 not found (apt: libwebkit2gtk-4.1-dev libgtk-3-dev)" >&2; exit 1; }
 	@mkdir -p $(BIN_DIR)
 	@echo "CGO_ENABLED=1 go build -trimpath -ldflags \"$(LDFLAGS)\" -o $(BIN_DIR)/kube-workspaces-web ./cmd/kube-workspaces-web"
 	CGO_ENABLED=1 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/kube-workspaces-web ./cmd/kube-workspaces-web

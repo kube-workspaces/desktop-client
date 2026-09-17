@@ -20,8 +20,9 @@ jobs:
           go-version-file: go.mod
 
       # Linux build is cgo-free (web_nocgo.go), which is what the release
-      # archives ship: webview_go wants webkit2gtk-4.0, and the current runner
-      # image only packages 4.1. With cgo on, golangci-lint aborts on the
+      # archives ship; the webview's cgo stack (cgo on internal/web via the
+      # third_party/webview_go fork) belongs to the kube-workspaces-web child,
+      # not to the shell. With cgo on here, golangci-lint aborts on the
       # webview import and never reports the issues it is here to find.
       #
       # NOTE: golangci-lint refuses to load a config when the Go version it was
