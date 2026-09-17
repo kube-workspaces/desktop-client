@@ -22,9 +22,7 @@ import (
 // fakeVideoDec implements VideoDecoder without native libraries. The payload
 // encodes [start code][w][h] first so the decoder can reconstruct the geometry
 // the session checks against the wire header; marker lands in pixel (0,0).
-type fakeVideoDec struct {
-	mu sync.Mutex
-}
+type fakeVideoDec struct{}
 
 func (f *fakeVideoDec) Decode(p []byte) (*image.RGBA, error) {
 	if len(p) < 9 {
@@ -72,11 +70,9 @@ func serverOpus(opcode byte) []byte {
 
 // scriptedPeer is a test WebSocket server: server-side writes are driven by the
 // test (guarded by mu) and exactly one goroutine (the handler) reads client
-// text into fromClient in wire order. p.client is the peer the Session dials
-// into; p.server is the server-side socket the test writes on.
+// text into fromClient in wire order.
 type scriptedPeer struct {
 	server     *websocket.Conn
-	client     *websocket.Conn
 	fromClient chan string
 	mu         sync.Mutex
 }
@@ -159,16 +155,6 @@ func (p *scriptedPeer) read(t *testing.T, prefix string) string {
 		case <-deadline:
 			t.Fatalf("read: timeout waiting for %q", prefix)
 		}
-	}
-}
-
-func (p *scriptedPeer) maybe(t *testing.T, d time.Duration) string {
-	t.Helper()
-	select {
-	case msg := <-p.fromClient:
-		return msg
-	case <-time.After(d):
-		return ""
 	}
 }
 

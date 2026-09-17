@@ -19,6 +19,15 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # internal/web is cgo via github.com/webview/webview_go, which needs
+      # gtk+-3.0 + webkit2gtk-4.0 pkg-config and headers to typecheck. Without
+      # them golangci-lint aborts on the webview import and never reports the
+      # issues it is actually here to find.
+      - name: Install webview build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.0-dev
+
       # NOTE: golangci-lint refuses to load a config when the Go version it was
       # built with is older than the module's target version. go.mod targets
       # 1.26.0, so the controller repo's v2.1.6 pin (built with go1.24) will not

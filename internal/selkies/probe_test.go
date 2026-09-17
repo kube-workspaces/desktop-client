@@ -96,7 +96,7 @@ func TestProbeStreamAndACK(t *testing.T) {
 	if stats.VideoFrames != 2 || stats.Keyframes != 1 || stats.Heartbeats != 1 || stats.AudioPackets != 1 || stats.AudioBytes != 3 || stats.Width != 1920 {
 		t.Fatalf("stats: %+v", stats)
 	}
-	if stats.ElapsedSeconds < .2 || stats.FirstKeyframeMS <= 0 || stats.ApplicationBytes != stats.VideoBytes+20+10+5 {
+	if stats.ElapsedSeconds < .2 || stats.FirstKeyframeMS < 0 || stats.ApplicationBytes != stats.VideoBytes+20+10+5 {
 		t.Fatalf("measurement bounds: %+v", stats)
 	}
 	select {

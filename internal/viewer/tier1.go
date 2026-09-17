@@ -676,7 +676,7 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 	}
 
 	overlay := Overlay{}
-	draw := w.present
+	var draw Rect
 	if frame != nil {
 		fw, fh := frame.Rect.Dx(), frame.Rect.Dy()
 		if fw != w.texW || fh != w.texH {

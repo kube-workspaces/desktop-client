@@ -33,6 +33,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"sync/atomic"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
@@ -187,6 +188,7 @@ type App struct {
 	cancelPending context.CancelFunc
 	results       chan func()
 	done          chan struct{}
+	inflight      atomic.Int64
 	dirty         bool
 	quit          bool
 	refreshing    bool
@@ -542,8 +544,13 @@ func (a *App) drainResults() {
 // Returning a closure rather than a value is what keeps this package free of
 // locks: everything that touches the model runs on the loop's goroutine, and
 // the only thing crossing the boundary is a function nobody else will call.
+// inflight counts pieces of work that have been started but whose result the
+// loop has not consumed yet; a test that settles can use it to wait for a
+// save to land before asserting on the store.
 func (a *App) background(fn func() func()) {
+	a.inflight.Add(1)
 	go func() {
+		defer a.inflight.Add(-1)
 		apply := fn()
 		if apply == nil {
 			return

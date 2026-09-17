@@ -632,7 +632,7 @@ func (r *rig) step() {
 func (r *rig) settle() {
 	for i := 0; i < 200; i++ {
 		r.step()
-		if !r.app.m.Busy && len(r.app.results) == 0 && !r.app.refreshing && r.app.cancelPending == nil {
+		if !r.app.m.Busy && len(r.app.results) == 0 && !r.app.refreshing && r.app.cancelPending == nil && r.app.inflight.Load() == 0 {
 			// One more, so the frame that applies the last result is drawn.
 			r.step()
 			return

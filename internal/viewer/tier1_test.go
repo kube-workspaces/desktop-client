@@ -86,12 +86,6 @@ func (r *recordInput) resetCount() int {
 	return r.resets
 }
 
-func (r *recordInput) clearCalls() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.keys, r.pointer, r.wheels, r.resizes = nil, nil, nil, nil
-}
-
 // --- helpers ----------------------------------------------------------------
 
 func waitForBool(t *testing.T, d time.Duration, fn func() bool) {
