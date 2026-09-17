@@ -53,6 +53,14 @@ func (q *MediaFrames) take() (*image.RGBA, []byte) {
 	return frame, pcm
 }
 
+// pending reports whether a frame or PCM is waiting to be drained, which a
+// render loop uses to decide whether it may block in an event wait.
+func (q *MediaFrames) pending() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.frame != nil || len(q.pcm) > 0
+}
+
 // MediaPresentationStats counts actual backend presentation calls and queue
 // drops; it does not assert physical-display fps, audible sync or underruns.
 type MediaPresentationStats struct {

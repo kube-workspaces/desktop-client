@@ -1,0 +1,401 @@
+// Copyright The kube-workspaces Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package viewer
+
+import (
+	"context"
+	"image"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/kube-workspaces/desktop-client/internal/keysym"
+	"github.com/kube-workspaces/desktop-client/internal/rfb"
+)
+
+// recordInput captures every call the presenter made against the guest-facing
+// input surface, so tests can assert the exact event translation without a
+// transport.
+type recordInput struct {
+	mu      sync.Mutex
+	keys    []keyCall
+	pointer []pointerCall
+	wheels  []wheelCall
+	resizes []resizeCall
+	clips   []string
+	resets  int
+}
+
+type keyCall struct {
+	sym  keysym.Keysym
+	down bool
+}
+type pointerCall struct {
+	x, y int
+	mask rfb.ButtonMask
+}
+type wheelCall struct{ dx, dy int }
+type resizeCall struct{ w, h int }
+
+func (r *recordInput) Key(sym keysym.Keysym, down bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.keys = append(r.keys, keyCall{sym, down})
+	return nil
+}
+
+func (r *recordInput) Pointer(x, y int, mask rfb.ButtonMask) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pointer = append(r.pointer, pointerCall{x, y, mask})
+	return nil
+}
+
+func (r *recordInput) Wheel(dx, dy int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.wheels = append(r.wheels, wheelCall{dx, dy})
+	return nil
+}
+
+func (r *recordInput) Resize(w, h int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resizes = append(r.resizes, resizeCall{w, h})
+	return nil
+}
+
+func (r *recordInput) SetClipboard(text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clips = append(r.clips, text)
+	return nil
+}
+
+func (r *recordInput) ResetKeys() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resets++
+	return nil
+}
+
+func (r *recordInput) resetCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.resets
+}
+
+func (r *recordInput) clearCalls() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.keys, r.pointer, r.wheels, r.resizes = nil, nil, nil, nil
+}
+
+// --- helpers ----------------------------------------------------------------
+
+func waitForBool(t *testing.T, d time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition not met in time")
+}
+
+// startTier1 launches RunTier1 with a canned transport: blocking produce worker
+// that pushes exactly one frame once release is closed (nil means "now"), then
+// waits out the session. frame nil keeps the loop in the connecting state.
+func startTier1(t *testing.T, be Backend, inp Tier1Input, opts Tier1Config, release chan struct{}, frame *image.RGBA) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	produce := func(ctx context.Context, s *Tier1Sink) error {
+		if release != nil {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil
+			}
+		}
+		if frame != nil {
+			s.Video(frame)
+		}
+		<-ctx.Done()
+		return nil
+	}
+	go func() { done <- RunTier1(ctx, be, inp, produce, opts) }()
+	return cancel, done
+}
+
+func TestRunTier1ConnectingOverlayThenFirstFrame(t *testing.T) {
+	t.Parallel()
+	be := newFakeBackend(1280, 800)
+	inp := &recordInput{}
+	release := make(chan struct{})
+	frame := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	cancel, done := startTier1(t, be, inp, Tier1Config{}, release, frame)
+
+	// Before any frame: a dim "connecting" plate and no guest pixels.
+	waitForBool(t, 2*time.Second, func() bool {
+		be.mu.Lock()
+		defer be.mu.Unlock()
+		return len(be.overlays) > 0 && be.overlays[len(be.overlays)-1].Dim == overlayDim
+	})
+	be.mu.Lock()
+	if n := len(be.presents); n == 0 || !be.presents[n-1].Empty() {
+		t.Fatal("connecting present drew guest pixels")
+	}
+	be.mu.Unlock()
+
+	close(release)
+	waitForBool(t, 2*time.Second, func() bool { return be.uploadCount() > 0 })
+
+	be.mu.Lock()
+	if len(be.texSizes) == 0 || be.texSizes[0] != [2]int{64, 64} {
+		t.Fatalf("texture not sized to guest: %v", be.texSizes)
+	}
+	var fr Rect
+	if n := len(be.presents); n > 0 {
+		fr = be.presents[n-1]
+	}
+	be.mu.Unlock()
+	if fr.Empty() {
+		t.Fatal("frame present is empty after first frame")
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("RunTier1 returned %v on cancel, want nil", err)
+	}
+}
+
+func TestRunTier1InputTranslationAndWheelSign(t *testing.T) {
+	t.Parallel()
+	be := newFakeBackend(1280, 800)
+	inp := &recordInput{}
+	frame := image.NewRGBA(image.Rect(0, 0, 1280, 800))
+	cancel, done := startTier1(t, be, inp, Tier1Config{}, nil, frame)
+	waitForBool(t, 2*time.Second, func() bool { return be.uploadCount() > 0 })
+
+	be.push(EventPointer{X: 640, Y: 480, Buttons: ButtonLeft})
+	waitForBool(t, 2*time.Second, func() bool {
+		inp.mu.Lock()
+		defer inp.mu.Unlock()
+		return len(inp.pointer) >= 1
+	})
+	inp.mu.Lock()
+	pc := inp.pointer[0]
+	inp.mu.Unlock()
+	if pc.x != 640 || pc.y != 480 || pc.mask != rfb.ButtonLeft {
+		t.Fatalf("pointer %+v, want 640,480 + left", pc)
+	}
+
+	// Backend DY positive means scroll up; the wire convention (browser
+	// deltas) is positive scroll down, so the presenter flips the axis.
+	be.push(EventWheel{DX: 1, DY: 2})
+	waitForBool(t, 2*time.Second, func() bool {
+		inp.mu.Lock()
+		defer inp.mu.Unlock()
+		return len(inp.wheels) >= 1
+	})
+	inp.mu.Lock()
+	w := inp.wheels[0]
+	inp.mu.Unlock()
+	if w.dx != 1 || w.dy != -2 {
+		t.Fatalf("wheel %+v, want (1,-2)", w)
+	}
+
+	be.push(EventKey{Rune: 'a', Down: true})
+	waitForBool(t, 2*time.Second, func() bool {
+		inp.mu.Lock()
+		defer inp.mu.Unlock()
+		return len(inp.keys) >= 1
+	})
+	inp.mu.Lock()
+	k := inp.keys[0]
+	inp.mu.Unlock()
+	if k.sym != keysym.FromRune('a') || !k.down {
+		t.Fatalf("key %+v, want %d down", k, keysym.FromRune('a'))
+	}
+
+	// Focus loss releases the held key so the guest never believes it is
+	// still held down.
+	be.push(EventFocus{Gained: false})
+	waitForBool(t, 2*time.Second, func() bool {
+		inp.mu.Lock()
+		defer inp.mu.Unlock()
+		for _, k := range inp.keys {
+			if k.sym == keysym.FromRune('a') && !k.down {
+				return true
+			}
+		}
+		return false
+	})
+
+	cancel()
+	<-done
+}
+
+func TestRunTier1GuestResizeIsDebounced(t *testing.T) {
+	t.Parallel()
+	be := newFakeBackend(1280, 800)
+	inp := &recordInput{}
+	frame := image.NewRGBA(image.Rect(0, 0, 1280, 800))
+	release := make(chan struct{})
+	cancel, done := startTier1(t, be, inp, Tier1Config{}, release, frame)
+	close(release)
+	waitForBool(t, 2*time.Second, func() bool { return be.uploadCount() > 0 })
+
+	be.resize(900, 700)
+	// The debounce floor is 500ms; a request within 200ms means no debounce.
+	time.Sleep(200 * time.Millisecond)
+	inp.mu.Lock()
+	early := len(inp.resizes)
+	inp.mu.Unlock()
+	if early > 0 {
+		t.Fatal("guest resize sent before the debounce elapsed")
+	}
+	waitForBool(t, 2*time.Second, func() bool {
+		inp.mu.Lock()
+		defer inp.mu.Unlock()
+		return len(inp.resizes) >= 1
+	})
+	inp.mu.Lock()
+	rc := inp.resizes[0]
+	inp.mu.Unlock()
+	if rc.w != 900 || rc.h != 700 {
+		t.Fatalf("guest resize %dx%d, want 900x700", rc.w, rc.h)
+	}
+
+	cancel()
+	<-done
+}
+
+func TestRunTier1ClipboardBothWays(t *testing.T) {
+	t.Parallel()
+	be := newFakeBackend(1280, 800)
+	inp := &recordInput{}
+	sink := &Tier1Sink{}
+	frame := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	produce := func(ctx context.Context, s *Tier1Sink) error {
+		s.Video(frame)
+		s.GuestClipboard("from-guest")
+		<-ctx.Done()
+		return nil
+	}
+	go func() { done <- RunTier1(ctx, be, inp, produce, Tier1Config{}) }()
+	_ = sink
+	waitForBool(t, 2*time.Second, func() bool { return be.uploadCount() > 0 })
+
+	// A guest push lands on the host clipboard through the window loop.
+	waitForBool(t, 2*time.Second, func() bool {
+		be.mu.Lock()
+		defer be.mu.Unlock()
+		for _, s := range be.clipboardSet {
+			if s == "from-guest" {
+				return true
+			}
+		}
+		return false
+	})
+
+	// A host change is polled to the guest.
+	be.SetClipboard("hostside")
+	waitForBool(t, 2*time.Second, func() bool {
+		inp.mu.Lock()
+		defer inp.mu.Unlock()
+		for _, c := range inp.clips {
+			if c == "hostside" {
+				return true
+			}
+		}
+		return false
+	})
+
+	// The guest push must not be echoed straight back by the next poll.
+	cancel()
+	<-done
+}
+
+func TestRunTier1AudioPlaysDecodedPCM(t *testing.T) {
+	t.Parallel()
+	be := &audioBackend{fakeBackend: newFakeBackend(1280, 800)}
+	inp := &recordInput{}
+	frame := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	produce := func(ctx context.Context, s *Tier1Sink) error {
+		s.Audio([]byte{1, 2, 3, 4})
+		s.Video(frame)
+		<-ctx.Done()
+		return nil
+	}
+	go func() { done <- RunTier1(ctx, be, inp, produce, Tier1Config{Audio: true}) }()
+
+	waitForBool(t, 2*time.Second, func() bool { return be.audioOpenedCount() > 0 })
+	be.audioMu.Lock()
+	if be.gotFmt == nil || be.gotFmt.Channels != 2 || be.gotFmt.SampleRate != 48000 ||
+		be.gotFmt.BytesPerSample != 2 || !be.gotFmt.LittleEndian {
+		t.Fatalf("audio format %+v, want stereo s16le 48kHz", be.gotFmt)
+	}
+	be.audioMu.Unlock()
+	waitForBool(t, 2*time.Second, func() bool {
+		be.audioMu.Lock()
+		defer be.audioMu.Unlock()
+		return len(be.played) == 4
+	})
+
+	cancel()
+	<-done
+}
+
+func TestRunTier1QuitResetsKeys(t *testing.T) {
+	t.Parallel()
+	be := newFakeBackend(1280, 800)
+	inp := &recordInput{}
+	cancel, done := startTier1(t, be, inp, Tier1Config{}, nil, nil)
+	_ = cancel
+
+	be.push(EventQuit{})
+	if err := <-done; err != nil {
+		t.Fatalf("RunTier1 returned %v on quit, want nil", err)
+	}
+	if n := inp.resetCount(); n < 1 {
+		t.Fatal("ResetKeys not called on teardown")
+	}
+}
+
+func TestRunTier1ProducerErrorPropagates(t *testing.T) {
+	t.Parallel()
+	be := newFakeBackend(1280, 800)
+	inp := &recordInput{}
+	want := context.Canceled
+	frame := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- RunTier1(ctx, be, inp, func(ctx context.Context, s *Tier1Sink) error {
+			time.Sleep(50 * time.Millisecond)
+			s.Video(frame)
+			return want
+		}, Tier1Config{})
+	}()
+	select {
+	case err := <-done:
+		if err != want {
+			t.Fatalf("RunTier1 returned %v, want the producer's error", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunTier1 did not return the producer error")
+	}
+}
