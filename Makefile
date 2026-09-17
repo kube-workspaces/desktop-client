@@ -31,6 +31,14 @@ SHORTVER := $(VERSION:v%=%)
 # the two changes only work as a pair, so do not apply one without the other.
 WINDOWS_LDFLAGS ?= $(LDFLAGS) -H=windowsgui
 
+# Cross-compilers for the cgo-enabled Windows build (Track B webview). Only
+# build-windows-cgo uses them; the tree stays CGO_ENABLED=0 everywhere else.
+# webview_go compiles a C++ shim, and Go injects -mthreads into every Windows
+# cgo compile, so both CC and CXX must be the Mingw-w64 pair (Debian:
+# gcc-mingw-w64-x86-64 + g++-mingw-w64-x86-64).
+CGO_CC ?= x86_64-w64-mingw32-gcc
+CGO_CXX ?= $(CGO_CC:%-gcc=%-g++)
+
 # Windows PE resource objects. go-winres is a pinned build-time tool invoked
 # through `go run @version` so it never appears in go.mod. It writes the
 # .syso files into the package directory, where the Go linker automatically
@@ -47,7 +55,7 @@ WINRES ?= go run github.com/tc-hib/go-winres@v0.3.3
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
-.PHONY: help build build-windows run test vet lint fmt tidy cover icons winres clean build-all
+.PHONY: help build build-windows build-windows-cgo run test vet lint fmt tidy cover icons winres clean build-all
 
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -67,6 +75,21 @@ build-windows: ## Cross-build a Windows amd64 binary into ./kw.exe for testing o
 	$(WINRES) make --in winres.json --out cmd/kube-workspaces/rsrc --arch=amd64,arm64 --product-version=git-tag --file-version=git-tag
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
 		go build -trimpath -ldflags "$(WINDOWS_LDFLAGS)" -o kw.exe $(CMD)
+
+build-windows-cgo: ## Cross-build a Windows amd64 binary WITH cgo into ./kw-cgo.exe (Track B webview/WebView2)
+	@# Needs the Mingw-w64 cross toolchain (Debian/Ubuntu:
+	@#     apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+	@# ). CGO_ENABLED=1 compiles internal/web's webview_go backend (C++ shim
+	@# via $(CGO_CXX); Go adds -mthreads, which the native g++ knows nothing
+	@# about), so the `web` subcommand can open container workspaces in the
+	@# embedded webview on the Windows host (real-display check 29).
+	@# build-windows above stays CGO_ENABLED=0 to match the shipped six-target
+	@# artifacts.
+	@command -v $(CGO_CC) >/dev/null 2>&1 || { echo "error: $(CGO_CC) not found (apt: gcc-mingw-w64-x86-64)" >&2; exit 1; }
+	@command -v $(CGO_CXX) >/dev/null 2>&1 || { echo "error: $(CGO_CXX) not found (apt: g++-mingw-w64-x86-64)" >&2; exit 1; }
+	$(WINRES) make --in winres.json --out cmd/kube-workspaces/rsrc --arch=amd64,arm64 --product-version=git-tag --file-version=git-tag
+	CC=$(CGO_CC) CXX=$(CGO_CXX) CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
+		go build -trimpath -ldflags "$(WINDOWS_LDFLAGS)" -o kw-cgo.exe $(CMD)
 
 winres: ## Regenerate the Windows .syso resources (icon + version info) for cmd/kube-workspaces
 	$(WINRES) make --in winres.json --out cmd/kube-workspaces/rsrc --arch=amd64,arm64 --product-version=git-tag --file-version=git-tag

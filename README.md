@@ -62,6 +62,7 @@ Requires Go 1.26+. No code generation, no container image, no system packages.
 make build          # -> bin/kube-workspaces
 make icons          # regenerate the icon artwork from assets/icon.svg
 make build-all      # cross-build all six targets into dist/
+make build-windows-cgo  # cgo-enabled Windows amd64 into ./kw-cgo.exe (embedded webview, needs mingw-w64)
 make test           # go test -race ./...
 make lint           # golangci-lint, skipped if not installed
 make help           # all targets
