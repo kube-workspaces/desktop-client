@@ -332,11 +332,17 @@ func TestRunConnectsAndRenders(t *testing.T) {
 		t.Fatalf("title = %q", be.readTitle())
 	}
 
-	// The initial dial already announced the default grid.
-	ph := conn.readPhrases()
-	if len(ph) != 1 || ph[0] != `{"type":"resize","cols":100,"rows":30}` {
-		t.Fatalf("initial resize = %q", ph)
-	}
+	// The initial dial announces the default grid. The phrase lands on the
+	// session goroutine just after the dial returns its connection, so poll
+	// for it rather than assuming the write beat the goroutine switch.
+	waitUntil(t, 2*time.Second, func() bool {
+		for _, p := range conn.readPhrases() {
+			if p == `{"type":"resize","cols":100,"rows":30}` {
+				return true
+			}
+		}
+		return false
+	}, "initial grid resize not announced")
 
 	// Shell output flows into the texture.
 	conn.pushShell("hi\n")

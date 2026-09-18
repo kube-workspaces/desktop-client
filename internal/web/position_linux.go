@@ -27,16 +27,16 @@ func centerOnLaunchDisplay(win unsafe.Pointer, b launchBounds) {
 	if win == nil {
 		return
 	}
-	gw := C.GTK_WINDOW(win)
-	scale := C.gtk_widget_get_scale_factor((*C.GtkWidget)(unsafe.Pointer(gw)))
+	widget := (*C.GtkWidget)(unsafe.Pointer(win))
+	scale := C.gtk_widget_get_scale_factor(widget)
 	if scale <= 0 {
 		scale = 1
 	}
 	var w, h C.gint
-	C.gtk_window_get_size(gw, &w, &h)
+	C.gtk_window_get_size((*C.GtkWindow)(unsafe.Pointer(widget)), &w, &h)
 	if w <= 0 || h <= 0 {
 		return
 	}
 	x, y := centeredPosition(b, int(w)*int(scale), int(h)*int(scale))
-	C.gtk_window_move(gw, C.gint(x)/scale, C.gint(y)/scale)
+	C.gtk_window_move((*C.GtkWindow)(unsafe.Pointer(widget)), C.gint(x)/scale, C.gint(y)/scale)
 }

@@ -4,24 +4,9 @@
 package web
 
 import (
-	"os"
 	"strconv"
 	"strings"
 )
-
-// launchDisplayEnv is the environment variable the shell sets on the spawned
-// web child with the usable bounds, "x,y,w,h" in physical screen pixels, of the
-// display the shell's own window is on. When present and well-formed the webview
-// opens centred on that display instead of the primary one — the same
-// monitor-placement the shell gives its own and its session windows. Its value
-// (the string in the shell's spawnWeb) is the only thing sent across the
-// boundary, so the child, which links the browser engine via cgo and no SDL,
-// does not need to ask the window system which display to choose.
-//
-// The constant lives here too so a standalone shell binary (which does not
-// import this package) and the web child it spawns stay in agreement; the
-// shell's copy in internal/shell/actions.go must stay byte-identical.
-const launchDisplayEnv = "KW_WEB_LAUNCH_DISPLAY"
 
 // launchBounds is the usable area of a display, in physical screen pixels,
 // that a window should be placed on. X and Y may be negative (a monitor left
@@ -58,11 +43,6 @@ func parseLaunchBounds(raw string) (b launchBounds, ok bool) {
 		return launchBounds{}, false
 	}
 	return b, true
-}
-
-// launchBoundsFromEnv reads the shell's [launchDisplayEnv] variable.
-func launchBoundsFromEnv() (b launchBounds, ok bool) {
-	return parseLaunchBounds(os.Getenv(launchDisplayEnv))
 }
 
 // centeredPosition returns the top-left corner of a w×h window centred inside
