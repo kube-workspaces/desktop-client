@@ -119,7 +119,7 @@ func TestSpawnWebPrefersChildBinary(t *testing.T) {
 	writeArgsRecorder(t, exe, marker)
 	writeArgsRecorder(t, filepath.Join(dir, webChildName()), marker)
 
-	if err := spawnWebExe(exe, "team-profile", "team", "code"); err != nil {
+	if err := spawnWebExe(exe, "team-profile", "team", "code", ""); err != nil {
 		t.Fatalf("spawnWeb: %v", err)
 	}
 	assertArgs(t, spawnedArgs(t, marker), []string{"--profile", "team-profile", "team/code"})
@@ -139,8 +139,54 @@ func TestSpawnWebFallsBackToSubcommand(t *testing.T) {
 	exe := filepath.Join(dir, "kube-workspaces")
 	writeArgsRecorder(t, exe, marker)
 
-	if err := spawnWebExe(exe, "", "team", "code"); err != nil {
+	if err := spawnWebExe(exe, "", "team", "code", ""); err != nil {
 		t.Fatalf("spawnWeb: %v", err)
 	}
 	assertArgs(t, spawnedArgs(t, marker), []string{"web", "team/code"})
+}
+
+// TestSpawnWebForwardsLaunchDisplay checks that the launch-display bounds the
+// shell computed are handed to the child on the env var it reads, and that an
+// empty value leaves the environment untouched (so the recorder sees nothing).
+func TestSpawnWebForwardsLaunchDisplay(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("spawn tests exec /bin/sh shell scripts; verify on linux/darwin")
+	}
+
+	writeEnvRecorder := func(t *testing.T, path, marker string) {
+		t.Helper()
+		body := "#!/bin/sh\nprintf '%s\\n' \"$KW_WEB_LAUNCH_DISPLAY\" > \"" + marker + "\"\n"
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("bounds forwarded", func(t *testing.T) {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "env")
+		exe := filepath.Join(dir, "kube-workspaces")
+		writeEnvRecorder(t, exe, marker)
+		if err := spawnWebExe(exe, "", "team", "code", "-1920,0,1920,1080"); err != nil {
+			t.Fatalf("spawnWebExe: %v", err)
+		}
+		got := spawnedArgs(t, marker)
+		if len(got) != 1 || got[0] != "-1920,0,1920,1080" {
+			t.Fatalf("child saw KW_WEB_LAUNCH_DISPLAY=%q, want [\"-1920,0,1920,1080\"]", got)
+		}
+	})
+
+	t.Run("empty not forwarded", func(t *testing.T) {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "env")
+		exe := filepath.Join(dir, "kube-workspaces")
+		writeEnvRecorder(t, exe, marker)
+		if err := spawnWebExe(exe, "", "team", "code", ""); err != nil {
+			t.Fatalf("spawnWebExe: %v", err)
+		}
+		// The recorder prints an empty line for an unset variable; spawnedArgs
+		// turns that into nil, which is exactly "not set" in env terms.
+		if got := spawnedArgs(t, marker); got != nil {
+			t.Fatalf("child saw KW_WEB_LAUNCH_DISPLAY set to %q, want unset", got)
+		}
+	})
 }

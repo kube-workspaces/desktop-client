@@ -25,6 +25,9 @@ func Run(title, url string) error {
 	defer w.Destroy()
 	w.SetTitle(title)
 	w.SetSize(1280, 800, webview.HintNone)
+	if b, ok := launchBoundsFromEnv(); ok {
+		centerOnLaunchDisplay(w.Window(), b)
+	}
 	w.Navigate(url)
 	w.Run()
 	return nil

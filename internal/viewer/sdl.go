@@ -310,24 +310,51 @@ func (b *SDLBackend) setWindowIcon() {
 // the window never visibly flashes up centred on the primary screen and then
 // jumps.
 func (b *SDLBackend) centerOnLaunchDisplay() {
-	_, mx, my := sdl.GetGlobalMouseState()
-	display := sdl.GetDisplayForPoint(&sdl.Point{X: int32(mx), Y: int32(my)})
-	if display == 0 {
-		return
-	}
-	bounds, err := display.UsableBounds()
-	if err != nil || bounds == nil || bounds.W <= 0 || bounds.H <= 0 {
+	bounds, ok := LaunchDisplayBounds()
+	if !ok {
 		return
 	}
 	w, h, err := b.window.Size()
 	if err != nil || w <= 0 || h <= 0 {
 		return
 	}
-	x, y := centerInBounds(*bounds, w, h)
+	x, y := centerInBounds(sdl.Rect{X: int32(bounds.X), Y: int32(bounds.Y), W: int32(bounds.W), H: int32(bounds.H)}, w, h)
 	_ = b.window.SetPosition(x, y)
 	// Sync, as in SetSize and SetFullscreen: block until the window manager has
 	// applied the position so the first presented frame is already in it.
 	_ = b.window.Sync()
+}
+
+// LaunchDisplayBounds returns the usable bounds, in physical screen pixels, of
+// the display the pointer is on at the moment of the call, or ok=false when SDL
+// is not initialised or there are no displays. It is the same query
+// [SDLBackend.centerOnLaunchDisplay] runs, lifted so a caller with a loaded SDL
+// can answer "which monitor are we on?" for another window without owning one.
+//
+// The shell uses it to tell the embedded-webview child which monitor to open
+// on: the child links the browser engine's cgo and no SDL, so it cannot ask
+// this itself, and without the answer it opens on the primary display. The
+// shell's copy of the question is asked from its window-owning goroutine while
+// the shell window is open, and the refcount check here enforces that
+// precondition — a call after the last backend closed reports ok=false rather
+// than calling into an unloaded library.
+func LaunchDisplayBounds() (Rect, bool) {
+	sdlLifecycle.mu.Lock()
+	refs := sdlLifecycle.refs
+	sdlLifecycle.mu.Unlock()
+	if refs == 0 {
+		return Rect{}, false
+	}
+	_, mx, my := sdl.GetGlobalMouseState()
+	display := sdl.GetDisplayForPoint(&sdl.Point{X: int32(mx), Y: int32(my)})
+	if display == 0 {
+		return Rect{}, false
+	}
+	bounds, err := display.UsableBounds()
+	if err != nil || bounds == nil || bounds.W <= 0 || bounds.H <= 0 {
+		return Rect{}, false
+	}
+	return Rect{X: int(bounds.X), Y: int(bounds.Y), W: int(bounds.W), H: int(bounds.H)}, true
 }
 
 // centerInBounds returns the top-left corner of a w×h window centred inside the

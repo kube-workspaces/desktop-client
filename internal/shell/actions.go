@@ -18,6 +18,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
 // Timeouts for the shell's own requests.
@@ -690,34 +691,56 @@ func spawnWeb(profile, namespace, name string) error {
 	if err != nil {
 		return err
 	}
-	return spawnWebExe(exe, profile, namespace, name)
+	var launchDisplay string
+	if bounds, ok := viewer.LaunchDisplayBounds(); ok {
+		launchDisplay = fmt.Sprintf("%d,%d,%d,%d", bounds.X, bounds.Y, bounds.W, bounds.H)
+	}
+	return spawnWebExe(exe, profile, namespace, name, launchDisplay)
 }
 
 // spawnWebExe is spawnWeb against a caller-supplied shell path, for tests that
 // stage a pretend installation.
-func spawnWebExe(exe, profile, namespace, name string) error {
+//
+// launchDisplay is the "x,y,w,h" usable bounds, in physical screen pixels, of
+// the display the shell is on, or "" when there is nothing to forward. When
+// set it is handed to the child as the [launchDisplayEnv] variable so the
+// webview can open on the same monitor — centred, like the session windows —
+// instead of popping up on the primary display. The child's web package parses
+// it; new children honour it and old ones ignore it silently, so a shell and
+// child of different ages still work.
+func spawnWebExe(exe, profile, namespace, name, launchDisplay string) error {
 	positional := []string{namespace + "/" + name}
 	var flags []string
 	if profile != "" {
 		flags = []string{"--profile", profile}
 	}
-	if child := webChildPath(exe); child != "" {
-		cmd := exec.Command(child, append(flags, positional...)...)
-		cmd.Stderr = os.Stderr
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("start web child: %w", err)
-		}
-		go func() { _ = cmd.Wait() }()
-		return nil
+	child := webChildPath(exe)
+	var cmd *exec.Cmd
+	what := "web subcommand"
+	if child != "" {
+		cmd = exec.Command(child, append(flags, positional...)...)
+		what = "web child"
+	} else {
+		cmd = exec.Command(exe, append([]string{"web"}, append(flags, positional...)...)...)
 	}
-	cmd := exec.Command(exe, append([]string{"web"}, append(flags, positional...)...)...)
 	cmd.Stderr = os.Stderr
+	if launchDisplay != "" {
+		cmd.Env = append(os.Environ(), launchDisplayEnv+"="+launchDisplay)
+	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start web subcommand: %w", err)
+		return fmt.Errorf("start %s: %w", what, err)
 	}
 	go func() { _ = cmd.Wait() }()
 	return nil
 }
+
+// launchDisplayEnv is the environment variable the shell sets on the spawned
+// web child with the usable bounds, "x,y,w,h", of the display the shell's own
+// window is on. It is the only way the child can learn which monitor to open
+// on: the child links the browser engine (cgo) and no SDL, so it cannot ask
+// the window system itself. The child's copy of this constant in
+// internal/web/launch.go must agree.
+const launchDisplayEnv = "KW_WEB_LAUNCH_DISPLAY"
 
 // webChildPath returns the path of the standalone embedded-webview child
 // binary (kube-workspaces-web) sitting next to exe, or "" when there is none.
