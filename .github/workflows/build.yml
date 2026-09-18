@@ -484,17 +484,16 @@ jobs:
             echo "## What works"
             echo
             echo "Sign-in (browser OIDC via RFC 8252 loopback + PKCE, or local accounts),"
-            echo "workspace discovery, VM display sessions (Raw/CopyRect/RRE/Hextile/Zlib/Tight/ZRLE),"
-            echo "guest audio playback (QEMU audio extension), keyboard/mouse/scroll wheel,"
-            echo "bidirectional clipboard, guest display resize, and automatic reconnect."
+            echo "workspace discovery, VM display sessions (Raw/CopyRect/RRE/Hextile/Zlib/Tight/ZRLE"
+            echo "with adaptive quality), guest audio playback (QEMU audio extension, Opus over Tier 1),"
+            echo "keyboard/mouse/scroll wheel, bidirectional clipboard, guest display resize,"
+            echo "automatic reconnect, interactive Tier 1 sessions (in-guest Selkies agent,"
+            echo "H.264/Opus) with fallback schemes, and container/scratch workspaces opening in the"
+            echo "embedded webview child."
             echo
             echo "## What does not"
             echo
-            echo "- **No adaptive quality.** Encoding quality is fixed, not bandwidth-driven."
-            echo "- **No in-guest agent (Tier 1).** Sessions use the hypervisor console, which"
-            echo "  has no video codec — fine for desktops and text, poor for full-motion video."
-            echo "- **Container workspaces still open in a browser**, not in the client."
-            echo "- **Single session at a time per VM.** The hypervisor display is single-session"
+            echo "- **One session at a time per VM.** The hypervisor display is single-session"
             echo "  server-side; the client can open multiple windows for different VMs."
             echo "- No HiDPI scaling, no text selection in input fields, ASCII-only text."
             echo
