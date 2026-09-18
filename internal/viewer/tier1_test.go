@@ -395,6 +395,117 @@ func TestRunTier1ProducerErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestTier1NoResize(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		inp := &recordInput{}
+		w := &tier1Window{inp: inp, haveFrame: true, opts: Tier1Config{NoResize: disabled}}
+		w.opts.applyDefaults()
+		now := time.Now()
+		if err := w.handleEvent(now, EventResize{W: 1024, H: 768}); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.applyGuestResize(now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if (len(inp.resizes) == 0) != disabled {
+			t.Fatalf("NoResize=%v: guest resize calls %v", disabled, inp.resizes)
+		}
+		if w.winW != 1024 || w.winH != 768 {
+			t.Fatal("host window size was not updated")
+		}
+	}
+}
+
+func TestTier1TakeoverOnlyOnBusyEnter(t *testing.T) {
+	inp := &recordInput{}
+	sink := &Tier1Sink{}
+	calls := 0
+	w := &tier1Window{inp: inp, sink: sink, opts: Tier1Config{Takeover: func() { calls++ }}}
+	w.opts.applyDefaults()
+	for _, busy := range []bool{false, true} {
+		sink.DisplayBusy(busy)
+		before := len(inp.keys)
+		for _, e := range []EventKey{
+			{Key: keysym.KeyReturn, Down: true},
+			{Key: keysym.KeyReturn, Down: true, Repeat: true},
+			{Key: keysym.KeyReturn, Down: false},
+		} {
+			if err := w.handleKey(e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if busy && (calls != 1 || len(inp.keys) != before) {
+			t.Fatal("busy Enter must request takeover once and swallow both key edges")
+		}
+		if !busy && calls != 0 {
+			t.Fatal("takeover requested outside busy state")
+		}
+	}
+}
+
+func TestTier1DefersResizeAndClipboardUntilReady(t *testing.T) {
+	be := newFakeBackend(1280, 800)
+	if err := be.SetClipboard("copied while connecting"); err != nil {
+		t.Fatal(err)
+	}
+	inp := &recordInput{}
+	sink := &Tier1Sink{}
+	w := &tier1Window{be: be, inp: inp, sink: sink}
+	w.opts.applyDefaults()
+	now := time.Now()
+	w.scheduleGuestResize(now, 1024, 768)
+	now = now.Add(time.Second)
+	for _, recovering := range []bool{false, true} {
+		w.haveFrame = recovering
+		sink.reconnecting.Store(recovering)
+		if err := w.applyGuestResize(now); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.syncGuestClipboard(now); err != nil {
+			t.Fatal(err)
+		}
+		if !w.resizePending || w.hostClip != "" || len(inp.resizes) != 0 || len(inp.clips) != 0 {
+			t.Fatal("input consumed while transport unavailable")
+		}
+	}
+	sink.reconnecting.Store(false)
+	if err := w.applyGuestResize(now); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.syncGuestClipboard(now); err != nil {
+		t.Fatal(err)
+	}
+	if len(inp.resizes) != 1 || len(inp.clips) != 1 || inp.clips[0] != "copied while connecting" {
+		t.Fatalf("pending state not delivered: resize=%v clipboard=%v", inp.resizes, inp.clips)
+	}
+}
+
+func TestTier1CtrlAltDelShortcuts(t *testing.T) {
+	for _, key := range []keysym.Key{keysym.KeyDelete, keysym.KeyEnd} {
+		inp := &recordInput{}
+		w := &tier1Window{inp: inp}
+		w.opts.applyDefaults()
+		for _, event := range []EventKey{
+			{Key: key, Mods: keysym.ModControl | keysym.ModAlt, Down: true},
+			{Key: key, Mods: keysym.ModControl | keysym.ModAlt, Down: true, Repeat: true},
+			{Key: key, Down: false},
+		} {
+			if err := w.handleKey(event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		sequence := keysym.ChordCtrlAltDel.Sequence()
+		if len(inp.keys) != len(sequence) {
+			t.Fatalf("key %v: got %v, want one Ctrl+Alt+Del chord", key, inp.keys)
+		}
+		for i, action := range sequence {
+			if inp.keys[i] != (keyCall{action.Sym, action.Down}) {
+				t.Fatalf("key %v: incorrect chord: %v", key, inp.keys)
+			}
+		}
+	}
+}
+
 func TestTier1ReconnectKeepsFrameAndClearsGeneration(t *testing.T) {
 	be := &audioBackend{fakeBackend: newFakeBackend(100, 100)}
 	inp := &recordInput{}

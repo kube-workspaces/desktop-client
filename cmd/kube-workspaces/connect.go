@@ -116,6 +116,7 @@ func runConnect(ctx context.Context, args []string) error {
 			Fullscreen:   *fullscreen,
 			ScaleQuality: scale,
 			NoVSync:      *noVSync,
+			NoResize:     *noResize,
 			Width:        *width,
 			Height:       *height,
 			Logf: func(format string, a ...any) {

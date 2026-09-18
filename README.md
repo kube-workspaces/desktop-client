@@ -367,7 +367,13 @@ Startup is bounded by five seconds from dial to decoded video. A live drop
 keeps the window and last frame under a reconnecting overlay while trying at
 most two reconnects within ten seconds, with fresh decoders and cleared audio
 and input state. Exhaustion falls back to RFB for the remainder of the session.
-HTTP 401/403/409 and agent refusal are surfaced, never bypassed by fallback.
+HTTP 401/403, recovery-time 409 and agent refusal are surfaced, never bypassed
+by fallback. An initial 409 opens the busy-display overlay: the client polls
+once per second, and Enter explicitly requests takeover of either transport.
+Waiting for consent is outside the five-second agent startup budget. Closing
+the window cancels the wait. Takeover failures never trigger RFB fallback.
+`--no-resize` retains the guest resolution on both transports; Ctrl+Alt+End
+sends Ctrl+Alt+Del on either transport without relying on host interception.
 `connect --reconnect=false` disables live Tier 1 recovery as well as RFB retries.
 Verbose logs identify transport generations, fallback reasons and capture rate.
 
@@ -392,12 +398,12 @@ mode. Probe/screenshot behavior is unchanged. Each reconnect starts with a
 fresh controller. Throughput thresholds are pressure ceilings, not measured
 network capacity; update latency includes server wait time and is not ping RTT.
 
-Tier 0 has one sharp edge worth knowing about: the VNC bridge is
-**single-session**. If someone else (or the web UI) already holds the console,
-connecting returns HTTP 409 and there is **no takeover endpoint** for the
-display. The client treats this as "busy, not broken": it says so on screen and
-polls gently until the slot is released, rather than failing or climbing a
-backoff curve. `connect --reconnect=false` reports it and exits instead.
+The display is **single-session across both transports**. If someone else
+(including the web UI) holds it, the server returns HTTP 409. The shell and
+reconnecting CLI's RFB viewer offer the same Enter-to-take-over consent as
+Tier 1. The server revokes the shared claim and enforces fencing before a new
+owner may write input. Without consent the client polls until the slot is
+released. For Tier 0, `connect --reconnect=false` reports the conflict and exits.
 
 ## Architecture
 

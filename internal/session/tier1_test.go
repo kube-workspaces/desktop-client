@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
@@ -251,6 +252,133 @@ func TestRunTier1DialRejectedNotFallback(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNoFallback) {
 		t.Fatalf("403 must not be routed around: %v", err)
+	}
+}
+
+func TestTier1BusyDisplayRequiresConsent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	requests := make(chan struct{}, 1)
+	busy := make(chan struct{})
+	done := make(chan error, 1)
+	taken := false
+	go func() {
+		_, _, err := dialTier1Display(ctx, time.Second, &viewer.Tier1Sink{}, requests,
+			func(context.Context) (*websocket.Conn, error) {
+				if taken {
+					return nil, nil // success sentinel; this test never consumes the socket
+				}
+				select {
+				case <-busy:
+				default:
+					close(busy)
+				}
+				return nil, kwclient.ErrSessionInUse
+			}, func(context.Context) error {
+				taken = true
+				return nil
+			})
+		done <- err
+	}()
+	<-busy
+	select {
+	case err := <-done:
+		t.Fatalf("busy display ended before consent: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	requests <- struct{}{}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !taken {
+		t.Fatal("consent did not revoke the existing owner")
+	}
+}
+
+func TestRunTier1BusyConsentUsesTakeoverEndpoint(t *testing.T) {
+	busy := make(chan struct{}, 1)
+	takeovers := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/proxy/demo/vm-a/api/websockets":
+			select {
+			case busy <- struct{}{}:
+			default:
+			}
+			http.Error(w, "busy", http.StatusConflict)
+		case "/v1/workspaces/vm-a/tier1/takeover":
+			if r.Method != http.MethodPost || r.URL.Query().Get("namespace") != "demo" || r.Header.Get("Authorization") != "Bearer tok.sig" {
+				t.Error("takeover must be an authenticated, namespace-scoped POST")
+			}
+			takeovers <- struct{}{}
+			http.Error(w, "denied", http.StatusForbidden)
+		default:
+			t.Errorf("unexpected endpoint: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	be := &fakeTier1Backend{}
+	done := make(chan error, 1)
+	go func() {
+		done <- RunTier1(ctx, tier1Client(t, srv.URL), "demo", "vm-a", "", be, baseTier1())
+	}()
+	select {
+	case <-busy:
+	case <-ctx.Done():
+		t.Fatal("display was never dialled")
+	}
+	// Feed fresh Enter presses until the render loop has received the 409.
+	// The first press can precede publication of the busy overlay.
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			be.mu.Lock()
+			be.events = append(be.events, viewer.EventKey{Key: keysym.KeyReturn, Down: true}, viewer.EventKey{Key: keysym.KeyReturn})
+			be.mu.Unlock()
+		case err := <-done:
+			if !errors.Is(err, ErrNoFallback) || !errors.Is(err, kwclient.ErrForbidden) {
+				t.Fatalf("takeover rejection: %v", err)
+			}
+			if len(takeovers) != 1 {
+				t.Fatal("expected exactly one takeover request")
+			}
+			return
+		}
+	}
+}
+
+func TestTier1BusyDisplayCancellationAndTakeoverDenial(t *testing.T) {
+	for _, consent := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		requests := make(chan struct{}, 1)
+		if consent {
+			requests <- struct{}{}
+		}
+		_, _, err := dialTier1Display(ctx, time.Second, &viewer.Tier1Sink{}, requests,
+			func(context.Context) (*websocket.Conn, error) {
+				if !consent {
+					cancel()
+				}
+				return nil, kwclient.ErrSessionInUse
+			}, func(context.Context) error {
+				if !consent {
+					t.Fatal("takeover without consent")
+				}
+				return kwclient.ErrForbidden
+			})
+		cancel()
+		if consent {
+			if !errors.Is(err, ErrNoFallback) || !errors.Is(err, kwclient.ErrForbidden) {
+				t.Fatalf("takeover denial must not fall back: %v", err)
+			}
+		} else if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel: %v", err)
+		}
 	}
 }
 

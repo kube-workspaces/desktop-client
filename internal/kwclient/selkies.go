@@ -68,8 +68,8 @@ func dnsLabel(s string) bool {
 	return true
 }
 
-// DialSelkies opens the agent socket through the instance proxy. This is probe
-// groundwork only: it neither discovers capability nor claims a display slot.
+// DialSelkies opens the agent socket through the instance proxy. The proxy
+// claims the shared display slot before upgrading, returning 409 if occupied.
 func (c *Client) DialSelkies(ctx context.Context, namespace, name, agentBase string) (*websocket.Conn, error) {
 	path, err := SelkiesPath(namespace, name, agentBase)
 	if err != nil {
@@ -79,8 +79,8 @@ func (c *Client) DialSelkies(ctx context.Context, namespace, name, agentBase str
 	return conn, err
 }
 
-// Tier1Takeover force-ends the active Tier 1 transport session for the
-// workspace, if any.
+// Tier1Takeover revokes the workspace's shared display claim (Tier 0 or Tier 1).
+// Call only after explicit user consent; a new claim still waits for fencing.
 func (c *Client) Tier1Takeover(ctx context.Context, namespace, name string) error {
 	return c.doJSON(ctx, requestSpec{
 		method: http.MethodPost,

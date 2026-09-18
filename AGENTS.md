@@ -58,7 +58,9 @@ Not implemented, and must not be described otherwise:
 - **Tier 1 platform/runtime acceptance.** Automatic selection, interactive
   H.264/Opus/input/clipboard, bounded live reconnect (two attempts/ten seconds),
   same-window recovery and sticky RFB fallback are implemented in
-  `session.RunTier1`. Agent refusal and dial 401/403/409 never fall back.
+  `session.RunTier1`. Initial 409 waits in the busy-display overlay with
+  Enter-to-take-over consent; agent refusal and 401/403/recovery-time 409 never
+  fall back. Both transports honor `--no-resize` and Ctrl+Alt+End.
   Decode/display evidence is Linux/amd64 with dummy devices; five other native
   runtimes and physical A/V acceptance remain unverified. Native tests require
   `KW_NATIVE_MEDIA_TEST=1` and FFmpeg 5.1/libopus; no codec libraries are bundled.
@@ -209,10 +211,9 @@ must stay on a release built with go1.26 or newer.
 - **`/v1/workspaces/{name}/vnc` is a transparent raw-RFB relay** over binary
   WebSocket frames; message types are preserved in both directions. It is
   **single-session**: when another session holds it the API returns
-  **HTTP 409 before the WebSocket upgrade**. There is **no takeover endpoint**
-  for the display — unlike `/console/takeover` and `/ssh/takeover`, which do
-  exist for the serial and SSH bridges. A busy display is therefore classified
-  as `RetrySlow` (poll gently, indefinitely), not as a failure.
+  **HTTP 409 before the WebSocket upgrade**. `/vnc/takeover` and
+  `/tier1/takeover` revoke the shared Lease-backed display claim; only call
+  after explicit user consent. A busy display polls gently until released.
 - **Bridge failures arrive as HTTP status codes before the upgrade**, not as
   WebSocket close frames. Error handling must inspect the handshake response
   (401/403/404/409/503), not just the post-upgrade stream. Maintenance mode

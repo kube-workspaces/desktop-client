@@ -48,6 +48,8 @@ type Tier1Config struct {
 	ScaleQuality viewer.ScaleQuality
 	// NoVSync disables presentation synchronisation (default: on).
 	NoVSync bool
+	// NoResize keeps the guest resolution fixed while resizing the window.
+	NoResize bool
 	// Width and Height are the initial window size in pixels. Zero means
 	// 1280x800 until the first frame reveals the guest and the window is
 	// fitted to it.
@@ -107,25 +109,20 @@ func RunTier1(ctx context.Context, client *kwclient.Client, ns, name, agentBase 
 		return fmt.Errorf("session: Tier 1 has no window")
 	}
 
-	started := time.Now()
-	dialCtx, dialCancel := context.WithTimeout(ctx, cfg.startupTimeout())
-	conn, err := client.DialSelkies(dialCtx, ns, name, agentBase)
-	dialCancel()
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
-		if noFallbackDial(err) {
-			return fmt.Errorf("%w: %v", ErrNoFallback, err)
-		}
-		return fmt.Errorf("tier 1: dial %s/%s: %w", ns, name, err)
-	}
-	defer func() { _ = conn.Close() }()
+	requests := make(chan struct{}, 1)
 	input := &tier1Input{}
 	runErr := viewer.RunTier1(ctx, be, input, func(ctx context.Context, sink *viewer.Tier1Sink) error {
-		return runTier1Generations(ctx, conn, input, sink, cfg, started, func(ctx context.Context) (*websocket.Conn, error) {
+		dial := func(ctx context.Context) (*websocket.Conn, error) {
 			return client.DialSelkies(ctx, ns, name, agentBase)
+		}
+		conn, started, err := dialTier1Display(ctx, cfg.startupTimeout(), sink, requests, dial, func(ctx context.Context) error {
+			return client.Tier1Takeover(ctx, ns, name)
 		})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = conn.Close() }()
+		return runTier1Generations(ctx, conn, input, sink, cfg, started, dial)
 	}, viewer.Tier1Config{
 		Title:        cfg.Title,
 		Width:        cfg.Width,
@@ -133,16 +130,70 @@ func RunTier1(ctx context.Context, client *kwclient.Client, ns, name, agentBase 
 		Fullscreen:   cfg.Fullscreen,
 		ScaleQuality: cfg.ScaleQuality,
 		NoVSync:      cfg.NoVSync,
-		Audio:        cfg.Audio,
-		Logf:         cfg.logf,
+		NoResize:     cfg.NoResize,
+		Takeover: func() {
+			select {
+			case requests <- struct{}{}:
+			default:
+			}
+		},
+		Audio: cfg.Audio,
+		Logf:  cfg.logf,
 	})
-	if runErr == nil {
+	if runErr == nil || ctx.Err() != nil {
 		return nil
 	}
 	if errors.Is(runErr, selkies.ErrRefused) {
 		return fmt.Errorf("%w: %v", ErrNoFallback, runErr)
 	}
 	return runErr
+}
+
+// dialTier1Display keeps a contended display in the consent UI instead of
+// attempting a different transport. Each dial has its own first-frame budget;
+// time spent waiting for another owner is not agent establishment time.
+func dialTier1Display(ctx context.Context, budget time.Duration, sink *viewer.Tier1Sink,
+	requests <-chan struct{}, dial func(context.Context) (*websocket.Conn, error),
+	takeover func(context.Context) error) (*websocket.Conn, time.Time, error) {
+	busy := false
+	defer sink.DisplayBusy(false)
+	for {
+		started := time.Now()
+		dialCtx, cancel := context.WithTimeout(ctx, budget)
+		conn, err := dial(dialCtx)
+		cancel()
+		if err == nil {
+			return conn, started, nil
+		}
+		if ctx.Err() != nil {
+			return nil, started, ctx.Err()
+		}
+		if !errors.Is(err, kwclient.ErrSessionInUse) {
+			if busy || noFallbackDial(err) {
+				return nil, started, fmt.Errorf("%w: %w", ErrNoFallback, err)
+			}
+			return nil, started, err
+		}
+		busy = true
+		sink.DisplayBusy(true)
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, started, ctx.Err()
+		case <-timer.C:
+		case <-requests:
+			timer.Stop()
+			// Revocation is explicit and bounded. The server still enforces
+			// its fencing interval before granting the next ownership claim.
+			takeCtx, takeCancel := context.WithTimeout(ctx, budget)
+			err := takeover(takeCtx)
+			takeCancel()
+			if err != nil {
+				return nil, started, fmt.Errorf("%w: take over display: %w", ErrNoFallback, err)
+			}
+		}
+	}
 }
 
 // runTier1Generations is the sole owner of transport/decoder generations.

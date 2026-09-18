@@ -167,6 +167,18 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 		// workspace's display out until the idle timeout — and the user is
 		// about to be looking at a list with that workspace on it.
 		defer func() { _ = sess.Close() }()
+		// Match the CLI consent flow, including after Tier 1 falls back.
+		view.SetTakeoverHandler(func() error {
+			res, err := client.VNCTakeover(runCtx, ws.Namespace, ws.Name)
+			if err != nil {
+				return err
+			}
+			if !res.OK {
+				return errors.New("server declined the takeover")
+			}
+			sess.RetryNow()
+			return nil
+		})
 
 		runErr := view.Run(runCtx, sess)
 		cancel()

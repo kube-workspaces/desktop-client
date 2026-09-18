@@ -44,6 +44,11 @@ type Tier1Config struct {
 	// ResizeDebounce is the quiet period before a window resize is forwarded
 	// to the guest. Values below [DefaultResizeDebounce] are raised to it.
 	ResizeDebounce time.Duration
+	// NoResize keeps the guest resolution fixed and scales into the window.
+	NoResize bool
+	// Takeover requests ownership after explicit Enter consent on a busy
+	// display. It must return immediately; networking belongs to the producer.
+	Takeover func()
 
 	// ClipboardInterval is how often the host clipboard is sampled. Zero
 	// means [DefaultClipboardInterval]; a negative value disables
@@ -117,6 +122,7 @@ type Tier1Input interface {
 type Tier1Sink struct {
 	frames       MediaFrames
 	reconnecting atomic.Bool
+	busy         atomic.Bool
 	epoch        atomic.Uint64
 
 	clipMu       sync.Mutex
@@ -136,6 +142,13 @@ type Tier1Sink struct {
 func (s *Tier1Sink) Video(frame *image.RGBA) {
 	s.frames.Video(frame)
 	s.reconnecting.Store(false)
+	s.wakeUp()
+}
+
+// DisplayBusy shows the ownership-consent plate while the producer waits for
+// the display slot. It does not itself revoke or claim ownership.
+func (s *Tier1Sink) DisplayBusy(busy bool) {
+	s.busy.Store(busy)
 	s.wakeUp()
 }
 
@@ -365,7 +378,7 @@ func (w *tier1Window) syncGeneration() {
 		w.held = nil
 		w.buttons = 0
 		w.sentMask, w.sentAny = 0, false
-		w.resizePending = false
+		w.scheduleGuestResize(time.Now(), w.winW, w.winH)
 		w.hostClip, w.clipHint = "", false
 		// Clear any PCM already queued in the output device, not just the
 		// producer queue. All device calls remain on the window thread.
@@ -418,12 +431,13 @@ func (w *tier1Window) idleTimeout(now time.Time) time.Duration {
 		return 0
 	}
 	due := w.lastPresent.Add(forcedPresentInterval)
-	if w.opts.ClipboardInterval >= 0 {
+	ready := w.haveFrame && (w.sink == nil || !w.sink.reconnecting.Load())
+	if ready && w.opts.ClipboardInterval >= 0 {
 		if due.IsZero() || w.clipDue.Before(due) {
 			due = w.clipDue
 		}
 	}
-	if w.resizePending && w.resizeDue.Before(due) {
+	if ready && w.resizePending && w.resizeDue.Before(due) {
 		due = w.resizeDue
 	}
 	if d := due.Sub(now); d > 0 {
@@ -486,6 +500,16 @@ func (w *tier1Window) handleEvent(now time.Time, ev Event) error {
 // handleKey forwards one key event, reserving the host hotkeys.
 func (w *tier1Window) handleKey(e EventKey) error {
 	id := hotkeyID{key: e.Key, r: e.Rune}
+	if e.Down && e.Key == keysym.KeyReturn && w.sink != nil && w.sink.busy.Load() && w.opts.Takeover != nil {
+		if w.swallow == nil {
+			w.swallow = map[hotkeyID]bool{}
+		}
+		w.swallow[id] = true
+		if !e.Repeat {
+			w.opts.Takeover()
+		}
+		return nil
+	}
 	if !e.Down {
 		if w.swallow[id] {
 			delete(w.swallow, id)
@@ -524,7 +548,7 @@ func (w *tier1Window) isHotkey(e EventKey) bool {
 		return false
 	}
 	// Ctrl+Alt+Del itself is caught where the host lets it through.
-	if e.Key == keysym.KeyDelete {
+	if e.Key == keysym.KeyDelete || e.Key == keysym.KeyEnd {
 		return true
 	}
 	return e.Rune != 0 && lowerRune(e.Rune) == lowerRune(w.opts.QuitRune)
@@ -537,9 +561,10 @@ func (w *tier1Window) runHotkey(e EventKey) error {
 			return fmt.Errorf("viewer: toggle fullscreen: %w", err)
 		}
 		w.winW, w.winH = w.be.Size()
+		w.scheduleGuestResize(time.Now(), w.winW, w.winH)
 		return nil
 
-	case e.Key == keysym.KeyDelete:
+	case e.Key == keysym.KeyDelete || e.Key == keysym.KeyEnd:
 		return w.sendChord(keysym.ChordCtrlAltDel)
 
 	default:
@@ -650,6 +675,9 @@ func (w *tier1Window) releaseInput() {
 // are rounded down to even as the RFB viewer does, so the guest's EDID mode
 // allocation stays happy.
 func (w *tier1Window) scheduleGuestResize(now time.Time, width, height int) {
+	if w.opts.NoResize {
+		return
+	}
 	width, height = width&^1, height&^1
 	if width <= 0 || height <= 0 {
 		return
@@ -660,6 +688,9 @@ func (w *tier1Window) scheduleGuestResize(now time.Time, width, height int) {
 }
 
 func (w *tier1Window) applyGuestResize(now time.Time) error {
+	if !w.haveFrame || (w.sink != nil && w.sink.reconnecting.Load()) {
+		return nil
+	}
 	if !w.resizePending || now.Before(w.resizeDue) {
 		return nil
 	}
@@ -685,6 +716,11 @@ func (w *tier1Window) syncGuestClipboard(now time.Time) error {
 	}
 
 	if w.opts.ClipboardInterval < 0 {
+		return nil
+	}
+	// Do not mark clipboard text as sent while the session's input gate is
+	// closed. Otherwise a copy during startup/recovery is lost permanently.
+	if !w.haveFrame || (w.sink != nil && w.sink.reconnecting.Load()) {
 		return nil
 	}
 	if !w.clipHint && now.Before(w.clipDue) {
@@ -748,6 +784,12 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 			return err
 		}
 	}
+	if w.sink.busy.Load() {
+		var err error
+		if overlay, err = w.statusOverlay(StatusDisplayInUse); err != nil {
+			return err
+		}
+	}
 
 	if err := w.be.Present(draw, overlay); err != nil {
 		return fmt.Errorf("viewer: tier-1 present: %w", err)
@@ -784,6 +826,9 @@ func (w *tier1Window) connectingOverlay() (Overlay, error) {
 
 func (w *tier1Window) statusOverlay(status Status) (Overlay, error) {
 	lines := statusLines(status, "")
+	if status == StatusDisplayInUse && w.opts.Takeover != nil {
+		lines = append(lines, "Press Enter to take over the display")
+	}
 	key := overlayKey{text: strings.Join(lines, "\n"), w: w.winW, h: w.winH}
 	if key != w.ovKey {
 		img := renderOverlay(lines, w.winW, w.winH)
