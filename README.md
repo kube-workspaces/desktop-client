@@ -22,6 +22,55 @@ connect.
 > in each release's notes. Until then, expect warnings until the binaries gain a
 > reputation through repeated downloads.
 
+## Which binary do I need?
+
+For a normal user the answer is **one download**: the release archive for your
+OS and CPU from the [releases page](https://github.com/kube-workspaces/desktop-client/releases).
+Each archive contains the program and everything it needs beside it — there are
+no separate components to assemble, and no other "versions".
+
+The client is deliberately one process; configuration and session state live in
+that single executable. There is exactly one companion binary, described below,
+that is not a separate product but the browser engine for container workspaces,
+isolated out of the shell so the cgo-free main program never links it.
+
+| Binary | Included in | What it includes |
+|---|---|---|
+| `kube-workspaces` (`kube-workspaces.exe` on Windows) | Every archive | The whole client: graphical shell, session viewer and all CLI subcommands (`login`, `list`, `connect`, `probe`, `screenshot`, …). VM workspace sessions are fully supported — Tier 0 (RFB, works on any image) and Tier 1 (H.264/Opus) where the system libraries allow — with adaptive quality, clipboard and audio. The embedded webview is *not* inside this binary. |
+| `kube-workspaces-web` (`kube-workspaces-web.exe` on Windows) | Every archive **except** windows/arm64 | The per-OS browser engine (WebKitGTK / WebKit / WebView2) as a separate cgo child. It opens **container/scratch** workspace web UIs in a native window. Lives beside the shell (inside `Kube Workspaces.app` on macOS) so the shell finds it at run time. |
+| `Kube Workspaces.app` | macOS archives only | The macOS application bundle: `kube-workspaces` (and its web child) wrapped with the icon and `Info.plist` so macOS treats it as an app. Drag it into Applications. |
+
+### Which download has all the features?
+
+The **assembled release archives** — the downloads on the releases page and in
+CI's artifacts — include everything the client can do: the shell *and* the web
+child, so VM sessions and the in-client webview for container workspaces both
+work. Pick the archive matching your OS and processor (**linux / macos / windows**
+× **amd64 / arm64**) and run it.
+
+The single exception is **windows/arm64**: no webview toolchain exists for that
+target on the CI runners yet, so that archive ships shell-only. VM sessions work
+fully; container workspaces fall back to your system browser instead of the
+embedded webview.
+
+A **shell-only build** — `make build` output into `bin/`, or a `make build-all`
+archive before the injection step — is every feature *except* the embedded
+webview: the `web` subcommand then reports the browser engine is unavailable.
+Fine for development, but the assembled archives are the complete ones and what
+you should distribute.
+
+Two runtime requirements apply regardless of which archive you pick, and neither
+is bundled:
+
+- **Tier 1** decoding needs FFmpeg (`libavcodec.so.59`) and Opus installed for
+  your CPU architecture; without them the client falls back to Tier 0 RFB
+  instead of failing.
+- On **Linux** the embedded webview needs the **WebKitGTK 4.1** runtime
+  (`libwebkit2gtk-4.1`). macOS and Windows use engines their OS already provides.
+
+See [Supported platforms](#supported-platforms) for the runtime detail, and
+*The display model — two tiers* further down for what Tier 0 and Tier 1 each do.
+
 ## Why
 
 Workspaces are reachable in a browser today. A browser tab is a poor VDI client:
