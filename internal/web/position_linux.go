@@ -10,6 +10,7 @@ package web
 #include <gtk/gtk.h>
 */
 import "C"
+import "unsafe"
 
 // centerOnLaunchDisplay moves the freshly created GTK window so its centre
 // lands in the middle of the launch display — the monitor the shell is on,
