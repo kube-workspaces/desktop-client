@@ -6,6 +6,7 @@ package viewer
 import (
 	"context"
 	"image"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -391,5 +392,52 @@ func TestRunTier1ProducerErrorPropagates(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("RunTier1 did not return the producer error")
+	}
+}
+
+func TestTier1ReconnectKeepsFrameAndClearsGeneration(t *testing.T) {
+	be := &audioBackend{fakeBackend: newFakeBackend(100, 100)}
+	inp := &recordInput{}
+	sink := &Tier1Sink{}
+	w := &tier1Window{be: be, inp: inp, sink: sink, audio: be, winW: 100, winH: 100}
+	if err := be.Open(WindowOptions{Width: 100, Height: 100}); err != nil {
+		t.Fatal(err)
+	}
+	defer be.Close()
+	if err := be.OpenAudio(AudioFormat{Channels: 2, SampleRate: 48000, BytesPerSample: 2, LittleEndian: true}); err != nil {
+		t.Fatal(err)
+	}
+	defer be.CloseAudio()
+	sink.Video(image.NewRGBA(image.Rect(0, 0, 32, 32)))
+	if err := w.presentFrame(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	w.held = []keysym.Keysym{'a'}
+	w.sentMask, w.sentAny = rfb.ButtonLeft, true
+	sink.Audio([]byte{1, 2, 3, 4})
+	sink.GuestClipboard("old generation")
+	sink.Reconnecting()
+	w.syncGeneration()
+	if !w.haveFrame || w.texW != 32 || len(w.held) != 0 || w.sentAny || w.sentMask != 0 {
+		t.Fatal("reconnect lost texture or retained input")
+	}
+	if _, pcm := sink.frames.take(); len(pcm) != 0 {
+		t.Fatal("stale queued PCM")
+	}
+	if _, ok := sink.takeClipboard(); ok {
+		t.Fatal("stale clipboard")
+	}
+	if be.audioOpenedCount() != 2 {
+		t.Fatal("audio device queue was not reset")
+	}
+	if err := w.presentFrame(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(w.ovKey.text, "Reconnecting") {
+		t.Fatalf("missing reconnect overlay: %s", w.ovKey.text)
+	}
+	sink.Video(image.NewRGBA(image.Rect(0, 0, 32, 32)))
+	if sink.reconnecting.Load() {
+		t.Fatal("fresh video did not clear reconnect status")
 	}
 }

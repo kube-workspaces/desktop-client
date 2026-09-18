@@ -399,8 +399,9 @@ type updateRequestMsg struct {
 }
 
 type fakeServer struct {
-	t    *testing.T
-	msgs chan any
+	t         *testing.T
+	msgs      chan any
+	encodings chan []rfb.Encoding
 
 	// mu and conn let a test inject server→client traffic (the audio-ack
 	// rectangle and PCM batches, which the viewer otherwise has no way to ask
@@ -423,7 +424,7 @@ func (s *fakeServer) send(msg []byte) error {
 func startFakeServer(t *testing.T, width, height int) (net.Conn, *fakeServer) {
 	t.Helper()
 	clientSide, serverSide := net.Pipe()
-	srv := &fakeServer{t: t, msgs: make(chan any, 256), conn: serverSide}
+	srv := &fakeServer{t: t, msgs: make(chan any, 256), encodings: make(chan []rfb.Encoding, 256), conn: serverSide}
 
 	// The handshake runs concurrently with the client's: net.Pipe is
 	// unbuffered, so the server's first write does not complete until the
@@ -500,7 +501,18 @@ func (s *fakeServer) readLoop(c net.Conn) {
 			if _, err = io.ReadFull(c, buf); err != nil {
 				return
 			}
-			err = discard(c, int(binary.BigEndian.Uint16(buf[1:]))*4)
+			data := make([]byte, int(binary.BigEndian.Uint16(buf[1:]))*4)
+			if _, err = io.ReadFull(c, data); err != nil {
+				return
+			}
+			encs := make([]rfb.Encoding, len(data)/4)
+			for i := range encs {
+				encs[i] = rfb.Encoding(int32(binary.BigEndian.Uint32(data[i*4:])))
+			}
+			select {
+			case s.encodings <- encs:
+			default:
+			}
 		case 3: // FramebufferUpdateRequest
 			buf := make([]byte, 9)
 			if _, err = io.ReadFull(c, buf); err != nil {

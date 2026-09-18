@@ -118,8 +118,9 @@ var DefaultEncodings = []Encoding{
 	EncodingQEMULEDState,
 }
 
-// Stats records connection-level counters. They drive both the probe tool and,
-// later, the adaptive-quality controller.
+// Stats records connection-level counters for diagnostics. The adaptive
+// controller samples framebuffer-only bytes separately to exclude audio and
+// buffered read-ahead from its pressure measurements.
 type Stats struct {
 	BytesRead       uint64
 	Updates         uint64

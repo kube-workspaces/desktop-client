@@ -54,6 +54,26 @@ type controlReader struct {
 	ch <-chan string
 }
 
+func TestControlCloseJoinsHeartbeat(t *testing.T) {
+	ws, peer := controlPeer(t)
+	c := NewControl(ws, false)
+	if err := c.Key(keysym.Keysym('a'), true); err != nil {
+		t.Fatal(err)
+	}
+	peer.readText(t)
+	_ = c.Close()
+	_ = c.Close() // idempotent
+	if c.heartRunning {
+		t.Fatal("heartbeat survived Close")
+	}
+	if err := c.Key(keysym.Keysym('b'), true); err == nil {
+		t.Fatal("closed control accepted key")
+	}
+	if msg := peer.maybeReadText(t, 150*time.Millisecond); msg != "" {
+		t.Fatalf("write after Close: %s", msg)
+	}
+}
+
 // readText returns the next control verb, failing on timeout.
 func (r *controlReader) readText(t *testing.T) string {
 	t.Helper()

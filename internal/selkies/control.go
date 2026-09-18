@@ -6,7 +6,9 @@ package selkies
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,6 +126,10 @@ type Control struct {
 	// heartbeat bookkeeping: the kh goroutine is running exactly when
 	// heartRunning is true, restarted lazily on the next press.
 	heartRunning bool
+	closed       bool
+	stop         chan struct{}
+	workers      sync.WaitGroup
+	lastInput    time.Time
 }
 
 // NewControl returns a Control sending on conn. numLockOn seeds the guest Num
@@ -131,7 +137,21 @@ type Control struct {
 // browser reports the OS state; a desktop client normally tracks the first
 // NumLock toggle its user presses).
 func NewControl(conn *websocket.Conn, numLockOn bool) *Control {
-	return &Control{conn: conn, numlock: numLockOn}
+	return &Control{conn: conn, numlock: numLockOn, stop: make(chan struct{})}
+}
+
+// Close stops and joins held-key heartbeats without taking socket ownership.
+// Close the transport first when a write may be blocked. Further sends fail.
+func (c *Control) Close() error {
+	c.mu.Lock()
+	if !c.closed {
+		c.closed = true
+		c.held = nil
+		close(c.stop)
+	}
+	c.mu.Unlock()
+	c.workers.Wait()
+	return nil
 }
 
 // Send writes one raw control verb. It is the escape hatch for verbs the
@@ -156,6 +176,9 @@ func (c *Control) Key(sym keysym.Keysym, down bool) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return io.ErrClosedPipe
+	}
 	if sym == keysym.NumLock && down {
 		c.numlock = !c.numlock
 	}
@@ -166,6 +189,7 @@ func (c *Control) Key(sym keysym.Keysym, down bool) error {
 		}
 		if !c.heartRunning {
 			c.heartRunning = true
+			c.workers.Add(1)
 			go c.heartbeat()
 		}
 		return c.writeLocked(fmt.Sprintf("kd,%d", wire))
@@ -295,16 +319,6 @@ func (c *Control) RequestClipboard() error {
 	return c.Send("cr")
 }
 
-// Close forgets the held-key and clipboard state. It does not close conn or
-// release an ownership claim; callers own both.
-func (c *Control) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.held = c.held[:0]
-	c.transferID = 0
-	return nil
-}
-
 func (c *Control) clipboard(data []byte, mime string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -389,29 +403,33 @@ func containsSym(s []keysym.Keysym, v keysym.Keysym) bool {
 // does exactly this (_startKeyHeartbeat/_stopKeyHeartbeat); holding kh alive
 // after a release would refresh keys the guest already got a ku for.
 func (c *Control) heartbeat() {
+	defer c.workers.Done()
 	ticker := time.NewTicker(keyHeartbeatInterval)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-c.stop:
+			c.mu.Lock()
+			c.heartRunning = false
+			c.mu.Unlock()
+			return
+		case <-ticker.C:
+		}
 		c.mu.Lock()
-		var empty bool
 		var err error
-		if len(c.held) == 0 {
-			empty = true
-		} else {
+		if len(c.held) != 0 && !c.closed {
 			msg := "kh," + joinKeysyms(c.held)
 			err = c.writeLocked(msg)
 		}
+		if len(c.held) == 0 || c.closed || err != nil {
+			// Publish stopped under the same lock as Key's launch decision;
+			// a press arriving here must start a new worker.
+			c.heartRunning = false
+			c.mu.Unlock()
+			return
+		}
 		c.mu.Unlock()
-		if empty {
-			break
-		}
-		if err != nil {
-			break
-		}
 	}
-	c.mu.Lock()
-	c.heartRunning = false
-	c.mu.Unlock()
 }
 
 func joinKeysyms(s []keysym.Keysym) string {
@@ -442,8 +460,33 @@ func wireButtons(b rfb.ButtonMask) int {
 
 // writeLocked sends one text frame under the write budget. The caller holds mu.
 func (c *Control) writeLocked(text string) error {
+	if c.closed {
+		return io.ErrClosedPipe
+	}
+	for _, prefix := range []string{"kd,", "ku,", "m,", "m2,", "r,", "cw", "cb"} {
+		if strings.HasPrefix(text, prefix) {
+			c.lastInput = time.Now()
+			break
+		}
+	}
 	if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return err
 	}
 	return c.conn.WriteMessage(websocket.TextMessage, []byte(text))
+}
+
+func (c *Control) lastInputAt() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastInput
+}
+
+// SetFramerate uses the pinned input_handler.py _arg_fps control, which calls
+// on_set_fps(fps, display_id). It changes encoder cadence without restarting
+// the stream or transplanting RFB encoding controls into H.264.
+func (c *Control) SetFramerate(fps int) error {
+	if fps < 1 || fps > 240 {
+		return fmt.Errorf("selkies: framerate out of bounds: %d", fps)
+	}
+	return c.Send(fmt.Sprintf("_arg_fps,%d", fps))
 }

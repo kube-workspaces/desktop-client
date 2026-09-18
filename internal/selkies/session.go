@@ -35,6 +35,10 @@ type SessionConfig struct {
 	VideoBitrateKbps int
 	// Framerate is the requested encoding rate. Zero means 30.
 	Framerate int
+	// DisableIdleCadence keeps the requested framerate even on unchanged
+	// desktops. Otherwise idle capture drops to at most 5 fps after one second;
+	// decoded changes or user input restore the active cadence.
+	DisableIdleCadence bool
 	// StartupTimeout bounds the MODE-to-first-video-frame handshake. Zero
 	// means 10 seconds. On expiry the session fails so the caller can fall
 	// back to Tier 0.
@@ -46,6 +50,10 @@ type SessionConfig struct {
 	// path".
 	VideoDec VideoDecoder
 	AudioDec AudioDecoder
+	// Factories are evaluated lazily, after transport setup; each Run owns
+	// and closes the objects it creates. Audio is created only after video.
+	NewVideoDecoder func() VideoDecoder
+	NewAudioDecoder func() AudioDecoder
 }
 
 func (c SessionConfig) framerate() int {
@@ -183,6 +191,7 @@ func (s *Session) settings() (string, error) {
 // returns the same result.
 func (s *Session) Run(ctx context.Context) error {
 	s.runOnce.Do(func() {
+		defer func() { _ = s.ctrl.Close() }()
 		s.ran = true
 		s.runErr = s.run(ctx)
 	})
@@ -244,9 +253,10 @@ func (s *Session) run(ctx context.Context) error {
 	defer timer.Stop()
 	ackTick := time.NewTicker(keyHeartbeatInterval)
 	defer ackTick.Stop()
-	var gotMode, haveVideo, cursorVisible bool
+	var gotMode, haveVideo, haveDecodedVideo, cursorVisible bool
 	var frameID uint16
 	var frameAt time.Time
+	cadence := idleCadence{active: s.cfg.framerate(), applied: s.cfg.framerate()}
 
 	emit := func(message incoming) error {
 		if message.err != nil {
@@ -331,6 +341,10 @@ func (s *Session) run(ctx context.Context) error {
 				return fmt.Errorf("%w: decoded dimensions disagree with wire header", ErrMalformed)
 			}
 			s.sink.video(frame)
+			haveDecodedVideo = true
+			if !s.cfg.DisableIdleCadence {
+				cadence.frame(frame, time.Now())
+			}
 			if !cursorVisible {
 				cursorVisible = true
 				// The client does not render a cursor of its own yet, so keep
@@ -351,13 +365,22 @@ func (s *Session) run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
-			if !haveVideo {
+			if !haveDecodedVideo {
 				return errors.New("selkies: startup timed out waiting for H.264 video")
 			}
 			// The deadline only gates first video; later connect budget is
 			// the reconnect supervisor's.
 			timer.Stop()
 		case <-ackTick.C:
+			if haveDecodedVideo && !s.cfg.DisableIdleCadence {
+				if fps := cadence.desired(time.Now(), s.ctrl.lastInputAt()); fps != cadence.applied {
+					if err := s.ctrl.SetFramerate(fps); err != nil {
+						return fmt.Errorf("selkies: cadence write: %w", err)
+					}
+					cadence.applied = fps
+					s.cfg.logf("selkies: encoder cadence %d fps", fps)
+				}
+			}
 			if haveVideo {
 				// The server uses ACKs for both backpressure and liveness;
 				// repeat the latest ID when idle. This acknowledges receipt,
@@ -377,6 +400,12 @@ func (s *Session) run(ctx context.Context) error {
 // videoDecoder builds the session's video decoder, preferring an injected
 // override (for tests) and otherwise the native FFmpeg binding.
 func (s *Session) videoDecoder() (VideoDecoder, error) {
+	if s.cfg.NewVideoDecoder != nil {
+		if dec := s.cfg.NewVideoDecoder(); dec != nil {
+			return dec, nil
+		}
+		return nil, fmt.Errorf("%w: video factory returned nil", media.ErrUnavailable)
+	}
 	if s.cfg.VideoDec != nil {
 		return s.cfg.VideoDec, nil
 	}
@@ -386,6 +415,12 @@ func (s *Session) videoDecoder() (VideoDecoder, error) {
 // audioDecoder builds the session's audio decoder, preferring an injected
 // override (for tests) and otherwise the native Opus binding.
 func (s *Session) audioDecoder() (AudioDecoder, error) {
+	if s.cfg.NewAudioDecoder != nil {
+		if dec := s.cfg.NewAudioDecoder(); dec != nil {
+			return dec, nil
+		}
+		return nil, fmt.Errorf("%w: audio factory returned nil", media.ErrUnavailable)
+	}
 	if s.cfg.AudioDec != nil {
 		return s.cfg.AudioDec, nil
 	}

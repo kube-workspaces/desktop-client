@@ -36,6 +36,7 @@ func runShell(ctx context.Context, args []string) error {
 	profileName := fs.String("profile", "", "profile to open (defaults to the active profile)")
 	quality := fs.Int("quality", 8, "JPEG quality level 0-9 to request in a session (-1 to omit)")
 	compress := fs.Int("compress", -1, "zlib compression level 0-9 to request in a session (-1 to omit)")
+	adaptive := fs.Bool("adaptive-quality", true, "adapt RFB quality automatically (explicit --quality/--compress selects fixed mode)")
 	scaleQuality := fs.String("scale-quality", "linear", "session scaling filter: nearest, linear or pixelart")
 	interval := fs.Duration("interval", 16*time.Millisecond, "session framebuffer update request interval")
 	refresh := fs.Duration("refresh", shell.DefaultRefreshInterval, "how often to refresh the workspace list (0 to disable)")
@@ -69,6 +70,7 @@ func runShell(ctx context.Context, args []string) error {
 	}
 
 	sessionOpts := shell.SessionOptions{
+		FixedQuality:   !adaptiveQualityEnabled(fs, *adaptive),
 		Quality:        *quality,
 		Compress:       *compress,
 		UpdateInterval: *interval,

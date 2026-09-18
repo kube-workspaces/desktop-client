@@ -59,7 +59,7 @@ func DefaultQualityConfig() QualityConfig {
 		Tiers:             append([]QualityTier(nil), DefaultQualityTiers...),
 		Window:            400 * time.Millisecond,
 		MotionFraction:    0.05,
-		IdleDelay:         600 * time.Millisecond,
+		IdleDelay:         time.Second,
 		UpgradeGrace:      2 * time.Second,
 		MaxUpgradeLatency: 200 * time.Millisecond,
 		MaxDecodeFraction: 0.5,

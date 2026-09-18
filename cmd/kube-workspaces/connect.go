@@ -45,6 +45,7 @@ func runConnect(ctx context.Context, args []string) error {
 	fullscreen := fs.Bool("fullscreen", false, "start the session fullscreen")
 	quality := fs.Int("quality", 8, "JPEG quality level 0-9 to request (-1 to omit)")
 	compress := fs.Int("compress", -1, "zlib compression level 0-9 to request (-1 to omit)")
+	adaptive := fs.Bool("adaptive-quality", true, "adapt RFB quality automatically (explicit --quality/--compress selects fixed mode)")
 	scaleQuality := fs.String("scale-quality", "linear", "scaling filter: nearest, linear or pixelart")
 	interval := fs.Duration("interval", 16*time.Millisecond, "framebuffer update request interval")
 	autoReconnect := fs.Bool("reconnect", true, "reconnect automatically after a transient failure")
@@ -109,7 +110,7 @@ func runConnect(ctx context.Context, args []string) error {
 		if ws.RemoteDesktop.Path != nil {
 			agentBase = *ws.RemoteDesktop.Path
 		}
-		tier1 := session.RunTier1(ctx, client, ns, name, agentBase, viewer.NewSDLBackend(), session.Tier1Config{
+		tier1Config := session.Tier1Config{
 			Title:        ns + "/" + name,
 			Audio:        true,
 			Fullscreen:   *fullscreen,
@@ -122,7 +123,11 @@ func runConnect(ctx context.Context, args []string) error {
 					fmt.Fprintf(os.Stderr, "connect: "+format+"\n", a...)
 				}
 			},
-		})
+		}
+		if !*autoReconnect {
+			tier1Config.RecoveryBudget = -1
+		}
+		tier1 := session.RunTier1(ctx, client, ns, name, agentBase, viewer.NewSDLBackend(), tier1Config)
 		if tier1 == nil {
 			return nil
 		}
@@ -133,12 +138,13 @@ func runConnect(ctx context.Context, args []string) error {
 	}
 
 	cfg := viewer.Config{
-		Title:        ns + "/" + name,
-		Width:        *width,
-		Height:       *height,
-		Fullscreen:   *fullscreen,
-		ScaleQuality: scale,
-		NoVSync:      *noVSync,
+		AdaptiveQuality: adaptiveQualityEnabled(fs, *adaptive),
+		Title:           ns + "/" + name,
+		Width:           *width,
+		Height:          *height,
+		Fullscreen:      *fullscreen,
+		ScaleQuality:    scale,
+		NoVSync:         *noVSync,
 	}
 	if *noResize {
 		// A guest with no resize support, or a user who wants a fixed

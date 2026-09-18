@@ -9,6 +9,7 @@ import (
 	"image"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
@@ -114,7 +115,9 @@ type Tier1Input interface {
 // server clipboard pushes into. Only the producer writes it; only the render
 // loop reads it, and the two sides are synchronised inside.
 type Tier1Sink struct {
-	frames MediaFrames
+	frames       MediaFrames
+	reconnecting atomic.Bool
+	epoch        atomic.Uint64
 
 	clipMu       sync.Mutex
 	guestClip    string
@@ -132,6 +135,20 @@ type Tier1Sink struct {
 // damage rectangles).
 func (s *Tier1Sink) Video(frame *image.RGBA) {
 	s.frames.Video(frame)
+	s.reconnecting.Store(false)
+	s.wakeUp()
+}
+
+// Reconnecting preserves the displayed texture but drops queued media/input
+// state at the generation boundary. Only the producer calls this, after the
+// previous session and its decoder workers have stopped.
+func (s *Tier1Sink) Reconnecting() {
+	s.frames.take()
+	s.clipMu.Lock()
+	s.guestClip, s.hasGuestClip = "", false
+	s.clipMu.Unlock()
+	s.reconnecting.Store(true)
+	s.epoch.Add(1)
 	s.wakeUp()
 }
 
@@ -214,7 +231,7 @@ func RunTier1(ctx context.Context, be Backend, inp Tier1Input,
 	w.pinned = opts.Width > 0 && opts.Height > 0
 
 	ctx, cancel := context.WithCancel(ctx)
-	w.sink = &Tier1Sink{}
+	w.sink = &Tier1Sink{wake: be.Wake}
 	done := make(chan error, 1)
 	go func() { done <- produce(ctx, w.sink) }()
 	joined := false
@@ -235,7 +252,6 @@ func RunTier1(ctx context.Context, be Backend, inp Tier1Input,
 		}
 	}()
 
-	w.sink.wake = be.Wake
 	stopWake := context.AfterFunc(ctx, be.Wake)
 	defer stopWake()
 
@@ -276,6 +292,7 @@ func RunTier1(ctx context.Context, be Backend, inp Tier1Input,
 		default:
 		}
 
+		w.syncGeneration()
 		w.events = be.PollEvents(w.events)
 		for _, ev := range w.events {
 			if err := w.handleEvent(time.Now(), ev); err != nil {
@@ -338,6 +355,28 @@ type tier1Window struct {
 	ovStride int
 
 	lastPresent time.Time
+	epoch       uint64
+}
+
+func (w *tier1Window) syncGeneration() {
+	if epoch := w.sink.epoch.Load(); epoch != w.epoch {
+		w.epoch = epoch
+		w.mods = keysym.Tracker{}
+		w.held = nil
+		w.buttons = 0
+		w.sentMask, w.sentAny = 0, false
+		w.resizePending = false
+		w.hostClip, w.clipHint = "", false
+		// Clear any PCM already queued in the output device, not just the
+		// producer queue. All device calls remain on the window thread.
+		if w.audio != nil {
+			w.audio.CloseAudio()
+			if err := w.audio.OpenAudio(AudioFormat{Channels: 2, SampleRate: 48000, BytesPerSample: 2, LittleEndian: true}); err != nil {
+				w.opts.logf("audio disabled after reconnect: %v", err)
+				w.audio = nil
+			}
+		}
+	}
 }
 
 func (w *tier1Window) initialSize(fbW, fbH int) (int, int) {
@@ -703,6 +742,12 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 		draw = FitLetterbox(w.texW, w.texH, w.winW, w.winH)
 	}
 	w.present = draw
+	if w.sink.reconnecting.Load() {
+		var err error
+		if overlay, err = w.statusOverlay(StatusReconnecting); err != nil {
+			return err
+		}
+	}
 
 	if err := w.be.Present(draw, overlay); err != nil {
 		return fmt.Errorf("viewer: tier-1 present: %w", err)
@@ -734,7 +779,11 @@ func (w *tier1Window) fitGuest(fbW, fbH int) {
 // connectingOverlay renders the status plate shown until the first frame
 // arrives, cached per window size.
 func (w *tier1Window) connectingOverlay() (Overlay, error) {
-	lines := statusLines(StatusConnecting, "")
+	return w.statusOverlay(StatusConnecting)
+}
+
+func (w *tier1Window) statusOverlay(status Status) (Overlay, error) {
+	lines := statusLines(status, "")
 	key := overlayKey{text: strings.Join(lines, "\n"), w: w.winW, h: w.winH}
 	if key != w.ovKey {
 		img := renderOverlay(lines, w.winW, w.winH)

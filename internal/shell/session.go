@@ -72,6 +72,9 @@ func (a *App) afterSession() {
 
 // SessionOptions tunes the display sessions the shell opens.
 type SessionOptions struct {
+	// FixedQuality disables adaptive RFB tuning and keeps Quality/Compress
+	// unchanged throughout the session. The default is automatic quality.
+	FixedQuality bool
 	// Quality is the JPEG quality level 0-9 requested from the server, or -1
 	// to omit the pseudo-encoding. QEMU sends no JPEG at all without one.
 	Quality int
@@ -100,7 +103,9 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 		}
 
 		if ws.RemoteDesktop != nil && ws.RemoteDesktop.Protocol == "selkies" {
-			opts.Logf("workspace %s advertises Selkies Tier 1 transport", ws.Key())
+			if opts.Logf != nil {
+				opts.Logf("workspace %s advertises Selkies Tier 1 transport", ws.Key())
+			}
 			err := connectTier1(ctx, client, ws, opts)
 			if err == nil {
 				return nil
@@ -111,9 +116,11 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 				return err
 			}
 			// Recoverable: dial, negotiation, startup or decode failed. Fall
-			// back to Tier 0 for the rest of this connection — once we drop a
+			// back (also after bounded live recovery) for the rest of this connection — once we drop a
 			// tier we do not probe it again mid-session (plan §7.2).
-			opts.Logf("Tier 1 to %s failed (%v); falling back to Tier 0", ws.Key(), err)
+			if opts.Logf != nil {
+				opts.Logf("Tier 1 to %s failed (%v); falling back to Tier 0", ws.Key(), err)
+			}
 		}
 
 		encodings := append([]rfb.Encoding(nil), rfb.DefaultEncodings...)
@@ -125,9 +132,10 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 		}
 
 		cfg := viewer.Config{
-			Title:        ws.Key(),
-			ScaleQuality: opts.ScaleQuality,
-			Logf:         opts.Logf,
+			AdaptiveQuality: !opts.FixedQuality,
+			Title:           ws.Key(),
+			ScaleQuality:    opts.ScaleQuality,
+			Logf:            opts.Logf,
 		}
 		view := viewer.New(viewer.NewSDLBackend(), cfg)
 
@@ -181,9 +189,10 @@ func connectTier1(ctx context.Context, client *kwclient.Client, ws kwclient.Work
 	}
 	return session.RunTier1(ctx, client, ws.Namespace, ws.Name, agentBase,
 		viewer.NewSDLBackend(), session.Tier1Config{
-			Title: ws.Key(),
-			Audio: true,
-			Logf:  opts.Logf,
+			Title:        ws.Key(),
+			Audio:        true,
+			ScaleQuality: opts.ScaleQuality,
+			Logf:         opts.Logf,
 		})
 }
 

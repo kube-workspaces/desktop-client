@@ -455,18 +455,22 @@ func (r *ReconnectingSession) serve(ctx context.Context, link Link) error {
 // is [Session.RequestUpdates] bound to one connection's lifetime, and it is
 // restarted from scratch on every reconnect.
 func requestUpdates(ctx context.Context, link Link, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(updateInterval(link.Conn(), interval))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
+			if ctx.Err() != nil {
+				return
+			}
 			if err := link.RequestUpdate(true); err != nil {
 				// The read loop sees the same failure and ends the
 				// generation; there is nothing useful to report from here.
 				return
 			}
+			timer.Reset(updateInterval(link.Conn(), interval))
 		}
 	}
 }

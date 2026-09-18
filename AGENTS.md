@@ -35,6 +35,13 @@ Implemented and working:
   Inkscape, ImageMagick or go-winres.
 - **Automatic reconnect** — implemented: a capped-exponential-backoff
   supervisor (`internal/reconnect` + `internal/session`) swaps connections.
+- **Adaptive RFB quality** — graphical shell and `connect` default to the
+  per-connection controller in `internal/rfb/adaptive.go`. It uses framebuffer
+  bytes, motion, decode occupancy and request-to-update latency to retune Tight
+  quality/compression, with hysteresis and a one-shot JPEG-disabled refresh
+  after one second of low motion. Both session request loops consume its
+  active/idle cadence. Explicit `--quality`/`--compress` selects fixed mode;
+  `--adaptive-quality` can explicitly override that choice.
 - Graphical shell: instance/login/workspace-list screens.
 - **Multiple windows.** One process means one main thread. The shell and the
   session viewer each open their own SDL window on that thread, sharing the SDL
@@ -45,20 +52,16 @@ Implemented and working:
 
 Not implemented, and must not be described otherwise:
 
-- **Adaptive-quality controller.** `--quality`/`--compress` are set once at
-  connect time. `rfb.Stats` exists to feed this later; nothing drives it.
-- **Audio.** `probe --audio` advertises the QEMU audio pseudo-encoding purely to
-  detect whether the VM has a sound device. No decoder, no playback.
-- **Tier 1 live-connection recovery.** The in-guest transport (Selkies agent,
-  H.264 + Opus, via `kube-workspaces/proxy`) is wired into automatic
-  graphical-client selection via `session.RunTier1`
-  (`internal/session/tier1.go`): interactive GUI plus clipboard, with sticky
-  fallback to Tier 0 (RFB) on any establishment-time failure. Agent refusal
-  (KILL/AUTH_ERROR) and dial 401/403/409 never fall back; they surface as
-  `session.ErrNoFallback`. The native H.264/Opus decoders gate runtime tests
-  behind `KW_NATIVE_MEDIA_TEST=1`. Forward parity (live-drop bounded-reconnect
-  supervisor, in-session transport recovery) and six-target native runtime
-  validation remain open.
+- **Tier 0 audio.** `probe --audio` advertises the QEMU audio pseudo-encoding
+  purely to detect whether the VM has a sound device. No Tier 0 decoder, no
+  playback. (Tier 1 plays Opus.)
+- **Tier 1 platform/runtime acceptance.** Automatic selection, interactive
+  H.264/Opus/input/clipboard, bounded live reconnect (two attempts/ten seconds),
+  same-window recovery and sticky RFB fallback are implemented in
+  `session.RunTier1`. Agent refusal and dial 401/403/409 never fall back.
+  Decode/display evidence is Linux/amd64 with dummy devices; five other native
+  runtimes and physical A/V acceptance remain unverified. Native tests require
+  `KW_NATIVE_MEDIA_TEST=1` and FFmpeg 5.1/libopus; no codec libraries are bundled.
 - Multiple concurrent sessions; one window per session, but only one session at a time.
 - **Code signing and notarisation.** Release binaries are unsigned; macOS
   Gatekeeper and Windows SmartScreen warn today. Backburnered on budget, not
@@ -70,7 +73,7 @@ Not implemented, and must not be described otherwise:
 | Decision | Choice |
 |---|---|
 | Display, universal path | RFB over the API's `/vnc` bridge, no guest agent |
-| Display, premium path | In-guest agent (H.264 + Opus), auto-negotiated — later phase, not started |
+| Display, premium path | Selkies H.264 + Opus, capability-selected, bounded reconnect and sticky Tier 0 fallback |
 | Session window | SDL3 via `Zyko0/go-sdl3` (purego, **no cgo**) |
 | Shell UI | **SDL3, same process and same window as the session viewer**, on a hand-rolled software widget layer (`internal/ui`) |
 | SDL library | The copy bundled with the binding, unpacked at startup — never the system SDL |
@@ -126,8 +129,8 @@ is the accepted trade; it was the original argument for process separation.
 | `internal/shell/` | The graphical shell: `Model` state machine (server → login → workspaces → session), pure drawing functions, the loop, and the `API`/`Store`/`Connector` seams that let all of it be tested without a display or a network |
 | `internal/terminal/` | Integrated terminal over the `/exec` bridge (Track A): pure-Go xterm-go emulator, SDL window loop; the "Console" surface for container/scratch workspaces |
 | `internal/transport/` | Transport-agnostic `Conn` interface wrapping the RFB connection (hides RFB specifics so viewer/session code is transport-independent) |
-| `internal/selkies/` | Tier 1 wire protocol + diagnostic; optional native decode callbacks, not wired into normal GUI selection |
-| `internal/media/` | cgo-free dynamic libavcodec 59 / libavutil 57 + libopus decode; ABI-gated and bounded; used by the Tier 1 diagnostic |
+| `internal/selkies/` | Pinned Tier 1 protocol, interactive sessions/input, idle capture cadence and diagnostics |
+| `internal/media/` | cgo-free dynamic libavcodec 59 / libavutil 57 + libopus decode; ABI-gated and bounded; used by interactive Tier 1 and diagnostics |
 | `internal/cmdutil/` | Command-line plumbing shared by both binaries: `ParseFlags`, `For` (profile→client), `ResolveNamespace` |
 | `internal/webcmd/` | Body of the `web` command (shared by the shell subcommand and the web child); `internal/web` on top |
 | `internal/web/` | Embedded-webview engine for non-VM workspaces (Track B): `webview_go` behind cgo build tags; `mswebview2/EventToken.h` shim for Windows |

@@ -293,20 +293,55 @@ Two transports, chosen from the workspace's image; never a user setting.
 
 | | **Tier 0 — RFB/VNC** | **Tier 1 — in-guest agent** |
 |---|---|---|
-| Status | **implemented** — this is what the client uses today | **NOT IMPLEMENTED** (planned; no code exists) |
+| Status | **implemented** — universal display and fallback | **implemented** — selected for Selkies-capable workspaces when native decoders are available |
 | Path | the platform API's `/v1/workspaces/{name}/vnc` WebSocket bridge | [Selkies](https://github.com/selkies-project/selkies) agent in the guest, via `kube-workspaces/proxy` |
 | Needs an agent in the guest? | No — works on any image | Yes — only on images that ship it |
 | Video | Tight/JPEG, ZRLE, Hextile, CopyRect, Raw rectangles; no interframe coding | H.264 |
-| Audio | none — a QEMU PCM extension exists and `probe --audio` can detect it, but nothing plays it | Opus |
+| Audio | none — detects QEMU PCM when the guest advertises a sound device, but nothing plays it | Opus, decoded to stereo 48 kHz PCM |
 | Works when | always: pre-boot, BIOS/GRUB, login screen, dead guest network | only after the guest has booted |
 
 Tier 0 is the universal floor and is never going away — it is the out-of-band
 console. Tier 1 is the premium path and also keeps pixel traffic off the
 Kubernetes control plane, which Tier 0 unavoidably transits.
 
-An **adaptive-quality controller** that retunes the encoding by measured
-bandwidth is also **not implemented**. `--quality` and `--compress` are set once
-at connect time and stay put.
+Tier 1 uses the pinned Selkies **2.0.0rc0** WebSocket protocol. It needs FFmpeg
+**libavcodec 59 / libavutil 57** and libopus installed for the executable's
+architecture (these libraries are not bundled). Linux names are
+`libavcodec.so.59`, `libavutil.so.57`, `libopus.so.0`; macOS uses the equivalent
+`.59.dylib`, `.57.dylib`, `.0.dylib`; Windows uses `avcodec-59.dll`,
+`avutil-57.dll`, and `opus.dll` or `libopus-0.dll` in a safe DLL search directory.
+Missing/incompatible video decoders trigger RFB fallback; missing audio decode
+disables audio. Native decode/presentation has been validated on Linux amd64
+with dummy devices; other native platforms and physical A/V checks are pending.
+
+Startup is bounded by five seconds from dial to decoded video. A live drop
+keeps the window and last frame under a reconnecting overlay while trying at
+most two reconnects within ten seconds, with fresh decoders and cleared audio
+and input state. Exhaustion falls back to RFB for the remainder of the session.
+HTTP 401/403/409 and agent refusal are surfaced, never bypassed by fallback.
+`connect --reconnect=false` disables live Tier 1 recovery as well as RFB retries.
+Verbose logs identify transport generations, fallback reasons and capture rate.
+
+Static Tier 1 capture drops from 30 to at most 5 fps after one second of
+unchanged decoded pixels and no user input; motion/input restores it on the
+next 100 ms control tick. Audio uses ordered arrival/sample-clock playback
+with bounded PCM; the pinned protocol has no common A/V presentation timestamps.
+No timestamp-sync or physical-latency guarantee is inferred from dummy tests.
+
+**Adaptive quality** is enabled by default for RFB sessions opened from the
+shell or `connect`. It adjusts Tight JPEG quality (poor/fair/good: 3/6/8) and
+compression using framebuffer throughput, motion, request-to-update latency,
+and decoder occupancy. Recovery needs two seconds of continuous headroom to
+avoid rapid switching. After one second of low motion (sampled every 400 ms),
+it disables JPEG and requests one full lossless repaint; idle requests slow
+from 16 ms to 80 ms. Quality 9 alone would still be lossy on QEMU.
+
+`--adaptive-quality=false` selects fixed mode. Explicit `--quality` or
+`--compress` also selects fixed mode unless `--adaptive-quality=true` is
+explicitly supplied. `--interval` remains a minimum request interval in either
+mode. Probe/screenshot behavior is unchanged. Each reconnect starts with a
+fresh controller. Throughput thresholds are pressure ceilings, not measured
+network capacity; update latency includes server wait time and is not ping RTT.
 
 Tier 0 has one sharp edge worth knowing about: the VNC bridge is
 **single-session**. If someone else (or the web UI) already holds the console,

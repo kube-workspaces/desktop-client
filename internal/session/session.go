@@ -105,18 +105,15 @@ func (s *Session) RequestUpdates(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 16 * time.Millisecond
 	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := s.conn.RequestUpdate(true); err != nil {
-					return
-				}
-			}
-		}
-	}()
+	go requestUpdates(ctx, s, interval)
+}
+
+// The requested interval is a lower bound (e.g. --interval=100ms must not
+// become 16ms under motion). Each connection has its own controller, so a
+// reconnect starts with the active cadence instead of inheriting idle state.
+func updateInterval(conn transport.Conn, requested time.Duration) time.Duration {
+	if adaptive, ok := conn.(interface{ QualityInterval() time.Duration }); ok {
+		return max(requested, adaptive.QualityInterval())
+	}
+	return requested
 }

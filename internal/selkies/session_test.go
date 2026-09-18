@@ -357,6 +357,32 @@ func TestSessionStartupTimeoutFallsBack(t *testing.T) {
 	}
 }
 
+type bufferingVideoDecoder struct{ fakeVideoDec }
+
+func (*bufferingVideoDecoder) Decode([]byte) (*image.RGBA, error) { return nil, nil }
+
+func TestStartupRequiresDecodedFrame(t *testing.T) {
+	for _, heartbeat := range []bool{true, false} {
+		cfg := SessionConfig{StartupTimeout: 150 * time.Millisecond, VideoDec: &bufferingVideoDecoder{}}
+		s, p, _ := testSession(t, cfg, Sink{})
+		done := runSession(t, s, p)
+		p.read(t, "START_VIDEO")
+		msg := serverKeyFrame(32, 32, 1, 0)
+		if heartbeat {
+			msg = msg[:10]
+		}
+		p.sendBinary(t, msg)
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "timed out") {
+				t.Fatalf("heartbeat=%v: %v", heartbeat, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("undecoded video bypassed first-frame deadline")
+		}
+	}
+}
+
 func TestSessionBinaryBeforeMode(t *testing.T) {
 	cfg := SessionConfig{StartupTimeout: time.Second, VideoDec: &fakeVideoDec{}}
 	s, p, _ := testSession(t, cfg, Sink{})

@@ -86,6 +86,11 @@ const (
 // Config configures a [Viewer]. The zero value is usable: every field has a
 // documented default.
 type Config struct {
+	// AdaptiveQuality enables per-connection Tight tuning and a lossless idle
+	// refresh. Graphical entry points enable it by default; diagnostic callers
+	// can leave it off or supply their own rfb.Config.Quality.
+	AdaptiveQuality bool
+
 	// Title is the base window title, typically "namespace/workspace".
 	Title string
 
@@ -396,6 +401,10 @@ func (v *Viewer) AudioFormat() *rfb.AudioFormat {
 // caller can still observe the stream for diagnostics.
 func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 	cfg := base
+	if v.cfg.AdaptiveQuality && cfg.Quality == nil {
+		quality := rfb.DefaultQualityConfig()
+		cfg.Quality = &quality
+	}
 
 	prevUpdate := base.OnFramebufferUpdate
 	cfg.OnFramebufferUpdate = func(fb *rfb.Framebuffer, damage []rfb.Rect) {
