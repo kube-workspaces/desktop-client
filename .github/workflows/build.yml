@@ -410,6 +410,16 @@ jobs:
           done
           (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS)
 
+      # The generator lives in the deploy repo so all kube-workspaces
+      # repositories classify commits the same way. It is authoritative for the
+      # "Summary" preamble and the categorised commit list; the download,
+      # install and capability text below is client-specific.
+      - name: Fetch the release-notes generator
+        run: |
+          curl -fsSLo /tmp/release-notes.sh \
+            https://raw.githubusercontent.com/kube-workspaces/deploy/main/scripts/release-notes.sh
+          chmod +x /tmp/release-notes.sh
+
       # Notes are assembled here rather than left to --generate-notes alone:
       # a desktop binary needs download links and install steps, and these
       # builds are unsigned, which users must be told before macOS or Windows
@@ -481,6 +491,18 @@ jobs:
             echo "On a machine with no OS keychain, set"
             echo "\`KUBE_WORKSPACES_INSECURE_TOKEN_FILE=1\` to fall back to a 0600 file."
             echo
+          } > /tmp/release-notes.md
+
+          # Version-specific section: the same preamble and categorised
+          # "What's Changed" list the component repos publish. --skip-upgrade
+          # drops the Helm upgrade block, which does not apply to a binary.
+          from="$(git describe --tags --abbrev=0 "${VERSION}^")"
+          /tmp/release-notes.sh --repo desktop-client \
+            --from "$from" --to HEAD --version "$VERSION" --skip-upgrade \
+            > /tmp/changelog.md
+          cat /tmp/changelog.md >> /tmp/release-notes.md
+
+          {
             echo "## What works"
             echo
             echo "Sign-in (browser OIDC via RFC 8252 loopback + PKCE, or local accounts),"
@@ -501,7 +523,7 @@ jobs:
             echo
             echo "This is an early release. The UI has had limited validation on real displays,"
             echo "so expect rough edges in layout and scaling. Please report what you find."
-          } > /tmp/release-notes.md
+          } >> /tmp/release-notes.md
           cat /tmp/release-notes.md
 
       # Idempotent: a re-pushed tag (amended commit) re-triggers this job with a
