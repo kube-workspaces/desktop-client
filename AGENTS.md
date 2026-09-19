@@ -35,6 +35,12 @@ Implemented and working:
   Inkscape, ImageMagick or go-winres.
 - **Automatic reconnect** — implemented: a capped-exponential-backoff
   supervisor (`internal/reconnect` + `internal/session`) swaps connections.
+- **Shared display (multi-session)** — a running VM's footer offers **Observe**:
+  the shell joins the API's shared display as a view-only observer and
+  supervises the stream (`session.SharedDisplay`). Ctrl+Alt+C requests or
+  releases control (Enter confirms a take-over when the display is
+  controlled); a 5 s registry poll applies remote promotion/demotion by
+  re-attaching with the authoritative role, matching the browser screen.
 - **Adaptive RFB quality** — graphical shell and `connect` default to the
   per-connection controller in `internal/rfb/adaptive.go`. It uses framebuffer
   bytes, motion, decode occupancy and request-to-update latency to retune Tight
@@ -124,7 +130,7 @@ is the accepted trade; it was the original argument for process separation.
 | `internal/keysym/` | Backend-neutral key enumeration → X11 keysyms, modifier tracking and chords (Ctrl-Alt-Del). Imports no windowing library |
 | `internal/wsio/` | Adapts a `*websocket.Conn` to `io.ReadWriteCloser`, flattening message boundaries back into a byte stream |
 | `internal/config/` | Instance profiles (JSON in the user config dir) and session tokens (OS keychain, with an opt-in file fallback) |
-| `internal/session/` | Glue: workspace name → dialled bridge → RFB handshake. Also the reconnect supervisor and the retry classifier (`Classify`) |
+| `internal/session/` | Glue: workspace name → dialled bridge → RFB handshake. Also the reconnect supervisor, the shared-display supervisor (`SharedDisplay`) and the retry classifier (`Classify`) |
 | `internal/reconnect/` | Capped exponential backoff with full jitter. Stdlib only; injectable randomness so the schedule is tested exactly |
 | `internal/viewer/` | The session viewer: `Backend` interface + backend-neutral events (`backend.go`), the SDL3 implementation (`sdl.go`, the **only** file importing an SDL binding), the session loop (`viewer.go`), damage tracking, overlay and bitmap font |
 | `internal/ui/` | Software immediate-mode widget layer (labels, buttons, text inputs, lists, layout, focus ring, theme) rasterising into an `image.RGBA` |

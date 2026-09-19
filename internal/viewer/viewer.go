@@ -139,6 +139,12 @@ type Config struct {
 	// non-text keys, and the quit binding is a letter.
 	QuitRune rune
 
+	// ControlRune, when non-zero, is the shared-display control binding:
+	// pressed with Ctrl+Alt it fires the handler registered with
+	// [Viewer.SetControlHandler]. Zero disables the binding, which is the
+	// default for sessions with no control to transfer.
+	ControlRune rune
+
 	// SendCtrlAltDelKey sends Ctrl-Alt-Del to the guest when pressed with
 	// Ctrl+Alt. Zero means End.
 	SendCtrlAltDelKey keysym.Key
@@ -147,7 +153,10 @@ type Config struct {
 	// before the damage is collapsed into its bounding box. Zero means 32.
 	MaxUploadRects int
 
-	// ReadOnly prevents sending any guest-mutating messages (input, clipboard).
+	// ReadOnly prevents sending any guest-mutating messages (keyboard,
+	// pointer, wheel, clipboard, guest resize). It is the initial value;
+	// [Viewer.SetReadOnly] changes it at runtime when a shared display
+	// session's role changes.
 	ReadOnly bool
 
 	// Logf, if set, receives diagnostic messages.
@@ -199,11 +208,16 @@ func (c *Config) applyDefaults() {
 func (c *Config) Hotkeys() []string {
 	cfg := *c
 	cfg.applyDefaults()
-	return []string{
+	lines := []string{
 		fmt.Sprintf("%-16s toggle fullscreen", strings.ToUpper(cfg.FullscreenKey.String())),
 		fmt.Sprintf("%-16s send Ctrl-Alt-Del to the guest", "Ctrl+Alt+"+cfg.SendCtrlAltDelKey.String()),
-		fmt.Sprintf("%-16s disconnect", "Ctrl+Alt+"+string(cfg.QuitRune)),
 	}
+	if cfg.ControlRune != 0 {
+		lines = append(lines,
+			fmt.Sprintf("%-16s request/release control", "Ctrl+Alt+"+string(cfg.ControlRune)))
+	}
+	return append(lines,
+		fmt.Sprintf("%-16s disconnect", "Ctrl+Alt+"+string(cfg.QuitRune)))
 }
 
 // Viewer owns a window and presents a succession of [rfb.Conn] connections in
@@ -244,9 +258,19 @@ type Viewer struct {
 		status Status
 		detail string
 
+		// readOnly and title are the live forms of Config.ReadOnly and
+		// Config.Title: a shared display session changes them mid-flight when
+		// its role changes, from a goroutine the render loop does not own.
+		readOnly bool
+		title    string
+
 		// takeoverHandler is the optional action run when the user presses
 		// Enter while the display-in-use overlay is up.
 		takeoverHandler func() error
+
+		// controlHandler is the shared-display control action fired by the
+		// Ctrl+Alt+<ControlRune> binding. Nil means no such session.
+		controlHandler func()
 
 		// nextConn/nextCtx is a connection the pump has taken out and not yet
 		// handed over.
@@ -372,6 +396,8 @@ func New(be Backend, cfg Config) *Viewer {
 		cfg:     cfg,
 		swallow: make(map[hotkeyID]bool),
 	}
+	v.inbox.readOnly = cfg.ReadOnly
+	v.inbox.title = cfg.Title
 	if sink, ok := be.(AudioSink); ok {
 		v.audioSink = sink
 	}
@@ -528,6 +554,56 @@ func (v *Viewer) takeoverAction() func() error {
 	v.inbox.Lock()
 	defer v.inbox.Unlock()
 	return v.inbox.takeoverHandler
+}
+
+// SetReadOnly changes whether guest-mutating input is forwarded, for a shared
+// display session whose role changed underneath a live window. Safe from any
+// goroutine.
+func (v *Viewer) SetReadOnly(readOnly bool) {
+	v.inbox.Lock()
+	v.inbox.readOnly = readOnly
+	v.inbox.Unlock()
+}
+
+// readOnly reports whether guest-mutating input is currently suppressed.
+func (v *Viewer) readOnly() bool {
+	v.inbox.Lock()
+	defer v.inbox.Unlock()
+	return v.inbox.readOnly
+}
+
+// SetTitle changes the base window title. Safe from any goroutine; the change
+// is picked up on the next title refresh.
+func (v *Viewer) SetTitle(title string) {
+	v.inbox.Lock()
+	v.inbox.title = title
+	v.inbox.Unlock()
+	v.wake()
+}
+
+// titleBase returns the current base window title.
+func (v *Viewer) titleBase() string {
+	v.inbox.Lock()
+	defer v.inbox.Unlock()
+	return v.inbox.title
+}
+
+// SetControlHandler registers the shared-display control action fired when
+// the user presses Ctrl+Alt+[Config.ControlRune]. The handler runs on its own
+// goroutine, so it may block on network calls; it reports through the
+// viewer's own methods. Safe from any goroutine; nil disables the binding's
+// action.
+func (v *Viewer) SetControlHandler(h func()) {
+	v.inbox.Lock()
+	v.inbox.controlHandler = h
+	v.inbox.Unlock()
+}
+
+// controlAction returns the registered control action, or nil.
+func (v *Viewer) controlAction() func() {
+	v.inbox.Lock()
+	defer v.inbox.Unlock()
+	return v.inbox.controlHandler
 }
 
 // setStatusIfLive raises a status only when nothing more specific has been
@@ -1048,7 +1124,7 @@ func (v *Viewer) handleKey(e EventKey) error {
 		}
 	}
 
-	if v.conn == nil {
+	if v.readOnly() || v.conn == nil {
 		return nil
 	}
 	sym := symbolFor(e)
@@ -1094,7 +1170,13 @@ func (v *Viewer) isHotkey(e EventKey) bool {
 	if e.Key == keysym.KeyDelete {
 		return true
 	}
-	return e.Rune != 0 && lowerRune(e.Rune) == lowerRune(v.cfg.QuitRune)
+	if e.Rune == 0 {
+		return false
+	}
+	if v.cfg.ControlRune != 0 && lowerRune(e.Rune) == lowerRune(v.cfg.ControlRune) {
+		return true
+	}
+	return lowerRune(e.Rune) == lowerRune(v.cfg.QuitRune)
 }
 
 func (v *Viewer) runHotkey(e EventKey) error {
@@ -1103,7 +1185,7 @@ func (v *Viewer) runHotkey(e EventKey) error {
 		return v.toggleFullscreen()
 
 	case e.Key == v.cfg.SendCtrlAltDelKey || e.Key == keysym.KeyDelete:
-		if v.cfg.ReadOnly {
+		if v.readOnly() {
 			return nil
 		}
 		if v.conn == nil {
@@ -1111,6 +1193,12 @@ func (v *Viewer) runHotkey(e EventKey) error {
 		}
 
 		return v.sendChord(keysym.ChordCtrlAltDel)
+
+	case e.Rune != 0 && v.cfg.ControlRune != 0 && lowerRune(e.Rune) == lowerRune(v.cfg.ControlRune):
+		if h := v.controlAction(); h != nil {
+			go h()
+		}
+		return nil
 
 	default:
 		v.quit = true
@@ -1144,7 +1232,7 @@ func (v *Viewer) sendChord(c keysym.Chord) error {
 }
 
 func (v *Viewer) handlePointer(e EventPointer) error {
-	if v.cfg.ReadOnly || v.conn == nil {
+	if v.readOnly() || v.conn == nil {
 		return nil
 	}
 	srcW, srcH := v.sourceSize()
@@ -1162,7 +1250,7 @@ func (v *Viewer) handlePointer(e EventPointer) error {
 }
 
 func (v *Viewer) handleWheel(e EventWheel) error {
-	if v.cfg.ReadOnly || v.conn == nil || !v.ptrKnown {
+	if v.readOnly() || v.conn == nil || !v.ptrKnown {
 		return nil
 	}
 	// The wheel is reported at the current pointer position, so make sure the
@@ -1319,6 +1407,11 @@ func (v *Viewer) forgetInput() {
 // match the window, pushing the deadline out on every event so that the
 // request is sent once the user stops dragging.
 func (v *Viewer) scheduleGuestResize(now time.Time, w, h int) {
+	// A view-only participant must not even ask: the resize is a guest
+	// mutation, and the window still scales the picture locally.
+	if v.readOnly() {
+		return
+	}
 	// Odd sizes are rounded down: virtio-gpu's EDID modes and QEMU's surface
 	// allocation are both happier with even dimensions, and one pixel is not
 	// worth the risk of a rejected mode.
@@ -1420,7 +1513,7 @@ func (v *Viewer) syncClipboard(now time.Time) error {
 		v.hostClip = text
 	}
 
-	if v.cfg.ClipboardInterval < 0 || v.cfg.ReadOnly {
+	if v.cfg.ClipboardInterval < 0 || v.readOnly() {
 		return nil
 	}
 	if !v.clipboardHint && now.Before(v.clipDue) {
@@ -1665,7 +1758,8 @@ func (v *Viewer) updateTitle(now time.Time) error {
 	}
 	v.frames = 0
 
-	title := v.cfg.Title
+	base := v.titleBase()
+	title := base
 	if status, _ := v.Status(); v.conn == nil || status != StatusLive {
 		if status == StatusLive {
 			status = StatusConnecting
@@ -1684,7 +1778,7 @@ func (v *Viewer) updateTitle(now time.Time) error {
 		v.lastBytes = bytes
 
 		fbW, fbH := v.sourceSize()
-		title = fmt.Sprintf("%s — %dx%d — %.0f fps · %s", v.cfg.Title, fbW, fbH, fps, formatBitrate(kbits))
+		title = fmt.Sprintf("%s — %dx%d — %.0f fps · %s", base, fbW, fbH, fps, formatBitrate(kbits))
 	}
 	if title == v.title {
 		return nil

@@ -2036,3 +2036,158 @@ func TestViewerTakeoverHintOnlyWithHandler(t *testing.T) {
 		t.Fatalf("missing hint with a handler registered")
 	}
 }
+
+// --- shared display: runtime role changes ------------------------------------
+
+// A view-only participant must not type into the guest: keyboard is as much
+// a guest mutation as the pointer, and the broker's server-side discard is
+// the backstop, not the interface.
+func TestViewerReadOnlySuppressesKeyboard(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{ReadOnly: true})
+	defer h.v.stop()
+	h.step(t)
+	h.srv.drain(t)
+
+	h.be.push(EventKey{Rune: 'x', Down: true}, EventKey{Rune: 'x', Down: false})
+	h.step(t)
+	h.srv.expectNone(t)
+
+	// Host hotkeys still work while read-only: fullscreen is a local concern.
+	h.be.push(keyDown(keysym.KeyF11, 0), keyUp(keysym.KeyF11, 0))
+	h.step(t)
+	if !h.be.fullscreen {
+		t.Fatal("fullscreen hotkey was swallowed with the guest input")
+	}
+	h.srv.expectNone(t)
+}
+
+func TestViewerReadOnlySuppressesGuestResize(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{ReadOnly: true})
+	defer h.v.stop()
+	h.step(t)
+	h.srv.drain(t)
+
+	h.be.resize(1024, 768)
+	h.step(t)
+	h.advance(10 * time.Second)
+	h.step(t)
+	if h.v.resizePending {
+		t.Fatal("a read-only viewer scheduled a guest resize")
+	}
+	h.srv.expectNone(t)
+}
+
+// SetReadOnly flips the session mid-flight when a shared display role
+// changes: the same window starts forwarding input and guest resizes.
+func TestViewerSetReadOnlyTogglesInput(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{ReadOnly: true})
+	defer h.v.stop()
+	h.step(t)
+	h.srv.drain(t)
+
+	h.be.push(EventKey{Rune: 'x', Down: true}, EventKey{Rune: 'x', Down: false})
+	h.step(t)
+	h.srv.expectNone(t)
+
+	h.v.SetReadOnly(false)
+	h.be.push(EventKey{Rune: 'x', Down: true}, EventKey{Rune: 'x', Down: false})
+	h.step(t)
+	if got := h.srv.keys(t); len(got) != 2 {
+		t.Fatalf("after SetReadOnly(false) got %v, want the key press and release", got)
+	}
+
+	// Guest resize is re-enabled with it.
+	h.be.resize(1024, 768)
+	h.step(t)
+	h.advance(DefaultResizeDebounce + time.Millisecond)
+	h.step(t)
+	if _, ok := h.srv.next(t).(desktopSizeMsg); !ok {
+		t.Fatal("SetReadOnly(false) did not re-enable guest resize")
+	}
+
+	// And back: demotion silences the keyboard again.
+	h.v.SetReadOnly(true)
+	h.be.push(EventKey{Rune: 'y', Down: true}, EventKey{Rune: 'y', Down: false})
+	h.step(t)
+	h.srv.expectNone(t)
+}
+
+// The shared-display control binding fires the registered action and never
+// reaches the guest; its release is swallowed like any other hotkey's.
+func TestViewerControlHotkeyFires(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{ControlRune: 'c'})
+	defer h.v.stop()
+	h.step(t)
+	h.srv.drain(t)
+
+	ran := make(chan struct{}, 1)
+	h.v.SetControlHandler(func() { ran <- struct{}{} })
+
+	mods := keysym.ModControl | keysym.ModAlt
+	h.be.push(EventKey{Rune: 'c', Down: true, Mods: mods})
+	h.step(t)
+	waitFor(t, "control handler", func() bool {
+		select {
+		case <-ran:
+			return true
+		default:
+			return false
+		}
+	})
+
+	// Auto-repeat must not re-fire the action.
+	h.be.push(EventKey{Rune: 'c', Down: true, Mods: mods, Repeat: true})
+	h.step(t)
+	h.be.push(EventKey{Rune: 'c', Down: false})
+	h.step(t)
+	h.srv.expectNone(t)
+}
+
+// Without a ControlRune configured the same chord is ordinary guest input:
+// sessions with no control to transfer must not grow a dead binding.
+func TestViewerControlHotkeyDisabledByDefault(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+	h.step(t)
+	h.srv.drain(t)
+
+	mods := keysym.ModControl | keysym.ModAlt
+	h.be.push(EventKey{Rune: 'c', Down: true, Mods: mods}, EventKey{Rune: 'c', Down: false})
+	h.step(t)
+	if got := h.srv.keys(t); len(got) != 2 {
+		t.Fatalf("Ctrl+Alt+C without a control binding got %v, want the key forwarded", got)
+	}
+}
+
+func TestViewerSetTitle(t *testing.T) {
+	h := newHarness(t, 1280, 720, 1280, 720, Config{Title: "ns/vm (observer)"})
+	defer h.v.stop()
+	h.step(t)
+
+	h.v.SetTitle("ns/vm (controller)")
+	h.advance(DefaultStatsInterval)
+	h.step(t)
+
+	if len(h.be.titles) == 0 {
+		t.Fatal("the title was never updated")
+	}
+	title := h.be.titles[len(h.be.titles)-1]
+	if !contains(title, "ns/vm (controller)") {
+		t.Fatalf("title %q does not reflect SetTitle", title)
+	}
+}
+
+func TestConfigHotkeysDocumentsControlBinding(t *testing.T) {
+	cfg := Config{ControlRune: 'c'}
+	lines := cfg.Hotkeys()
+	if len(lines) != 4 {
+		t.Fatalf("Hotkeys returned %d lines, want 4 with a control binding: %v", len(lines), lines)
+	}
+	joined := ""
+	for _, l := range lines {
+		joined += l + "\n"
+	}
+	if !strings.Contains(joined, "Ctrl+Alt+c") || !strings.Contains(joined, "control") {
+		t.Fatalf("hotkey help does not document the control binding: %q", joined)
+	}
+}

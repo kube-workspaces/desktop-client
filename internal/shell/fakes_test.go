@@ -496,6 +496,30 @@ func (f *fakeAPI) DialObserver(context.Context, string, string) (*websocket.Conn
 	return nil, nil, errors.New("fakeAPI: DialObserver not supported")
 }
 
+func (f *fakeAPI) JoinDisplay(context.Context, string, string, string) (*kwclient.DisplayJoin, error) {
+	return nil, errors.New("fakeAPI: JoinDisplay not supported")
+}
+
+func (f *fakeAPI) LeaveDisplay(context.Context, string, string, string) error {
+	return errors.New("fakeAPI: LeaveDisplay not supported")
+}
+
+func (f *fakeAPI) DisplayStatus(context.Context, string, string) (*kwclient.DisplayStatus, error) {
+	return nil, errors.New("fakeAPI: DisplayStatus not supported")
+}
+
+func (f *fakeAPI) AcquireDisplayControl(context.Context, string, string, string, bool) (*kwclient.DisplayControl, error) {
+	return nil, errors.New("fakeAPI: AcquireDisplayControl not supported")
+}
+
+func (f *fakeAPI) ReleaseDisplayControl(context.Context, string, string, string) (*kwclient.DisplayControl, error) {
+	return nil, errors.New("fakeAPI: ReleaseDisplayControl not supported")
+}
+
+func (f *fakeAPI) DialDisplayWS(context.Context, string, string, string, string, bool) (*websocket.Conn, error) {
+	return nil, errors.New("fakeAPI: DialDisplayWS not supported")
+}
+
 // set applies a mutation under the lock, for a test changing the fake's
 // answers while the shell is running.
 func (f *fakeAPI) set(fn func(*fakeAPI)) {

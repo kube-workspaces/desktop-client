@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
@@ -191,34 +192,233 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 	}
 }
 
-// connectObserver joins a shared display session as an observer.
+// connectObserver joins a shared display session as an observer and presents
+// it in a supervised window: the stream reconnects after drops, Ctrl+Alt+C
+// requests/releases control (with an Enter-to-take-over confirmation when
+// another participant holds it), and a poll applies remote role changes —
+// a take-over demotes us, a transfer promotes us — by re-attaching the
+// stream with the registry's role, the same contract as the browser screen.
 func connectObserver(ctx context.Context, client API, ws kwclient.Workspace, opts SessionOptions) error {
-	conn, _, err := client.DialObserver(ctx, ws.Namespace, ws.Name)
+	join, err := client.JoinDisplay(ctx, ws.Namespace, ws.Name, kwclient.DisplayRoleObserver)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = conn.Close() }()
+	participantID := join.Participant.ID
+	defer func() {
+		leaveCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = client.LeaveDisplay(leaveCtx, ws.Namespace, ws.Name, participantID)
+	}()
 
-	cfg := viewer.Config{
+	view := viewer.New(viewer.NewSDLBackend(), viewer.Config{
 		AdaptiveQuality: !opts.FixedQuality,
-		Title:           ws.Key() + " (Observer)",
+		Title:           ws.Key() + " (observer)",
 		ReadOnly:        true,
+		ControlRune:     'c',
 		ScaleQuality:    opts.ScaleQuality,
 		Logf:            opts.Logf,
-	}
-	view := viewer.New(viewer.NewSDLBackend(), cfg)
+	})
 
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// The broker serves the canonical framebuffer as Raw and treats each
+	// participant's encodings as its own negotiation, so the
+	// quality/compress pseudo-encodings the exclusive path threads through
+	// SessionOptions mean nothing here. The default list already advertises
+	// every encoding the client can decode for the day the broker gains one.
+	base := rfb.Config{Encodings: append([]rfb.Encoding(nil), rfb.DefaultEncodings...)}
 
-	wsConn := wsio.New(conn)
-	rfbConn, err := rfb.NewConn(wsConn, rfb.Config{})
+	sess, err := session.DialSharedDisplay(ctx, session.SharedDisplayOptions{
+		Policy:         reconnect.Default(),
+		UpdateInterval: opts.UpdateInterval,
+		OnState: func(state session.State, err error) {
+			if status, detail, ok := viewerStatus(state, err); ok {
+				view.SetStatus(status, detail)
+			}
+		},
+		// The RFB handshake reads its config once, at connect time, so the
+		// viewer's callbacks are installed per generation, like the
+		// exclusive-session path.
+		Config: func() rfb.Config { return view.RFBConfig(base) },
+		Dial: func(dialCtx context.Context, cfg rfb.Config, role string, force bool) (session.Link, error) {
+			conn, err := client.DialDisplayWS(dialCtx, ws.Namespace, ws.Name, participantID, role, force)
+			if err != nil {
+				return nil, err
+			}
+			return session.SharedLink(conn, cfg)
+		},
+	})
 	if err != nil {
 		return err
 	}
+	defer func() { _ = sess.Close() }()
 
-	// Run the viewer against the RFB connection.
-	return view.RunConn(runCtx, rfbConn)
+	ctl := &sharedControl{client: client, ws: ws, participantID: participantID, sess: sess, view: view}
+	view.SetControlHandler(ctl.toggle)
+
+	pollCtx, stopPoll := context.WithCancel(ctx)
+	defer stopPoll()
+	go ctl.watch(pollCtx)
+
+	runErr := view.Run(ctx, sess)
+	if ctx.Err() != nil {
+		return nil
+	}
+	return runErr
+}
+
+// sharedControl owns the control-transfer UX of one shared display window:
+// the Ctrl+Alt+C binding, the Enter-to-take-over confirmation and the
+// membership poll that applies remote role changes. Its methods run on the
+// viewer's handler goroutine and on the poll goroutine, serialised by mu.
+type sharedControl struct {
+	client        API
+	ws            kwclient.Workspace
+	participantID string
+	sess          *session.SharedDisplay
+	view          *viewer.Viewer
+
+	mu        sync.Mutex
+	prompting bool
+}
+
+// sharedControlREST bounds one membership/control call. The window stays
+// responsive while a request is in flight because the viewer fires the
+// binding on its own goroutine.
+const sharedControlREST = 10 * time.Second
+
+// sharedControlPoll is how often the registry is asked for the
+// authoritative role. It matches the browser screen's cadence.
+const sharedControlPoll = 5 * time.Second
+
+// toggle is the Ctrl+Alt+C binding: with a prompt up it backs out of it,
+// as an observer it asks for control, as the controller it lets go.
+func (c *sharedControl) toggle() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.prompting {
+		c.clearPromptLocked()
+		return
+	}
+	if c.sess.Role() == kwclient.DisplayRoleObserver {
+		c.requestLocked(false)
+		return
+	}
+	c.releaseLocked()
+}
+
+// requestLocked asks the registry for control. A display that is already
+// controlled earns the take-over confirmation instead of a silent steal.
+func (c *sharedControl) requestLocked(force bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), sharedControlREST)
+	defer cancel()
+	if _, err := c.client.AcquireDisplayControl(ctx, c.ws.Namespace, c.ws.Name, c.participantID, force); err != nil {
+		if errors.Is(err, kwclient.ErrControllerPresent) && !force {
+			c.prompting = true
+			c.view.SetTakeoverHandler(c.takeover)
+			c.view.SetStatus(viewer.StatusDisplayInUse, "Ctrl+Alt+C to keep observing")
+			return
+		}
+		c.failLocked("Control request failed", err)
+		return
+	}
+	c.clearPromptLocked()
+	c.applyRoleLocked(kwclient.DisplayRoleController, force)
+}
+
+// takeover is the Enter key on the confirmation prompt: force-acquire, then
+// re-attach as controller with the takeover flag.
+func (c *sharedControl) takeover() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), sharedControlREST)
+	defer cancel()
+	if _, err := c.client.AcquireDisplayControl(ctx, c.ws.Namespace, c.ws.Name, c.participantID, true); err != nil {
+		// The prompt stays armed: Enter retries, Ctrl+Alt+C backs out.
+		return err
+	}
+	c.clearPromptLocked()
+	c.applyRoleLocked(kwclient.DisplayRoleController, true)
+	return nil
+}
+
+// releaseLocked hands control back; the window keeps the stream as an
+// observer.
+func (c *sharedControl) releaseLocked() {
+	ctx, cancel := context.WithTimeout(context.Background(), sharedControlREST)
+	defer cancel()
+	if _, err := c.client.ReleaseDisplayControl(ctx, c.ws.Namespace, c.ws.Name, c.participantID); err != nil {
+		c.failLocked("Release failed", err)
+		return
+	}
+	c.applyRoleLocked(kwclient.DisplayRoleObserver, false)
+}
+
+// applyRoleLocked moves the window and the supervised stream to a role.
+func (c *sharedControl) applyRoleLocked(role string, force bool) {
+	c.view.SetReadOnly(role == kwclient.DisplayRoleObserver)
+	c.view.SetTitle(c.ws.Key() + " (" + role + ")")
+	c.sess.SetRole(role, force)
+}
+
+// failLocked shows a control failure over the live stream until the user
+// dismisses it with the same binding that raised it.
+func (c *sharedControl) failLocked(what string, err error) {
+	c.prompting = true
+	c.view.SetTakeoverHandler(nil)
+	c.view.SetStatus(viewer.StatusDisplayInUse, what+": "+err.Error())
+}
+
+// clearPromptLocked drops any prompt and puts the stream back in front. A
+// status that is not the prompt — a reconnect underneath it, say — belongs
+// to the supervisor and stays.
+func (c *sharedControl) clearPromptLocked() {
+	c.prompting = false
+	c.view.SetTakeoverHandler(nil)
+	if status, _ := c.view.Status(); status == viewer.StatusDisplayInUse {
+		c.view.SetStatus(viewer.StatusLive, "")
+	}
+}
+
+// watch polls the registry for the authoritative role. A take-over by
+// another participant demotes us, a transfer promotes us; either way the
+// stream re-attaches with the registry's role. A poll that fails keeps the
+// last known state, and a membership that vanished is left alone — the
+// stream is still attached and the next transition will sort it out.
+func (c *sharedControl) watch(ctx context.Context) {
+	ticker := time.NewTicker(sharedControlPoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			st, err := c.client.DisplayStatus(ctx, c.ws.Namespace, c.ws.Name)
+			if err != nil {
+				continue
+			}
+			role := ""
+			if st.Controller != nil && st.Controller.ID == c.participantID {
+				role = kwclient.DisplayRoleController
+			} else {
+				for _, obs := range st.Observers {
+					if obs.ID == c.participantID {
+						role = kwclient.DisplayRoleObserver
+						break
+					}
+				}
+			}
+			if role == "" {
+				continue
+			}
+			c.mu.Lock()
+			if role != c.sess.Role() {
+				c.clearPromptLocked()
+				c.applyRoleLocked(role, false)
+			}
+			c.mu.Unlock()
+		}
+	}
 }
 
 // connectTier1 opens an interactive Tier 1 (Selkies) session in a fresh window

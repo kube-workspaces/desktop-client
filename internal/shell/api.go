@@ -58,6 +58,12 @@ type API interface {
 
 	// DialObserver joins as an observer and upgrades to a display stream.
 	DialObserver(ctx context.Context, namespace, name string) (*websocket.Conn, *kwclient.DisplayParticipant, error)
+	JoinDisplay(ctx context.Context, namespace, name, role string) (*kwclient.DisplayJoin, error)
+	LeaveDisplay(ctx context.Context, namespace, name, participantID string) error
+	DisplayStatus(ctx context.Context, namespace, name string) (*kwclient.DisplayStatus, error)
+	AcquireDisplayControl(ctx context.Context, namespace, name, participantID string, force bool) (*kwclient.DisplayControl, error)
+	ReleaseDisplayControl(ctx context.Context, namespace, name, participantID string) (*kwclient.DisplayControl, error)
+	DialDisplayWS(ctx context.Context, namespace, name, participantID, role string, force bool) (*websocket.Conn, error)
 }
 
 // The production client is the interface, with no adapter in between.

@@ -73,6 +73,15 @@ func (r Retry) String() string {
 //     attaches within a few seconds of the other client disconnecting, which
 //     is the behaviour a user actually wants, at a cost of one request every
 //     several seconds.
+//   - [kwclient.ErrControllerPresent] (HTTP 409 on the shared display) — a
+//     controller attach found the control lease still held, typically the
+//     moments between a takeover's REST acquire and the old holder's fence
+//     releasing. It frees itself within seconds, so it polls like a busy
+//     display.
+//   - [kwclient.ErrParticipantNotFound] (HTTP 404 on the shared display) —
+//     the membership this session is bound to is gone. Re-dialling cannot
+//     revive it; only a fresh join can, and that is the caller's decision to
+//     make, not the supervisor's.
 //   - [kwclient.ErrRateLimited] (429) — the server has explicitly asked for
 //     less traffic. The slow fixed poll is the honest response; a backoff
 //     curve that starts at one second is not.
@@ -109,8 +118,13 @@ func Classify(err error) Retry {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return RetryNever
 
-	case errors.Is(err, kwclient.ErrSessionInUse), errors.Is(err, kwclient.ErrRateLimited):
+	case errors.Is(err, kwclient.ErrSessionInUse),
+		errors.Is(err, kwclient.ErrControllerPresent),
+		errors.Is(err, kwclient.ErrRateLimited):
 		return RetrySlow
+
+	case errors.Is(err, kwclient.ErrParticipantNotFound):
+		return RetryNever
 
 	case errors.Is(err, kwclient.ErrUnauthorized),
 		errors.Is(err, kwclient.ErrForbidden),

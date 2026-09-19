@@ -540,7 +540,8 @@ func (r *ReconnectingSession) notify(state State, err error) {
 // stateFor maps a slow-retry error to the state that explains it. A busy
 // display is worth saying out loud; a rate limit is just a slow reconnect.
 func stateFor(err error) State {
-	if errors.Is(err, kwclient.ErrSessionInUse) {
+	if errors.Is(err, kwclient.ErrSessionInUse) ||
+		errors.Is(err, kwclient.ErrControllerPresent) {
 		return StateDisplayInUse
 	}
 	return StateReconnecting
