@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/gorilla/websocket"
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 )
@@ -54,6 +55,9 @@ type API interface {
 	// WorkspacePath builds the root-relative /proxy/... path for a workspace,
 	// what a browser-session grant should redirect to.
 	WorkspacePath(ws kwclient.Workspace, img *kwclient.Image) string
+
+	// DialObserver joins as an observer and upgrades to a display stream.
+	DialObserver(ctx context.Context, namespace, name string) (*websocket.Conn, *kwclient.DisplayParticipant, error)
 }
 
 // The production client is the interface, with no adapter in between.

@@ -48,6 +48,7 @@ const (
 	intentCancel
 	intentRefresh
 	intentActivate
+	intentOpenObserver
 	intentOpenWeb
 	intentOpenInBrowser
 	intentStartWorkspace
@@ -67,6 +68,8 @@ type intent struct {
 	// workspace is the subject of intentActivate, intentOpenInBrowser,
 	// intentStartWorkspace, intentStopWorkspace and intentInfoWorkspace.
 	workspace kwclient.Workspace
+	// observer indicates that intentActivate should open as an observer.
+	observer bool
 }
 
 // act performs the frame's intent.
@@ -89,7 +92,11 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.refreshImages(ctx)
 	case intentActivate:
 		if ws, ok := a.resolve(in.workspace); ok {
-			a.activate(ctx, ws)
+			a.activate(ctx, ws, in.observer)
+		}
+	case intentOpenObserver:
+		if ws, ok := a.resolve(in.workspace); ok {
+			a.activate(ctx, ws, true)
 		}
 	case intentOpenWeb:
 		if ws, ok := a.resolve(in.workspace); ok {
@@ -488,12 +495,23 @@ func (a *App) resolve(ws kwclient.Workspace) (kwclient.Workspace, bool) {
 // activate opens a workspace in-app: a display session for a VM, an integrated
 // terminal for container and scratch workspaces. Workspace types the client
 // cannot render yet fall back to the browser rather than pretending to.
-func (a *App) activate(ctx context.Context, ws kwclient.Workspace) {
+func (a *App) activate(ctx context.Context, ws kwclient.Workspace, observer bool) {
 	switch {
 	case !ws.Running():
 		a.m.Notice = ""
 		a.m.Err = fmt.Sprintf("%s is %s and cannot be opened yet.", ws.Name, StatusText(ws))
 	case ws.IsVM(), ws.Type == kwclient.WorkspaceTypeContainer, ws.Type == kwclient.WorkspaceTypeScratch:
+		if observer {
+			// Observe is the VM-only exception to the normal connector: it
+			// dials the shared display stream read-only. The default
+			// display/terminal connector (built by the client factory) is
+			// restored once the observer window closes.
+			restore := a.connect
+			a.connect = func(ctx context.Context, ws kwclient.Workspace) error {
+				defer func() { a.connect = restore }()
+				return connectObserver(ctx, a.api, ws, SessionOptions{Logf: a.logf})
+			}
+		}
 		a.m.Open(ws)
 	default:
 		// A workspace the client cannot open in-app yet, so it still gets the
@@ -818,6 +836,7 @@ const (
 	idOpen          ui.FocusID = "open"
 	idOpenInBrowser ui.FocusID = "open-in-browser"
 	idConsole       ui.FocusID = "console"
+	idObserve       ui.FocusID = "observe"
 	idStop          ui.FocusID = "stop"
 	idRefresh       ui.FocusID = "refresh"
 	idSignOut       ui.FocusID = "sign-out"

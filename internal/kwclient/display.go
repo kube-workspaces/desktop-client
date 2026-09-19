@@ -233,6 +233,19 @@ func (c *Client) DialDisplayWS(ctx context.Context, namespace, name, participant
 	return conn, nil
 }
 
+// DialObserver joins as an observer and upgrades to a display stream.
+func (c *Client) DialObserver(ctx context.Context, namespace, name string) (*websocket.Conn, *DisplayParticipant, error) {
+	join, err := c.JoinDisplay(ctx, namespace, name, DisplayRoleObserver)
+	if err != nil {
+		return nil, nil, err
+	}
+	conn, err := c.DialDisplayWS(ctx, namespace, name, join.Participant.ID, DisplayRoleObserver, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	return conn, &join.Participant, nil
+}
+
 // normalizeRole validates a display role string, returning the canonical value.
 /*
 func normalizeRole(role string) (string, error) {

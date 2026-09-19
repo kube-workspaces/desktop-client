@@ -147,6 +147,9 @@ type Config struct {
 	// before the damage is collapsed into its bounding box. Zero means 32.
 	MaxUploadRects int
 
+	// ReadOnly prevents sending any guest-mutating messages (input, clipboard).
+	ReadOnly bool
+
 	// Logf, if set, receives diagnostic messages.
 	Logf func(format string, args ...any)
 }
@@ -1100,9 +1103,13 @@ func (v *Viewer) runHotkey(e EventKey) error {
 		return v.toggleFullscreen()
 
 	case e.Key == v.cfg.SendCtrlAltDelKey || e.Key == keysym.KeyDelete:
+		if v.cfg.ReadOnly {
+			return nil
+		}
 		if v.conn == nil {
 			return nil
 		}
+
 		return v.sendChord(keysym.ChordCtrlAltDel)
 
 	default:
@@ -1137,7 +1144,7 @@ func (v *Viewer) sendChord(c keysym.Chord) error {
 }
 
 func (v *Viewer) handlePointer(e EventPointer) error {
-	if v.conn == nil {
+	if v.cfg.ReadOnly || v.conn == nil {
 		return nil
 	}
 	srcW, srcH := v.sourceSize()
@@ -1155,7 +1162,7 @@ func (v *Viewer) handlePointer(e EventPointer) error {
 }
 
 func (v *Viewer) handleWheel(e EventWheel) error {
-	if v.conn == nil || !v.ptrKnown {
+	if v.cfg.ReadOnly || v.conn == nil || !v.ptrKnown {
 		return nil
 	}
 	// The wheel is reported at the current pointer position, so make sure the
@@ -1413,7 +1420,7 @@ func (v *Viewer) syncClipboard(now time.Time) error {
 		v.hostClip = text
 	}
 
-	if v.cfg.ClipboardInterval < 0 {
+	if v.cfg.ClipboardInterval < 0 || v.cfg.ReadOnly {
 		return nil
 	}
 	if !v.clipboardHint && now.Before(v.clipDue) {

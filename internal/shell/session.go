@@ -191,6 +191,36 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 	}
 }
 
+// connectObserver joins a shared display session as an observer.
+func connectObserver(ctx context.Context, client API, ws kwclient.Workspace, opts SessionOptions) error {
+	conn, _, err := client.DialObserver(ctx, ws.Namespace, ws.Name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+
+	cfg := viewer.Config{
+		AdaptiveQuality: !opts.FixedQuality,
+		Title:           ws.Key() + " (Observer)",
+		ReadOnly:        true,
+		ScaleQuality:    opts.ScaleQuality,
+		Logf:            opts.Logf,
+	}
+	view := viewer.New(viewer.NewSDLBackend(), cfg)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	wsConn := wsio.New(conn)
+	rfbConn, err := rfb.NewConn(wsConn, rfb.Config{})
+	if err != nil {
+		return err
+	}
+
+	// Run the viewer against the RFB connection.
+	return view.RunConn(runCtx, rfbConn)
+}
+
 // connectTier1 opens an interactive Tier 1 (Selkies) session in a fresh window
 // for a workspace whose image advertises the selkies protocol. The window
 // belongs to this call and this call only, like the RFB viewer's own window.

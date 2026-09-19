@@ -617,7 +617,7 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	// A running non-VM workspace gets the embedded webview as the primary
 	// hand-off (Track B), with the integrated terminal and the system
 	// browser as explicit secondary choices on the same row.
-	console, browser := false, false
+	console, browser, observe := false, false, false
 	switch {
 	case !has:
 		label = "Open"
@@ -628,6 +628,7 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 		label = "Not running"
 	case ws.IsVM():
 		label = "Open display"
+		observe = true
 	case ws.Type == kwclient.WorkspaceTypeContainer, ws.Type == kwclient.WorkspaceTypeScratch:
 		kind = intentOpenWeb
 		label = "Open web"
@@ -652,6 +653,10 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if browser {
 		browserBtn = ui.Button{ID: idOpenInBrowser, Text: "Open in browser", Variant: ui.ButtonSecondary}
 	}
+	observeBtn := ui.Button{}
+	if observe {
+		observeBtn = ui.Button{ID: idObserve, Text: "Observe", Variant: ui.ButtonSecondary}
+	}
 	// Stop is the quiet inverse of the primary action, offered for exactly the
 	// workspaces that have one to stop: the running ones.
 	stop := ui.Button{ID: idStop, Text: "Stop", Variant: ui.ButtonSecondary}
@@ -666,6 +671,9 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	}
 	if browser {
 		widths = append(widths, browserBtn.Width(ctx))
+	}
+	if observe {
+		widths = append(widths, observeBtn.Width(ctx))
 	}
 	if showStop {
 		widths = append(widths, stop.Width(ctx))
@@ -687,6 +695,12 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if browser {
 		if browserBtn.Layout(ctx, cols[ci]) {
 			*out = intent{kind: intentOpenInBrowser, workspace: ws}
+		}
+		ci++
+	}
+	if observe {
+		if observeBtn.Layout(ctx, cols[ci]) {
+			*out = intent{kind: intentOpenObserver, workspace: ws}
 		}
 		ci++
 	}

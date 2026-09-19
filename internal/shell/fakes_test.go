@@ -5,11 +5,13 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
@@ -488,6 +490,10 @@ func (f *fakeAPI) GrantBrowserSession(ctx context.Context, redirect string) (*kw
 		Code: "grant-code",
 		URL:  f.base + "/auth/browser-session?code=grant-code",
 	}, nil
+}
+
+func (f *fakeAPI) DialObserver(context.Context, string, string) (*websocket.Conn, *kwclient.DisplayParticipant, error) {
+	return nil, nil, errors.New("fakeAPI: DialObserver not supported")
 }
 
 // set applies a mutation under the lock, for a test changing the fake's
