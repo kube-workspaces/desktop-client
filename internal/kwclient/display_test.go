@@ -144,7 +144,7 @@ func TestAcquireDisplayControlForce(t *testing.T) {
 	if got.Controller == nil || got.Controller.ID != "p-1" {
 		t.Errorf("controller = %+v", got.Controller)
 	}
-	if got.Released || got.Transfered {
+	if got.Released || got.Transferred {
 		t.Errorf("result = %+v", got)
 	}
 }

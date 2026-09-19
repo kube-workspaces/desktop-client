@@ -6,7 +6,6 @@ package kwclient
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 
@@ -55,9 +54,9 @@ type DisplayJoin struct {
 
 // DisplayControl is the response of acquire/release/transfer.
 type DisplayControl struct {
-	Controller *DisplayParticipant `json:"controller,omitempty"`
-	Released   bool                `json:"released"`
-	Transfered bool                `json:"transferred"`
+	Controller  *DisplayParticipant `json:"controller,omitempty"`
+	Released    bool                `json:"released"`
+	Transferred bool                `json:"transferred"`
 }
 
 // Shared-display membership/control sentinels. They wrap the underlying
@@ -235,6 +234,7 @@ func (c *Client) DialDisplayWS(ctx context.Context, namespace, name, participant
 }
 
 // normalizeRole validates a display role string, returning the canonical value.
+/*
 func normalizeRole(role string) (string, error) {
 	switch role {
 	case DisplayRoleObserver, DisplayRoleController:
@@ -243,3 +243,4 @@ func normalizeRole(role string) (string, error) {
 		return "", fmt.Errorf("kwclient: invalid display role %q (want observer or controller)", role)
 	}
 }
+*/
