@@ -55,7 +55,7 @@ WINRES ?= go run github.com/tc-hib/go-winres@v0.3.3
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
-.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres clean build-all
+.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres clean build-all install-latest-windows-release
 
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -167,6 +167,9 @@ cover: ## Run tests with coverage and print a per-function summary
 
 clean: ## Remove build output and coverage artefacts
 	rm -rf $(BIN_DIR) $(DIST_DIR) coverage.out coverage.html
+
+install-latest-windows-release: ## Download and install the latest Windows release to C:\Program Files\Kube Workspaces
+	@powershell -ExecutionPolicy Bypass -File scripts/install-windows-release.ps1
 
 # The whole binary, viewer included, cross-builds from any one host: the SDL3
 # binding is purego and bundles the library, so there is no cgo anywhere in the
