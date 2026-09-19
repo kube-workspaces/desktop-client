@@ -269,6 +269,11 @@ type requestSpec struct {
 	query  url.Values
 	// body, when non-nil, is marshaled as JSON.
 	body any
+	// sentinel, when non-nil, maps non-2xx statuses on this request to errors
+	// instead of the default [sentinelForStatus]. It exists so endpoints that
+	// reuse a shared status code with a different meaning (shared display
+	// membership 409s, 400s, 404s) can surface distinct sentinel errors.
+	sentinel func(int) error
 	// noAuth suppresses the credentials headers, for endpoints that are
 	// unauthenticated (/auth/config) or that must not see a stale token
 	// (/auth/login/local).
@@ -277,6 +282,15 @@ type requestSpec struct {
 
 // op renders the request for error messages.
 func (s requestSpec) op() string { return s.method + " " + s.path }
+
+// statusSentinel returns the sentinel mapper for this request, defaulting to
+// the shared one so most endpoints need not specify an override.
+func (s requestSpec) statusSentinel() func(int) error {
+	if s.sentinel != nil {
+		return s.sentinel
+	}
+	return sentinelForStatus
+}
 
 func (c *Client) newRequest(ctx context.Context, spec requestSpec) (*http.Request, error) {
 	var body io.Reader
@@ -336,7 +350,7 @@ func (c *Client) do(ctx context.Context, spec requestSpec) (*http.Response, erro
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		defer func() { _ = resp.Body.Close() }()
-		return nil, newAPIError(spec.op(), resp, sentinelForStatus)
+		return nil, newAPIError(spec.op(), resp, spec.statusSentinel())
 	}
 	return resp, nil
 }
