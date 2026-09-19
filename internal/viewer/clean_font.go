@@ -163,7 +163,7 @@ func (cs *cleanSet) buildRasterized(scale int) {
 	for r := glyphFirst; r <= glyphLast; r++ {
 		idx := r - glyphFirst
 		if a, ok := face.GlyphAdvance(r); ok {
-			cs.adv[idx] = a.Round()
+			cs.adv[idx] = a.Round() + 1
 		}
 		cs.set[idx] = rasterizeGlyph(face, r, cleanBase[scale], cleanCell[scale])
 	}
