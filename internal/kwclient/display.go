@@ -54,8 +54,8 @@ type DisplayJoin struct {
 
 // DisplayControl is the response of acquire/release/transfer.
 type DisplayControl struct {
-	Controller *DisplayParticipant `json:"controller,omitempty"`
-	Released   bool                `json:"released"`
+	Controller  *DisplayParticipant `json:"controller,omitempty"`
+	Released    bool                `json:"released"`
 	Transferred bool                `json:"transferred"`
 }
 
