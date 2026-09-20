@@ -496,6 +496,10 @@ func (f *fakeAPI) DialObserver(context.Context, string, string) (*websocket.Conn
 	return nil, nil, errors.New("fakeAPI: DialObserver not supported")
 }
 
+func (f *fakeAPI) Display(context.Context, string, string) (*kwclient.DisplayCap, error) {
+	return nil, errors.New("fakeAPI: Display not supported")
+}
+
 func (f *fakeAPI) JoinDisplay(context.Context, string, string, string) (*kwclient.DisplayJoin, error) {
 	return nil, errors.New("fakeAPI: JoinDisplay not supported")
 }

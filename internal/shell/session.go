@@ -199,6 +199,17 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 // a take-over demotes us, a transfer promotes us — by re-attaching the
 // stream with the registry's role, the same contract as the browser screen.
 func connectObserver(ctx context.Context, client API, ws kwclient.Workspace, opts SessionOptions) error {
+	// The shared display ships opt-in: check the capability advert before
+	// joining so a gated platform answers with its own message rather than a
+	// bare join failure.
+	cap, err := client.Display(ctx, ws.Namespace, ws.Name)
+	if err != nil {
+		return err
+	}
+	if !cap.Enabled {
+		return errors.New("shared display sessions are not enabled on this platform")
+	}
+
 	join, err := client.JoinDisplay(ctx, ws.Namespace, ws.Name, kwclient.DisplayRoleObserver)
 	if err != nil {
 		return err
