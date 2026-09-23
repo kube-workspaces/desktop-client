@@ -49,6 +49,21 @@ Implemented and working:
   active/idle cadence. Explicit `--quality`/`--compress` selects fixed mode;
   `--adaptive-quality` can explicitly override that choice.
 - Graphical shell: instance/login/workspace-list screens.
+- **Shell text editing.** Fields select (Shift-arrow, drag, double-click word,
+  triple-click all), copy/cut/paste through the host clipboard (Ctrl or Cmd),
+  and take composed IME text; delete/replace acts on the selection first.
+- **HiDPI shell.** High-density drawable plus a quantised theme scale
+  (display factor → nearest half in [1,3]), overridable per run
+  (`--ui-scale`) and persistently (Settings → Interface Size). Session guests
+  follow the drawable size; moving across mixed-DPI displays re-themes on
+  resize.
+- **Unicode shell text.** The clean face draws Inter with DejaVu Sans behind
+  it (Latin-Extended, Greek, Cyrillic, Hebrew, Arabic, symbols, monochrome
+  emoji); scripts neither covers stay visible missing boxes. CJK/Thai/
+  Devanagari, terminal Unicode and full shaping are deferred, not missing by
+  accident — see the tracking plan.
+- **Message catalog.** All window copy lives in `internal/i18n` (English +
+  `xx` pseudo-locale); locale follows the system. Only English ships.
 - **Multiple windows.** One process means one main thread. The shell and the
   session viewer each open their own SDL window on that thread, sharing the SDL
   library. Non-VM workspaces open in the embedded webview child process (Track

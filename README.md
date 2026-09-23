@@ -162,8 +162,9 @@ or a `.desktop` file:
 ```
 
 `kube-workspaces shell` names the same thing explicitly and takes flags
-(`--profile`, `--width`, `--height`, `--refresh`, `--quality`, `--scale-quality`,
-`--interval`, `-v`).
+(`--profile`, `--width`, `--height`, `--ui-scale`, `--refresh`, `--quality`, `--scale-quality`,
+`--interval`, `-v`). `--ui-scale` pins the interface scale (0 follows the
+display; the Settings screen offers the same choice persistently).
 
 The shell walks through three screens — instance URL, sign-in, workspace list —
 and then opens a display session in its **own window**. The shell's window
