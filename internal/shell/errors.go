@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 )
 
@@ -33,51 +34,51 @@ func Describe(err error) string {
 
 	switch {
 	case errors.Is(err, context.Canceled):
-		return "Cancelled."
+		return i18n.Get("errors.cancelled")
 	case errors.Is(err, context.DeadlineExceeded):
-		return "The server took too long to answer."
+		return i18n.Get("errors.timeout")
 
 	// Authentication, in the order a user meets it.
 	case errors.Is(err, kwclient.ErrInvalidCredentials):
-		return "That email address and password were not accepted."
+		return i18n.Get("errors.badCredentials")
 	case errors.Is(err, kwclient.ErrAccountLocked):
-		return "This account is locked after too many failed sign-ins. Wait a few minutes and try again."
+		return i18n.Get("errors.locked")
 	case errors.Is(err, kwclient.ErrAccountDisabled):
-		return "This account is disabled. Ask an administrator to re-enable it."
+		return i18n.Get("errors.disabled")
 	case errors.Is(err, kwclient.ErrRateLimited):
-		return "Too many attempts. Wait a moment and try again."
+		return i18n.Get("errors.rateLimited")
 	case errors.Is(err, kwclient.ErrLocalAuthDisabled):
-		return "This instance does not accept a password here. Use Sign in with browser."
+		return i18n.Get("errors.localDisabled")
 	case errors.Is(err, kwclient.ErrNoSessionCookie):
-		return "The server accepted the sign-in but issued no session. Report this to an administrator."
+		return i18n.Get("errors.noSession")
 	case errors.Is(err, kwclient.ErrInvalidRequest):
-		return "The server rejected the request. Check the email address."
+		return i18n.Get("errors.badRequest")
 
 	// The browser flow.
 	case errors.Is(err, kwclient.ErrBrowserLoginTimeout):
-		return "The browser sign-in was not completed in time. Try again."
+		return i18n.Get("errors.browserTimeout")
 	case errors.Is(err, kwclient.ErrStateMismatch):
-		return "The browser sign-in could not be verified and was abandoned. Try again."
+		return i18n.Get("errors.stateMismatch")
 	case errors.Is(err, kwclient.ErrAuthorizationDenied):
-		return "The identity provider refused the sign-in: " + tail(err)
+		return i18n.Sprintf("errors.authDenied", tail(err))
 	case errors.Is(err, kwclient.ErrNativeAuthUnsupported):
-		return "This instance is running an API build without browser sign-in."
+		return i18n.Get("errors.nativeMissing")
 
 	// The session.
 	case errors.Is(err, kwclient.ErrUnauthorized):
-		return "Your session has expired. Please sign in again."
+		return i18n.Get("errors.expired")
 	case errors.Is(err, kwclient.ErrForbidden):
-		return "You do not have access to that. Opening a display needs the editor or admin role."
+		return i18n.Get("errors.forbidden")
 	case errors.Is(err, kwclient.ErrNotFound):
-		return "That workspace no longer exists."
+		return i18n.Get("errors.notFound")
 	case errors.Is(err, kwclient.ErrSessionInUse):
-		return "Another client is using this workspace's display. There is no way to take it over; wait for it to be released."
+		return i18n.Get("errors.inUse")
 	case errors.Is(err, kwclient.ErrNotVM):
-		return "This workspace has no display. Open it in a browser instead."
+		return i18n.Get("errors.notVM")
 	case errors.Is(err, kwclient.ErrUnavailable):
-		return "The instance is unavailable. It may be in maintenance."
+		return i18n.Get("errors.unavailable")
 	case errors.Is(err, kwclient.ErrBadGateway):
-		return "The instance could not reach the workspace."
+		return i18n.Get("errors.badGateway")
 	}
 
 	if msg, ok := describeTransport(err); ok {
@@ -93,32 +94,31 @@ func Describe(err error) string {
 func describeTransport(err error) (string, bool) {
 	var certErr *tls.CertificateVerificationError
 	if errors.As(err, &certErr) {
-		return "The server's TLS certificate was not accepted: " + certificateReason(certErr.Err) +
-			" If this is a development instance with a self-signed certificate, enable \"Ignore TLS certificate errors\".", true
+		return i18n.Sprintf("errors.cert", certificateReason(certErr.Err), i18n.Get("errors.certSelfSigned")), true
 	}
 	var recordErr tls.RecordHeaderError
 	if errors.As(err, &recordErr) {
-		return "That address did not answer with TLS. Check whether it should be http:// rather than https://.", true
+		return i18n.Get("errors.noTLS"), true
 	}
 
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return "That host name could not be resolved (" + dnsErr.Name + "). Check the address.", true
+		return i18n.Sprintf("errors.dns", dnsErr.Name), true
 	}
 
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return "The instance did not answer in time. Check the address and your network.", true
+		return i18n.Get("errors.timeoutAddr"), true
 	}
 
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
-		return "Could not reach the instance: " + opErr.Err.Error() + ".", true
+		return i18n.Sprintf("errors.unreachable", opErr.Err.Error()+"."), true
 	}
 
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) && urlErr.Err != nil {
-		return "Could not reach the instance: " + tail(urlErr.Err), true
+		return i18n.Sprintf("errors.unreachable", tail(urlErr.Err)), true
 	}
 	return "", false
 }
@@ -128,11 +128,11 @@ func describeTransport(err error) (string, bool) {
 func certificateReason(err error) string {
 	var unknownAuthority x509.UnknownAuthorityError
 	if errors.As(err, &unknownAuthority) {
-		return "it was not issued by a trusted authority."
+		return i18n.Get("errors.certUnknown")
 	}
 	var hostname x509.HostnameError
 	if errors.As(err, &hostname) {
-		return "it is not valid for " + hostname.Host + "."
+		return i18n.Sprintf("errors.certHost", hostname.Host)
 	}
 	var invalid x509.CertificateInvalidError
 	if errors.As(err, &invalid) {
@@ -156,7 +156,7 @@ func tail(err error) string {
 		}
 	}
 	if msg == "" {
-		return "The request failed."
+		return i18n.Get("errors.requestFailed")
 	}
 	// Capitalise, since it is being shown as a sentence.
 	runes := []rune(msg)

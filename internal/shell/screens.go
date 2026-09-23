@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
@@ -65,17 +66,17 @@ func (a *App) drawServerScreen(bounds ui.Rect) intent {
 	card.H = bounds.H - card.Y - th.Pad
 	body := ui.NewStack(card, th.Gap)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), "Kube Workspaces", ui.LabelStyle{
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), i18n.Get("app.name"), ui.LabelStyle{
 		Scale: th.Title,
 	})
 	body.Skip(th.Gap / 2)
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2), "Connect to your workspaces instance.", ui.LabelStyle{
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2), i18n.Get("server.subtitle"), ui.LabelStyle{
 		Color: th.TextMuted,
 		Wrap:  true,
 	})
 	body.Skip(th.Pad)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "SERVER ADDRESS", ui.LabelStyle{
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("server.address"), ui.LabelStyle{
 		Color: th.TextMuted,
 		Scale: th.Small,
 	})
@@ -88,7 +89,7 @@ func (a *App) drawServerScreen(bounds ui.Rect) intent {
 	}
 
 	body.Skip(th.Pad)
-	connect := ui.Button{ID: idConnect, Text: "Connect", Variant: ui.ButtonPrimary, Disabled: a.m.Busy}
+	connect := ui.Button{ID: idConnect, Text: i18n.Get("server.connect"), Variant: ui.ButtonPrimary, Disabled: a.m.Busy}
 	row := ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)
 	if connect.Layout(ctx, row[0]) || (submitted && !a.m.Busy) {
 		out = intent{kind: intentConnectServer}
@@ -100,7 +101,7 @@ func (a *App) drawServerScreen(bounds ui.Rect) intent {
 	body.Skip(th.Gap)
 	a.drawMessagesIn(body.Rest())
 
-	a.drawFooterHint(bounds, "Tab moves between fields  ·  Enter connects")
+	a.drawFooterHint(bounds, i18n.Get("server.hint"))
 	if ctx.Input.KeyPressed(keysym.KeyEscape) && a.m.Busy {
 		out = intent{kind: intentCancel}
 	}
@@ -124,12 +125,12 @@ func (a *App) drawLoginScreen(bounds ui.Rect) intent {
 	card.H = bounds.H - card.Y - th.Pad
 	body := ui.NewStack(card, th.Gap)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), "Sign in", ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), i18n.Get("login.title"), ui.LabelStyle{Scale: th.Title})
 	body.Skip(th.Gap / 2)
 	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), a.m.Server, ui.LabelStyle{Color: th.TextMuted})
 	body.Skip(th.Pad)
 
-	waiting := a.m.Busy && strings.HasPrefix(a.m.BusyText, "Waiting")
+	waiting := a.m.Busy && strings.HasPrefix(a.m.BusyText, i18n.Get("busy.waitingBrowser"))
 
 	switch {
 	case waiting:
@@ -137,9 +138,9 @@ func (a *App) drawLoginScreen(bounds ui.Rect) intent {
 
 	case a.m.AuthDisabled():
 		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2),
-			"This instance does not require sign-in.", ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+			i18n.Get("login.noSignin"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 		body.Skip(th.Gap)
-		cont := ui.Button{ID: idSignIn, Text: "Continue", Variant: ui.ButtonPrimary, Disabled: a.m.Busy}
+		cont := ui.Button{ID: idSignIn, Text: i18n.Get("login.continue"), Variant: ui.ButtonPrimary, Disabled: a.m.Busy}
 		if cont.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)[0]) {
 			out = intent{kind: intentSignInLocal}
 		}
@@ -154,7 +155,7 @@ func (a *App) drawLoginScreen(bounds ui.Rect) intent {
 	// The way back is always available, and always quiet: it is not what the
 	// user came here to do, but a user pointed at the wrong instance has no
 	// other way out.
-	back := ui.Button{ID: idBack, Text: "Use a different server", Variant: ui.ButtonQuiet}
+	back := ui.Button{ID: idBack, Text: i18n.Get("login.back"), Variant: ui.ButtonQuiet}
 	backRect, _ := ui.CutBottom(ui.Inset(bounds, th.Pad), th.ControlHeight)
 	backRect, _ = ui.CutLeft(backRect, back.Width(ctx))
 	if back.Layout(ctx, backRect) {
@@ -177,25 +178,24 @@ func (a *App) drawCredentials(body *ui.Stack) intent {
 			return out
 		}
 		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*3),
-			"This instance offers no sign-in method this client can use. "+
-				"Ask an administrator whether browser sign-in is enabled.",
+			i18n.Get("login.noMethod"),
 			ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 		return out
 	}
 
 	if local {
-		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "EMAIL", ui.LabelStyle{
+		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("login.email"), ui.LabelStyle{
 			Color: th.TextMuted, Scale: th.Small,
 		})
 		emailSubmit := a.emailField.Layout(ctx, body.Next(th.ControlHeight))
 		body.Skip(th.Gap / 2)
-		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "PASSWORD", ui.LabelStyle{
+		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("login.password"), ui.LabelStyle{
 			Color: th.TextMuted, Scale: th.Small,
 		})
 		passwordSubmit := a.passwordField.Layout(ctx, body.Next(th.ControlHeight))
 		body.Skip(th.Pad)
 
-		signIn := ui.Button{ID: idSignIn, Text: "Sign in", Variant: ui.ButtonPrimary, Disabled: a.m.Busy}
+		signIn := ui.Button{ID: idSignIn, Text: i18n.Get("login.signin"), Variant: ui.ButtonPrimary, Disabled: a.m.Busy}
 		row := ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)
 		submitted := emailSubmit || passwordSubmit
 		if signIn.Layout(ctx, row[0]) || (submitted && !a.m.Busy) {
@@ -209,20 +209,20 @@ func (a *App) drawCredentials(body *ui.Stack) intent {
 	if browser {
 		if local {
 			body.Skip(th.Pad)
-			ui.DividerLabel(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), "or")
+			ui.DividerLabel(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Get("login.or"))
 			body.Skip(th.Gap / 2)
 		}
 		variant := ui.ButtonPrimary
 		if local {
 			variant = ui.ButtonSecondary
 		}
-		btn := ui.Button{ID: idBrowser, Text: "Sign in with browser", Variant: variant, Disabled: a.m.Busy}
+		btn := ui.Button{ID: idBrowser, Text: i18n.Get("login.browser"), Variant: variant, Disabled: a.m.Busy}
 		if btn.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, btn.Width(ctx), 0)[0]) {
 			out = intent{kind: intentSignInBrowser}
 		}
 		if issuer := a.issuerHost(); issuer != "" {
 			body.Skip(th.Gap / 2)
-			ui.Label(ctx, body.Next(ui.LineHeight(th.Small, th.Font)), "You will be sent to "+issuer,
+			ui.Label(ctx, body.Next(ui.LineHeight(th.Small, th.Font)), i18n.Sprintf("login.sentTo", issuer),
 				ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
 		}
 	}
@@ -242,16 +242,16 @@ func (a *App) drawBrowserWait(body *ui.Stack) intent {
 	row := body.Next(th.ControlHeight)
 	spinner, rest := ui.CutLeft(row, th.ControlHeight+th.Gap/2)
 	ui.Spinner(ctx, ui.Inset(spinner, th.Gap/2), th.Accent)
-	ui.Label(ctx, rest, "Waiting for your browser...", ui.LabelStyle{Middle: true})
+	ui.Label(ctx, rest, i18n.Get("login.waitingLabel"), ui.LabelStyle{Middle: true})
 
 	body.Skip(th.Gap / 2)
 	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2),
-		"Complete the sign-in in the window that opened, then come back here.",
+		i18n.Get("login.complete"),
 		ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 
 	if a.authorizeURL != "" {
 		body.Skip(th.Gap)
-		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "IF NOTHING OPENED, VISIT", ui.LabelStyle{
+		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("login.ifNothing"), ui.LabelStyle{
 			Color: th.TextMuted, Scale: th.Small,
 		})
 		urlBox := body.Next(ui.LineHeight(th.Small, th.Font)*3 + th.Gap)
@@ -262,7 +262,7 @@ func (a *App) drawBrowserWait(body *ui.Stack) intent {
 	}
 
 	body.Skip(th.Pad)
-	cancel := ui.Button{ID: idCancel, Text: "Cancel", Variant: ui.ButtonSecondary}
+	cancel := ui.Button{ID: idCancel, Text: i18n.Get("login.cancel"), Variant: ui.ButtonSecondary}
 	if cancel.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)[0]) ||
 		ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentCancel}
@@ -285,7 +285,7 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 
 	// Toolbar: filter on the left, refresh on the right.
 	toolbar, content := ui.CutTop(content, th.ControlHeight)
-	refresh := ui.Button{ID: idRefresh, Text: "Refresh", Variant: ui.ButtonSecondary}
+	refresh := ui.Button{ID: idRefresh, Text: i18n.Get("workspaces.refresh"), Variant: ui.ButtonSecondary}
 	refreshRect, filterRect := ui.CutRight(toolbar, refresh.Width(ctx))
 	filterRect, spinnerRect := ui.CutLeft(filterRect, min(360, filterRect.W-th.Gap))
 	if a.filterField.Layout(ctx, filterRect) {
@@ -350,31 +350,31 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	card.H = bounds.H - card.Y - th.Pad
 	body := ui.NewStack(card, th.Gap)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), "Settings", ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), i18n.Get("settings.title"), ui.LabelStyle{Scale: th.Title})
 	body.Skip(th.Gap / 2)
 	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2),
-		"How the client looks. Choices save as you make them.", ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+		i18n.Get("settings.subtitle"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 	body.Skip(th.Pad)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "STYLE", ui.LabelStyle{
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("settings.style"), ui.LabelStyle{
 		Color: th.TextMuted, Scale: th.Small,
 	})
 	styleRow := body.Next(th.ControlHeight)
 	if picked := a.drawChoice(ctx, styleRow, styleIndex(a.settings.Style), []styleOption{
-		{id: idStyleBubbly, label: "Bubbly"},
-		{id: idStyleRetro, label: "Retro"},
-		{id: idStyleClean, label: "Clean"},
+		{id: idStyleBubbly, label: i18n.Get("settings.bubbly")},
+		{id: idStyleRetro, label: i18n.Get("settings.retro")},
+		{id: idStyleClean, label: i18n.Get("settings.clean")},
 	}); picked != styleIndex(a.settings.Style) {
 		a.applySettings(Settings{Style: styleFromIndex(picked), Mode: a.settings.Mode, UIScale: a.settings.UIScale})
 		a.saveSettings()
 	}
 
 	body.Skip(th.Pad)
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "COLOURS", ui.LabelStyle{
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("settings.colours"), ui.LabelStyle{
 		Color: th.TextMuted, Scale: th.Small,
 	})
 	modeRow := body.Next(th.ControlHeight)
-	modeOpts := []styleOption{{id: idModeDark, label: "Dark"}, {id: idModeLight, label: "Light"}}
+	modeOpts := []styleOption{{id: idModeDark, label: i18n.Get("settings.dark")}, {id: idModeLight, label: i18n.Get("settings.light")}}
 	modeIdx := 0
 	if a.settings.Mode == ui.ModeLight {
 		modeIdx = 1
@@ -389,15 +389,15 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	}
 
 	body.Skip(th.Pad)
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "INTERFACE SIZE", ui.LabelStyle{
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("settings.size"), ui.LabelStyle{
 		Color: th.TextMuted, Scale: th.Small,
 	})
 	scaleRow := body.Next(th.ControlHeight)
 	scaleOpts := []styleOption{
-		{id: idScaleAuto, label: "Auto"},
-		{id: idScale100, label: "100%"},
-		{id: idScale150, label: "150%"},
-		{id: idScale200, label: "200%"},
+		{id: idScaleAuto, label: i18n.Get("settings.auto")},
+		{id: idScale100, label: i18n.Get("settings.scale100")},
+		{id: idScale150, label: i18n.Get("settings.scale150")},
+		{id: idScale200, label: i18n.Get("settings.scale200")},
 	}
 	if picked := a.drawChoice(ctx, scaleRow, uiScaleIndex(a.settings.UIScale), scaleOpts); picked != uiScaleIndex(a.settings.UIScale) {
 		a.applySettings(Settings{Style: a.settings.Style, Mode: a.settings.Mode, UIScale: uiScaleSteps()[picked]})
@@ -407,17 +407,17 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	// stored, so say so when they disagree rather than letting the row lie.
 	if a.opts.UIScale > 0 && a.opts.UIScale != a.settings.UIScale {
 		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)),
-			"The --ui-scale flag overrides this choice for this run.", ui.LabelStyle{Color: th.TextMuted})
+			i18n.Get("settings.flagNote"), ui.LabelStyle{Color: th.TextMuted})
 	}
 
 	body.Skip(th.Pad)
-	done := ui.Button{ID: idSettingsDone, Text: "Done", Variant: ui.ButtonPrimary}
+	done := ui.Button{ID: idSettingsDone, Text: i18n.Get("settings.done"), Variant: ui.ButtonPrimary}
 	if done.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)[0]) ||
 		ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentSettingsDone}
 	}
 
-	a.drawFooterHint(bounds, "Changes save as you pick  ·  Escape closes")
+	a.drawFooterHint(bounds, i18n.Get("settings.hint"))
 	return out
 }
 
@@ -483,8 +483,8 @@ func (a *App) drawHeader(r ui.Rect, out *intent) {
 	th := a.opts.Theme
 	ctx := a.ctx
 
-	signOut := ui.Button{ID: idSignOut, Text: "Sign out", Variant: ui.ButtonQuiet}
-	settings := ui.Button{ID: idSettings, Text: "Settings", Variant: ui.ButtonQuiet}
+	signOut := ui.Button{ID: idSignOut, Text: i18n.Get("header.signout"), Variant: ui.ButtonQuiet}
+	settings := ui.Button{ID: idSettings, Text: i18n.Get("header.settings"), Variant: ui.ButtonQuiet}
 	buttonsW := signOut.Width(ctx) + settings.Width(ctx) + th.Gap/2
 	signOutRect, rest := ui.CutRight(r, buttonsW)
 	cols := ui.Row(signOutRect, th.Gap/2, settings.Width(ctx), signOut.Width(ctx))
@@ -495,8 +495,8 @@ func (a *App) drawHeader(r ui.Rect, out *intent) {
 		*out = intent{kind: intentSignOut}
 	}
 
-	title, identity := ui.CutLeft(rest, ui.TextWidth("Workspaces", th.Title, th.Font)+th.Pad)
-	ui.Label(ctx, title, "Workspaces", ui.LabelStyle{Scale: th.Title, Middle: true})
+	title, identity := ui.CutLeft(rest, ui.TextWidth(i18n.Get("workspaces.title"), th.Title, th.Font)+th.Pad)
+	ui.Label(ctx, title, i18n.Get("workspaces.title"), ui.LabelStyle{Scale: th.Title, Middle: true})
 	ui.Label(ctx, ui.InsetXY(identity, th.Gap, 0), a.identityLine(), ui.LabelStyle{
 		Color:  th.TextMuted,
 		Scale:  th.Small,
@@ -602,7 +602,7 @@ func (a *App) drawWorkspaceRow(r ui.Rect, ws kwclient.Workspace, state ui.RowSta
 	if meta.W > 0 {
 		text := string(ws.Type)
 		if ws.HasTier1() {
-			text += " · Tier 1"
+			text += i18n.Get("workspaces.tier1")
 		}
 		ui.Label(ctx, meta, text, ui.LabelStyle{
 			Color: th.TextMuted, Scale: th.Small, Align: ui.AlignRight, Middle: true,
@@ -642,18 +642,18 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	console, browser, observe := false, false, false
 	switch {
 	case !has:
-		label = "Open"
+		label = i18n.Get("workspaces.open")
 	case ws.Stopped:
 		kind = intentStartWorkspace
-		label = "Start"
+		label = i18n.Get("workspaces.start")
 	case !ws.Running():
-		label = "Not running"
+		label = i18n.Get("workspaces.notRunning")
 	case ws.IsVM():
-		label = "Open display"
+		label = i18n.Get("workspaces.openDisplay")
 		observe = true
 	case ws.Type == kwclient.WorkspaceTypeContainer, ws.Type == kwclient.WorkspaceTypeScratch:
 		kind = intentOpenWeb
-		label = "Open web"
+		label = i18n.Get("workspaces.openWeb")
 		console, browser = true, true
 	default:
 		browser = true
@@ -669,23 +669,23 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	// the integrated terminal (Track A) and the system-browser grant path.
 	consoleBtn := ui.Button{}
 	if console {
-		consoleBtn = ui.Button{ID: idConsole, Text: "Console", Variant: ui.ButtonSecondary}
+		consoleBtn = ui.Button{ID: idConsole, Text: i18n.Get("workspaces.console"), Variant: ui.ButtonSecondary}
 	}
 	browserBtn := ui.Button{}
 	if browser {
-		browserBtn = ui.Button{ID: idOpenInBrowser, Text: "Open in browser", Variant: ui.ButtonSecondary}
+		browserBtn = ui.Button{ID: idOpenInBrowser, Text: i18n.Get("workspaces.openBrowser"), Variant: ui.ButtonSecondary}
 	}
 	observeBtn := ui.Button{}
 	if observe {
-		observeBtn = ui.Button{ID: idObserve, Text: "Observe", Variant: ui.ButtonSecondary}
+		observeBtn = ui.Button{ID: idObserve, Text: i18n.Get("workspaces.observe"), Variant: ui.ButtonSecondary}
 	}
 	// Stop is the quiet inverse of the primary action, offered for exactly the
 	// workspaces that have one to stop: the running ones.
-	stop := ui.Button{ID: idStop, Text: "Stop", Variant: ui.ButtonSecondary}
+	stop := ui.Button{ID: idStop, Text: i18n.Get("workspaces.stop"), Variant: ui.ButtonSecondary}
 	showStop := has && ws.Running()
 	// Info is for looking, not acting, so it is secondary to the open button
 	// and disabled when there is no selection to look at.
-	info := ui.Button{ID: idInfo, Text: "Info", Variant: ui.ButtonSecondary, Disabled: !has}
+	info := ui.Button{ID: idInfo, Text: i18n.Get("workspaces.info"), Variant: ui.ButtonSecondary, Disabled: !has}
 
 	widths := []int{max(180, open.Width(ctx))}
 	if console {
@@ -737,9 +737,9 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	}
 	ci++
 
-	hint := "Enter opens  ·  F5 refreshes  ·  Ctrl-F filters  ·  Tab moves"
+	hint := i18n.Get("workspaces.hint")
 	if !a.m.LastRefresh.IsZero() {
-		hint = "Updated " + since(a.m.LastRefresh, a.ctx.Input.Now) + "  ·  " + hint
+		hint = i18n.Sprintf("workspaces.updated", since(a.m.LastRefresh, a.ctx.Input.Now)) + "  ·  " + hint
 	}
 	ui.Label(ctx, ui.InsetXY(cols[ci], th.Gap, 0), hint, ui.LabelStyle{
 		Color:  th.TextMuted,
@@ -838,16 +838,16 @@ func (a *App) drawWorkspaceInfoModal(bounds ui.Rect) intent {
 	}
 
 	footer := body.Next(parts[len(parts)-1])
-	closeRow := ui.Button{ID: idInfoClose, Text: "Close", Variant: ui.ButtonPrimary}
+	closeRow := ui.Button{ID: idInfoClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
 	// Start/Stop is the one thing a detail sheet is worth acting on: the rest
 	// of the modal is for looking. It is omitted in the in-between state
 	// (neither stopped nor running) because neither action applies then.
 	toggleKind, toggleText, toggleID := intentNone, "", ui.FocusID("")
 	switch {
 	case ws.Stopped:
-		toggleKind, toggleText, toggleID = intentStartWorkspace, "Start", idInfoStart
+		toggleKind, toggleText, toggleID = intentStartWorkspace, i18n.Get("workspaces.start"), idInfoStart
 	case ws.Running():
-		toggleKind, toggleText, toggleID = intentStopWorkspace, "Stop", idInfoStop
+		toggleKind, toggleText, toggleID = intentStopWorkspace, i18n.Get("workspaces.stop"), idInfoStop
 	}
 	rest := footer
 	if toggleKind != intentNone {
@@ -879,27 +879,27 @@ func workspaceInfoRows(ws *kwclient.Workspace) [][2]string {
 		}
 	}
 
-	add("Namespace", ws.Namespace)
-	add("Type", string(ws.Type))
-	add("Status", StatusText(*ws))
-	add("Image", ws.Image)
+	add(i18n.Get("info.namespace"), ws.Namespace)
+	add(i18n.Get("info.type"), string(ws.Type))
+	add(i18n.Get("info.status"), StatusText(*ws))
+	add(i18n.Get("info.image"), ws.Image)
 	if ws.Port != nil {
-		add("Port", fmt.Sprintf("%d", *ws.Port))
+		add(i18n.Get("info.port"), fmt.Sprintf("%d", *ws.Port))
 	}
 	if rd := ws.RemoteDesktop; rd != nil {
 		path := "/"
 		if rd.Path != nil {
 			path = *rd.Path
 		}
-		add("Transport", fmt.Sprintf("%s (port %d, path %s)", rd.Protocol, rd.Port, path))
+		add(i18n.Get("info.transport"), fmt.Sprintf("%s (port %d, path %s)", rd.Protocol, rd.Port, path))
 	}
-	add("CPU", resourceRange(ws.CPURequest, ws.CPULimit))
-	add("Memory", resourceRange(ws.MemoryRequest, ws.MemoryLimit))
+	add(i18n.Get("info.cpu"), resourceRange(ws.CPURequest, ws.CPULimit))
+	add(i18n.Get("info.memory"), resourceRange(ws.MemoryRequest, ws.MemoryLimit))
 	if t, ok := ws.CreatedAtTime(); ok {
-		add("Created", t.Local().Format("2 Jan 2006 15:04"))
+		add(i18n.Get("info.created"), t.Local().Format("2 Jan 2006 15:04"))
 	}
 	for _, vm := range ws.VolumeMounts {
-		add("Volume", vm.Name+" -> "+vm.MountPath)
+		add(i18n.Get("info.volume"), vm.Name+" -> "+vm.MountPath)
 	}
 	for _, c := range ws.Conditions {
 		detail := c.Status
@@ -909,7 +909,7 @@ func workspaceInfoRows(ws *kwclient.Workspace) [][2]string {
 		if c.Message != "" && c.Message != c.Reason {
 			detail += ": " + c.Message
 		}
-		add("Condition "+c.Type, detail)
+		add(i18n.Sprintf("info.condition", c.Type), detail)
 	}
 	return rows
 }
@@ -920,10 +920,10 @@ func workspaceInfoRows(ws *kwclient.Workspace) [][2]string {
 func resourceRange(request, limit *string) string {
 	var parts []string
 	if request != nil && *request != "" {
-		parts = append(parts, "request "+*request)
+		parts = append(parts, i18n.Sprintf("info.request", *request))
 	}
 	if limit != nil && *limit != "" {
-		parts = append(parts, "limit "+*limit)
+		parts = append(parts, i18n.Sprintf("info.limit", *limit))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -999,7 +999,7 @@ func (a *App) identityLine() string {
 		who = a.m.Identity.DisplayName
 	}
 	if who == "" {
-		who = "authentication disabled"
+		who = i18n.Get("header.noAuth")
 	}
 	if a.m.Identity.Role != "" {
 		who += " (" + a.m.Identity.Role + ")"
@@ -1011,11 +1011,11 @@ func (a *App) identityLine() string {
 func (a *App) emptyText() string {
 	switch {
 	case a.m.Filter != "" && len(a.m.Workspaces) > 0:
-		return fmt.Sprintf("No workspace matches %q.", a.m.Filter)
+		return i18n.Sprintf("workspaces.noMatch", a.m.Filter)
 	case a.m.LastRefresh.IsZero():
-		return "Loading workspaces..."
+		return i18n.Get("workspaces.loading")
 	default:
-		return "You have no workspaces yet. Create one in the web UI."
+		return i18n.Get("workspaces.empty")
 	}
 }
 
@@ -1045,12 +1045,12 @@ func since(then, now time.Time) string {
 	d := now.Sub(then)
 	switch {
 	case d < 10*time.Second:
-		return "just now"
+		return i18n.Get("since.now")
 	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+		return i18n.Sprintf("since.secs", int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+		return i18n.Sprintf("since.mins", int(d.Minutes()))
 	default:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
+		return i18n.Sprintf("since.hours", int(d.Hours()))
 	}
 }

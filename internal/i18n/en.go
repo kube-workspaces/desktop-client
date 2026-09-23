@@ -1,0 +1,186 @@
+// Copyright The kube-workspaces Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package i18n
+
+// english is the complete message table: every sentence the window shows,
+// keyed stably so a future locale file only translates values. Keys are
+// dotted section names ("server.connect"); verbs stay in the values so
+// translators can reorder them and the call sites pass only data.
+//
+// Diagnostics (logf lines, %w error wraps) are deliberately not here: they
+// are for the operator's log, not the user's window.
+var english = map[string]string{
+	"app.name": "Kube Workspaces",
+
+	// Server screen.
+	"server.subtitle":     "Connect to your workspaces instance.",
+	"server.address":      "SERVER ADDRESS",
+	"server.placeholder":  "https://workspaces.example.com",
+	"server.tls":          "Ignore TLS certificate errors",
+	"server.connect":      "Connect",
+	"server.hint":         "Tab moves between fields  ·  Enter connects",
+	"server.enterAddress": "Enter the address of your Kube Workspaces instance.",
+
+	// Login screen.
+	"login.title":            "Sign in",
+	"login.email":            "EMAIL",
+	"login.emailPlaceholder": "you@example.com",
+	"login.enterEmail":       "Enter your email address.",
+	"login.password":         "PASSWORD",
+	"login.enterPassword":    "Enter your password.",
+	"login.signin":           "Sign in",
+	"login.browser":          "Sign in with browser",
+	"login.cancel":           "Cancel",
+	"login.continue":         "Continue",
+	"login.back":             "Use a different server",
+	"login.or":               "or",
+	"login.noMethod": "This instance offers no sign-in method this client can use. " +
+		"Ask an administrator whether browser sign-in is enabled.",
+	"login.noSignin":      "This instance does not require sign-in.",
+	"login.sentTo":        "You will be sent to %s",
+	"login.waitingLabel":  "Waiting for your browser...",
+	"login.complete":      "Complete the sign-in in the window that opened, then come back here.",
+	"login.ifNothing":     "IF NOTHING OPENED, VISIT",
+	"login.noBrowserCopy": "No browser could be opened. Copy the address below.",
+	"login.cancelled":     "Sign-in cancelled.",
+
+	// Busy captions (drawn with a spinner; drawBusy appends the ellipsis).
+	"busy.contacting":     "Contacting %s",
+	"busy.checking":       "Checking your session",
+	"busy.signing":        "Signing in",
+	"busy.waitingBrowser": "Waiting for your browser",
+	"busy.openingBrowser": "Opening %s in your browser",
+	"busy.starting":       "Starting",
+	"busy.stopping":       "Stopping",
+	"busy.started":        "Started",
+	"busy.stopped":        "Stopped",
+
+	// Workspace list.
+	"workspaces.title":         "Workspaces",
+	"workspaces.refresh":       "Refresh",
+	"workspaces.filter":        "Filter workspaces",
+	"workspaces.hint":          "Enter opens  ·  F5 refreshes  ·  Ctrl-F filters  ·  Tab moves",
+	"workspaces.updated":       "Updated %s",
+	"workspaces.loading":       "Loading workspaces...",
+	"workspaces.empty":         "You have no workspaces yet. Create one in the web UI.",
+	"workspaces.noMatch":       "No workspace matches %q.",
+	"workspaces.open":          "Open",
+	"workspaces.notOpenable":   "%s is %s and cannot be opened yet.",
+	"workspaces.startStopDone": "%s %s.",
+	"workspaces.start":         "Start",
+	"workspaces.notRunning":    "Not running",
+	"workspaces.openDisplay":   "Open display",
+	"workspaces.openWeb":       "Open web",
+	"workspaces.console":       "Console",
+	"workspaces.openBrowser":   "Open in browser",
+	"workspaces.observe":       "Observe",
+	"workspaces.observer":      " (observer)",
+	"workspaces.stop":          "Stop",
+	"workspaces.info":          "Info",
+	"workspaces.close":         "Close",
+	"workspaces.tier1":         " · Tier 1",
+	"workspaces.signedOut":     "You are signed out.",
+	"workspaces.noSave":        "Signed in, but the session could not be saved: %s",
+	"workspaces.mustChange":    "This account must change its password in the web UI.",
+	"workspaces.openedView":    "Opened %s in the web view.",
+	"workspaces.opened":        "Opened %s in your browser.",
+	"workspaces.noBrowser":     "No browser could be opened. Visit %s",
+	"workspaces.viewFailed":    "Web view could not be started (%v). The browser path still works.",
+	"workspaces.gone":          "Disconnected from %s.",
+	"workspaces.noAuth":        "Authentication is disabled on this instance.",
+	"workspaces.expired":       "Your session has expired. Please sign in again.",
+	"workspaces.cancelled":     "Cancelled.",
+
+	// Workspace info modal.
+	"info.namespace": "Namespace",
+	"info.type":      "Type",
+	"info.status":    "Status",
+	"info.image":     "Image",
+	"info.port":      "Port",
+	"info.transport": "Transport",
+	"info.cpu":       "CPU",
+	"info.memory":    "Memory",
+	"info.created":   "Created",
+	"info.volume":    "Volume",
+	"info.condition": "Condition %s",
+	"info.request":   "request %s",
+	"info.limit":     "limit %s",
+
+	// Header.
+	"header.signout":  "Sign out",
+	"header.settings": "Settings",
+	"header.noAuth":   "authentication disabled",
+
+	// Status words.
+	"status.stopped":  "stopped",
+	"status.running":  "running",
+	"status.starting": "starting: %s",
+	"status.startup":  "starting",
+
+	// Relative ages.
+	"since.now":   "just now",
+	"since.secs":  "%ds ago",
+	"since.mins":  "%dm ago",
+	"since.hours": "%dh ago",
+
+	// Settings screen.
+	"settings.title":    "Settings",
+	"settings.subtitle": "How the client looks. Choices save as you make them.",
+	"settings.style":    "STYLE",
+	"settings.bubbly":   "Bubbly",
+	"settings.retro":    "Retro",
+	"settings.clean":    "Clean",
+	"settings.colours":  "COLOURS",
+	"settings.dark":     "Dark",
+	"settings.light":    "Light",
+	"settings.size":     "INTERFACE SIZE",
+	"settings.auto":     "Auto",
+	"settings.scale100": "100%",
+	"settings.scale150": "150%",
+	"settings.scale200": "200%",
+	"settings.flagNote": "The --ui-scale flag overrides this choice for this run.",
+	"settings.done":     "Done",
+	"settings.hint":     "Changes save as you pick  ·  Escape closes",
+
+	// Failure sentences (Describe and friends).
+	"errors.cancelled":      "Cancelled.",
+	"errors.timeout":        "The server took too long to answer.",
+	"errors.badCredentials": "That email address and password were not accepted.",
+	"errors.locked":         "This account is locked after too many failed sign-ins. Wait a few minutes and try again.",
+	"errors.disabled":       "This account is disabled. Ask an administrator to re-enable it.",
+	"errors.rateLimited":    "Too many attempts. Wait a moment and try again.",
+	"errors.localDisabled":  "This instance does not accept a password here. Use Sign in with browser.",
+	"errors.noSession":      "The server accepted the sign-in but issued no session. Report this to an administrator.",
+	"errors.badRequest":     "The server rejected the request. Check the email address.",
+	"errors.browserTimeout": "The browser sign-in was not completed in time. Try again.",
+	"errors.stateMismatch":  "The browser sign-in could not be verified and was abandoned. Try again.",
+	"errors.authDenied":     "The identity provider refused the sign-in: %s",
+	"errors.nativeMissing":  "This instance is running an API build without browser sign-in.",
+	"errors.expired":        "Your session has expired. Please sign in again.",
+	"errors.forbidden":      "You do not have access to that. Opening a display needs the editor or admin role.",
+	"errors.notFound":       "That workspace no longer exists.",
+	"errors.inUse":          "Another client is using this workspace's display. There is no way to take it over; wait for it to be released.",
+	"errors.notVM":          "This workspace has no display. Open it in a browser instead.",
+	"errors.unavailable":    "The instance is unavailable. It may be in maintenance.",
+	"errors.badGateway":     "The instance could not reach the workspace.",
+	"errors.cert":           "The server's TLS certificate was not accepted: %s%s",
+	"errors.certUnknown":    "it was not issued by a trusted authority.",
+	"errors.certHost":       "it is not valid for %s.",
+	"errors.certSelfSigned": " If this is a development instance with a self-signed certificate, enable \"Ignore TLS certificate errors\".",
+	"errors.noTLS":          "That address did not answer with TLS. Check whether it should be http:// rather than https://.",
+	"errors.dns":            "That host name could not be resolved (%s). Check the address.",
+	"errors.timeoutAddr":    "The instance did not answer in time. Check the address and your network.",
+	"errors.unreachable":    "Could not reach the instance: %s.",
+	"errors.requestFailed":  "The request failed.",
+
+	// Session and shared-display status.
+	"session.observerHint": "Ctrl+Alt+C to keep observing",
+	"session.controlFail":  "Control request failed",
+	"session.releaseFail":  "Release failed",
+	// Takeover and capability errors travel as error values through the
+	// viewer, which shows them verbatim: they keep their sentence case
+	// here rather than in Describe's fallback capitaliser.
+	"session.takeoverDeclined": "server declined the takeover",
+	"session.sharedDisabled":   "shared display sessions are not enabled on this platform",
+}

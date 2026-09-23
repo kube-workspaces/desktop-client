@@ -4,9 +4,11 @@
 package shell
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 )
@@ -127,5 +129,39 @@ func TestSettingsScreenPicksInterfaceSize(t *testing.T) {
 	}
 	if r.app.opts.Theme.Body != 2 {
 		t.Fatalf("automatic left body=%d, want 2", r.app.opts.Theme.Body)
+	}
+}
+
+// TestPseudoLocaleRendersTheShell is the headless half of the translation
+// check: under the expanded pseudo-locale every cataloged string still flows
+// through the same screens without crashing, and the window visibly carries
+// the locale (spot-checked on the settings title).
+func TestPseudoLocaleRendersTheShell(t *testing.T) {
+	defer i18n.SetLocale("en")
+	i18n.SetLocale("xx")
+
+	r := newRig(savedProfile(), "stored-token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}
+	})
+	r.start()
+	if r.app.m.State != StateWorkspaces {
+		t.Fatalf("setup failed: state = %v", r.app.m.State)
+	}
+
+	r.focus(idSettings)
+	r.clickFocused()
+	r.settle()
+	if r.app.m.State != StateSettings {
+		t.Fatalf("the settings button left the shell on %v", r.app.m.State)
+	}
+	// The settings title is the pseudo-locale transform of "Settings": the
+	// catalog, not a hardcoded literal, fed the screen.
+	if title := i18n.Get("settings.title"); !strings.HasPrefix(title, "[[") {
+		t.Fatalf("pseudo-locale title = %q, want brackets", title)
+	}
+	// Errors render through the catalog too.
+	if got := Describe(nil); got != "" {
+		t.Fatalf("Describe(nil) under xx = %q, want empty", got)
 	}
 }

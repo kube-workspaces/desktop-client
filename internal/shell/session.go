@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
@@ -175,7 +176,7 @@ func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
 				return err
 			}
 			if !res.OK {
-				return errors.New("server declined the takeover")
+				return errors.New(i18n.Get("session.takeoverDeclined"))
 			}
 			sess.RetryNow()
 			return nil
@@ -207,7 +208,7 @@ func connectObserver(ctx context.Context, client API, ws kwclient.Workspace, opt
 		return err
 	}
 	if !cap.Enabled {
-		return errors.New("shared display sessions are not enabled on this platform")
+		return errors.New(i18n.Get("session.sharedDisabled"))
 	}
 
 	join, err := client.JoinDisplay(ctx, ws.Namespace, ws.Name, kwclient.DisplayRoleObserver)
@@ -223,7 +224,7 @@ func connectObserver(ctx context.Context, client API, ws kwclient.Workspace, opt
 
 	view := viewer.New(viewer.NewSDLBackend(), viewer.Config{
 		AdaptiveQuality: !opts.FixedQuality,
-		Title:           ws.Key() + " (observer)",
+		Title:           ws.Key() + i18n.Get("workspaces.observer"),
 		ReadOnly:        true,
 		ControlRune:     'c',
 		ScaleQuality:    opts.ScaleQuality,
@@ -326,10 +327,10 @@ func (c *sharedControl) requestLocked(force bool) {
 		if errors.Is(err, kwclient.ErrControllerPresent) && !force {
 			c.prompting = true
 			c.view.SetTakeoverHandler(c.takeover)
-			c.view.SetStatus(viewer.StatusDisplayInUse, "Ctrl+Alt+C to keep observing")
+			c.view.SetStatus(viewer.StatusDisplayInUse, i18n.Get("session.observerHint"))
 			return
 		}
-		c.failLocked("Control request failed", err)
+		c.failLocked(i18n.Get("session.controlFail"), err)
 		return
 	}
 	c.clearPromptLocked()
@@ -359,7 +360,7 @@ func (c *sharedControl) releaseLocked() {
 	ctx, cancel := context.WithTimeout(context.Background(), sharedControlREST)
 	defer cancel()
 	if _, err := c.client.ReleaseDisplayControl(ctx, c.ws.Namespace, c.ws.Name, c.participantID); err != nil {
-		c.failLocked("Release failed", err)
+		c.failLocked(i18n.Get("session.releaseFail"), err)
 		return
 	}
 	c.applyRoleLocked(kwclient.DisplayRoleObserver, false)

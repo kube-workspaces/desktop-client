@@ -17,6 +17,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/kube-workspaces/desktop-client/internal/console"
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -36,6 +37,11 @@ func main() {
 	// cmd.exe or PowerShell. This reattaches them. No-op everywhere else —
 	// see internal/console.
 	console.AttachParent()
+
+	// Window copy follows the system locale (LANG/LC_ALL); only English
+	// ships today, so this is a no-op until the first locale table lands —
+	// but the detection must already be in place when it does.
+	i18n.SetLocale("")
 
 	commands := []command{
 		shellCommand(),

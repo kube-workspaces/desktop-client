@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
@@ -86,7 +87,7 @@ func (a *App) act(ctx context.Context, in intent) {
 	case intentCancel:
 		a.cancelInFlight()
 		a.m.Done()
-		a.m.Notice = "Cancelled."
+		a.m.Notice = i18n.Get("workspaces.cancelled")
 	case intentRefresh:
 		a.refreshWorkspaces(ctx, true)
 		a.refreshImages(ctx)
@@ -154,7 +155,7 @@ func (a *App) act(ctx context.Context, in intent) {
 func (a *App) connectToServer(ctx context.Context, server string, insecure bool) {
 	server = NormaliseServer(server)
 	if server == "" {
-		a.m.Err = "Enter the address of your Kube Workspaces instance."
+		a.m.Err = i18n.Get("server.enterAddress")
 		return
 	}
 	if err := a.useServer(server, insecure); err != nil {
@@ -162,7 +163,7 @@ func (a *App) connectToServer(ctx context.Context, server string, insecure bool)
 		a.m.Err = Describe(err)
 		return
 	}
-	a.m.Working("Contacting " + server)
+	a.m.Working(i18n.Sprintf("busy.contacting", server))
 
 	api := a.api
 	opCtx, cancel := context.WithTimeout(ctx, probeTimeout)
@@ -213,7 +214,7 @@ func (a *App) ensureAuthConfig(ctx context.Context) {
 	// session has expired", typically — is the reason the user is on this
 	// screen at all. Carry it across the probe and put it back.
 	was := a.m.Err
-	a.m.Working("Contacting " + server)
+	a.m.Working(i18n.Sprintf("busy.contacting", server))
 	opCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	a.cancelInFlight()
 	a.cancelPending = cancel
@@ -254,7 +255,7 @@ func (a *App) verifySession(ctx context.Context) {
 		return
 	}
 	api := a.api
-	a.m.Working("Checking your session")
+	a.m.Working(i18n.Get("busy.checking"))
 	opCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	a.cancelInFlight()
 	a.cancelPending = cancel
@@ -275,13 +276,13 @@ func (a *App) verifySession(ctx context.Context) {
 			case identity.AuthEnabled && !identity.Authenticated:
 				a.m.State = StateLogin
 				a.m.Identity = nil
-				a.m.Err = "Your session has expired. Please sign in again."
+				a.m.Err = i18n.Get("workspaces.expired")
 				a.ensureAuthConfig(ctx)
 
 			default:
 				a.m.SignedIn(identity)
 				if identity.MustChangePassword {
-					a.m.Notice = "This account must change its password in the web UI."
+					a.m.Notice = i18n.Get("workspaces.mustChange")
 				}
 				a.rememberProfile(a.m.Server, a.m.Insecure, identity.Email)
 				a.refreshWorkspaces(ctx, true)
@@ -298,15 +299,15 @@ func (a *App) signInLocal(ctx context.Context, email, password string) {
 		a.m.NeedServer("")
 		return
 	case strings.TrimSpace(email) == "":
-		a.m.Err = "Enter your email address."
+		a.m.Err = i18n.Get("login.enterEmail")
 		return
 	case password == "":
-		a.m.Err = "Enter your password."
+		a.m.Err = i18n.Get("login.enterPassword")
 		return
 	}
 
 	api := a.api
-	a.m.Working("Signing in")
+	a.m.Working(i18n.Get("busy.signing"))
 	opCtx, cancel := context.WithTimeout(ctx, loginTimeout)
 	a.cancelInFlight()
 	a.cancelPending = cancel
@@ -343,7 +344,7 @@ func (a *App) signInBrowser(ctx context.Context) {
 	}
 	api := a.api
 	a.authorizeURL = ""
-	a.m.Working("Waiting for your browser")
+	a.m.Working(i18n.Get("busy.waitingBrowser"))
 
 	// No timeout of ours: LoginBrowser applies its own, generous enough for a
 	// consent screen and an MFA prompt. Cancellation is the user's, through
@@ -361,7 +362,7 @@ func (a *App) signInBrowser(ctx context.Context) {
 				a.post(func() {
 					a.authorizeURL = authorizeURL
 					if notifyErr != nil {
-						a.m.Notice = "No browser could be opened. Copy the address below."
+						a.m.Notice = i18n.Get("login.noBrowserCopy")
 					}
 					a.dirty = true
 				})
@@ -373,7 +374,7 @@ func (a *App) signInBrowser(ctx context.Context) {
 			if err != nil {
 				a.m.Done()
 				if errors.Is(err, context.Canceled) {
-					a.m.Notice = "Sign-in cancelled."
+					a.m.Notice = i18n.Get("login.cancelled")
 					a.m.Err = ""
 					return
 				}
@@ -396,10 +397,10 @@ func (a *App) finishLogin(ctx context.Context, token, email string, mustChange b
 	if err := a.opts.Store.Save(a.profile, token); err != nil {
 		// Not fatal: the session works, it just will not survive a restart.
 		a.logf("store session token: %v", err)
-		a.m.Notice = "Signed in, but the session could not be saved: " + Describe(err)
+		a.m.Notice = i18n.Sprintf("workspaces.noSave", Describe(err))
 	}
 	if mustChange {
-		a.m.Notice = "This account must change its password in the web UI."
+		a.m.Notice = i18n.Get("workspaces.mustChange")
 	}
 	a.verifySession(ctx)
 }
@@ -499,7 +500,7 @@ func (a *App) activate(ctx context.Context, ws kwclient.Workspace, observer bool
 	switch {
 	case !ws.Running():
 		a.m.Notice = ""
-		a.m.Err = fmt.Sprintf("%s is %s and cannot be opened yet.", ws.Name, StatusText(ws))
+		a.m.Err = i18n.Sprintf("workspaces.notOpenable", ws.Name, StatusText(ws))
 	case ws.IsVM(), ws.Type == kwclient.WorkspaceTypeContainer, ws.Type == kwclient.WorkspaceTypeScratch:
 		if observer {
 			// Observe is the VM-only exception to the normal connector: it
@@ -530,7 +531,7 @@ func (a *App) activate(ctx context.Context, ws kwclient.Workspace, observer bool
 func (a *App) openWeb(ctx context.Context, ws kwclient.Workspace) {
 	if !ws.Running() {
 		a.m.Notice = ""
-		a.m.Err = fmt.Sprintf("%s is %s and cannot be opened yet.", ws.Name, StatusText(ws))
+		a.m.Err = i18n.Sprintf("workspaces.notOpenable", ws.Name, StatusText(ws))
 		return
 	}
 	profile := ""
@@ -539,11 +540,11 @@ func (a *App) openWeb(ctx context.Context, ws kwclient.Workspace) {
 	}
 	if err := a.opts.OpenWeb(profile, ws.Namespace, ws.Name); err != nil {
 		a.m.Notice = ""
-		a.m.Err = fmt.Sprintf("Web view could not be started (%v). The browser path still works.", err)
+		a.m.Err = i18n.Sprintf("workspaces.viewFailed", err)
 		return
 	}
 	a.m.Err = ""
-	a.m.Notice = "Opened " + ws.Name + " in the web view."
+	a.m.Notice = i18n.Sprintf("workspaces.openedView", ws.Name)
 }
 
 // openInBrowser opens a container workspace's web UI in the user's browser.
@@ -561,14 +562,14 @@ func (a *App) openInBrowser(ctx context.Context, ws kwclient.Workspace) {
 	}
 	if !ws.Running() {
 		a.m.Notice = ""
-		a.m.Err = fmt.Sprintf("%s is %s and cannot be opened yet.", ws.Name, StatusText(ws))
+		a.m.Err = i18n.Sprintf("workspaces.notOpenable", ws.Name, StatusText(ws))
 		return
 	}
 
 	api := a.api
 	redirect := a.api.WorkspacePath(ws, a.imageFor(ws))
 
-	a.m.Working("Opening " + ws.Name + " in your browser")
+	a.m.Working(i18n.Sprintf("busy.openingBrowser", ws.Name))
 	opCtx, cancel := context.WithTimeout(ctx, listTimeout)
 	a.cancelInFlight()
 	a.cancelPending = cancel
@@ -586,11 +587,11 @@ func (a *App) openInBrowser(ctx context.Context, ws kwclient.Workspace) {
 				return
 			}
 			if err := a.opts.OpenBrowser(grant.URL); err != nil {
-				a.m.Err = "No browser could be opened. Visit " + grant.URL
+				a.m.Err = i18n.Sprintf("workspaces.noBrowser", grant.URL)
 				return
 			}
 			a.m.Err = ""
-			a.m.Notice = "Opened " + ws.Name + " in your browser."
+			a.m.Notice = i18n.Sprintf("workspaces.opened", ws.Name)
 		}
 	})
 }
@@ -602,9 +603,9 @@ func (a *App) setStopped(ctx context.Context, ws kwclient.Workspace, stop bool) 
 		return
 	}
 	api := a.api
-	what := "Starting"
+	what := i18n.Get("busy.starting")
 	if stop {
-		what = "Stopping"
+		what = i18n.Get("busy.stopping")
 	}
 	a.m.Working(what + " " + ws.Name)
 	opCtx, cancel := context.WithTimeout(ctx, listTimeout)
@@ -631,11 +632,11 @@ func (a *App) setStopped(ctx context.Context, ws kwclient.Workspace, stop bool) 
 			// The Info modal, when it is up, is about the workspace that just
 			// changed; close it rather than leave a stale sheet in the way.
 			a.m.CloseInfo()
-			done := "Started"
+			done := i18n.Get("busy.started")
 			if stop {
-				done = "Stopped"
+				done = i18n.Get("busy.stopped")
 			}
-			a.m.Notice = fmt.Sprintf("%s %s.", done, ws.Name)
+			a.m.Notice = i18n.Sprintf("workspaces.startStopDone", done, ws.Name)
 			a.refreshWorkspaces(ctx, true)
 		}
 	})
@@ -652,7 +653,7 @@ func (a *App) signOut() {
 		a.logf("forget token: %v", err)
 	}
 	a.passwordField.Clear()
-	a.m.SignOut("You are signed out.")
+	a.m.SignOut(i18n.Get("workspaces.signedOut"))
 }
 
 // rememberProfile updates the in-memory profile for the current instance.

@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
@@ -223,16 +224,16 @@ func New(opts Options) (*App, error) {
 		lastState: State(-1),
 	}
 	a.serverField.ID = idServer
-	a.serverField.Placeholder = "https://workspaces.example.com"
+	a.serverField.Placeholder = i18n.Get("server.placeholder")
 	a.emailField.ID = idEmail
-	a.emailField.Placeholder = "you@example.com"
+	a.emailField.Placeholder = i18n.Get("login.emailPlaceholder")
 	a.passwordField.ID = idPassword
 	a.passwordField.Password = true
 	a.filterField.ID = idFilter
-	a.filterField.Placeholder = "Filter workspaces"
+	a.filterField.Placeholder = i18n.Get("workspaces.filter")
 	a.list.ID = idList
 	a.insecureBox.ID = idInsecure
-	a.insecureBox.Label = "Ignore TLS certificate errors"
+	a.insecureBox.Label = i18n.Get("server.tls")
 
 	a.ctx.Clipboard = a.be.Clipboard
 	a.ctx.SetClipboard = a.be.SetClipboard

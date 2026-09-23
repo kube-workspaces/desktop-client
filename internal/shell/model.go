@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 )
 
@@ -146,7 +147,7 @@ func (m *Model) ServerReady(server string, insecure bool, cfg *kwclient.AuthConf
 	// Sending the user to a login screen with no fields and no buttons would
 	// be a dead end; the caller proceeds straight to the list instead.
 	if cfg != nil && !cfg.Enabled {
-		m.Notice = "Authentication is disabled on this instance."
+		m.Notice = i18n.Get("workspaces.noAuth")
 	}
 }
 
@@ -179,7 +180,7 @@ func (m *Model) SignOut(reason string) {
 // Expired is [Model.SignOut] for a session the server has stopped accepting.
 func (m *Model) Expired() {
 	m.SignOut("")
-	m.Err = "Your session has expired. Please sign in again."
+	m.Err = i18n.Get("workspaces.expired")
 }
 
 // Fail records an error against the current screen, routing an expired session
@@ -284,7 +285,7 @@ func (m *Model) SessionEnded(err error) {
 
 	switch {
 	case err == nil:
-		m.Err, m.Notice = "", "Disconnected from "+ws.Key()+"."
+		m.Err, m.Notice = "", i18n.Sprintf("workspaces.gone", ws.Key())
 	case errors.Is(err, kwclient.ErrUnauthorized):
 		m.Expired()
 	default:
@@ -379,12 +380,12 @@ func sortWorkspaces(workspaces []kwclient.Workspace) []kwclient.Workspace {
 func StatusText(ws kwclient.Workspace) string {
 	switch {
 	case ws.Stopped:
-		return "stopped"
+		return i18n.Get("status.stopped")
 	case ws.ReadyReplicas > 0:
-		return "running"
+		return i18n.Get("status.running")
 	case ws.ContainerState != nil && ws.ContainerState.Reason != "":
-		return "starting: " + ws.ContainerState.Reason
+		return i18n.Sprintf("status.starting", ws.ContainerState.Reason)
 	default:
-		return "starting"
+		return i18n.Get("status.startup")
 	}
 }
