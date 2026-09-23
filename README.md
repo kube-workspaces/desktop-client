@@ -22,6 +22,52 @@ connect.
 > in each release's notes. Until then, expect warnings until the binaries gain a
 > reputation through repeated downloads.
 
+## Updates
+
+Release builds check GitHub Releases after the first shell frame, at most once
+per 24 hours. **Settings → Updates** shows the current/latest version and offers
+**Download update**, then **Restart to update**. Automatic checks can be disabled
+there. Checks and downloads never restart sessions; close parked sessions and
+embedded-webview windows before restarting. Settings are also accessible before
+sign-in. Development/dirty builds do not receive automatic update offers.
+
+```sh
+kube-workspaces update --check   # report latest stable release
+kube-workspaces update           # confirm before downloading/installing
+kube-workspaces update --yes     # install without prompting; close other instances first
+```
+
+The updater replaces the shell and companion binary from the same verified
+archive, keeping a `.prev` generation until the new graphical shell presents
+its first frame. A helper waits for the old shell to exit before the GUI update
+is applied, including on Windows. Failed installed-version checks restore the
+previous files. Profiles, credentials, system libraries, and workspace state
+are outside the install transaction.
+
+Archive installs must be writable. For a protected location such as Windows
+Program Files, close all instances and run the CLI update with the required
+permissions, or install the release manually. On macOS, move the app out of a
+translocated download location first. This binary-only updater preserves the
+existing bundle/resources and xattrs; signed bundles require a future
+whole-bundle updater and are refused rather than modified.
+
+`KUBE_WORKSPACES_NO_UPDATE=1` disables automatic checks; explicit checks still
+work. A `no-auto-update` file in the client configuration directory disables
+both manual and automatic update network calls for managed installs.
+
+Downloads are checked against the release's `SHA256SUMS` over HTTPS. This is
+checksum integrity, not publisher-signature verification. The six-target
+release archive contract is checked in CI. The first release containing this
+updater must be installed manually; older clients cannot discover this feature
+by themselves.
+
+If an update is interrupted, keep `.prev` files and close all client processes.
+`kube-workspaces update --recover` rolls back a recorded incomplete transaction.
+If the interruption left no launchable shell, restore the `.prev` shell first
+(remove the suffix), then run recovery; retain the companion backup until
+recovery completes. Helper failures appear under Settings → Updates on the next
+launch. Native macOS/Windows acceptance remains recorded in the tracking plan.
+
 ## Which binary do I need?
 
 For a normal user the answer is **one download**: the release archive for your

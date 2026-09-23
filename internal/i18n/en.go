@@ -11,7 +11,25 @@ package i18n
 // Diagnostics (logf lines, %w error wraps) are deliberately not here: they
 // are for the operator's log, not the user's window.
 var english = map[string]string{
-	"app.name": "Kube Workspaces",
+	"updates.never":          "Never",
+	"updates.title":          "Updates",
+	"updates.availableBadge": "Update available",
+	"updates.current":        "Current version: %s",
+	"updates.checked":        "Last check: %s",
+	"updates.managed":        "Updates are managed for this installation.",
+	"updates.checking":       "Checking GitHub Releases...",
+	"updates.failed":         "Update failed: %v. Try again when ready.",
+	"updates.latest":         "Latest stable release: %s",
+	"updates.downloading":    "Downloading and verifying release...",
+	"updates.bytes":          "Downloaded: %d bytes",
+	"updates.ready":          "Verified update ready to install.",
+	"updates.sessions":       "Close all sessions (including parked sessions and web windows) before restarting.",
+	"updates.autoOn":         "Automatic checks: On",
+	"updates.autoOff":        "Automatic checks: Off",
+	"updates.check":          "Check now / Retry",
+	"updates.download":       "Download update",
+	"updates.restart":        "Restart to update",
+	"app.name":               "Kube Workspaces",
 
 	// Server screen.
 	"server.subtitle":     "Connect to your workspaces instance.",

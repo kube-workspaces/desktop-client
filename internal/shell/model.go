@@ -34,6 +34,7 @@ const (
 	// StateSettings is the settings screen: appearance preferences that live
 	// on this computer, not on any instance.
 	StateSettings
+	StateUpdates
 	// StateSession means a display session is running in its own window.
 	// The shell's own loop is parked for the duration and resumes on
 	// StateWorkspaces.
@@ -51,6 +52,8 @@ func (s State) String() string {
 		return "workspaces"
 	case StateSettings:
 		return "settings"
+	case StateUpdates:
+		return "updates"
 	case StateSession:
 		return "session"
 	default:

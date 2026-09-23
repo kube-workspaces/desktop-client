@@ -57,6 +57,46 @@ type Settings struct {
 	// off-screen.
 	WindowWidth  int `json:"windowWidth,omitempty"`
 	WindowHeight int `json:"windowHeight,omitempty"`
+	// AutoUpdate enables the background release check. It is a pointer so
+	// that "absent" keeps its meaning: nil (or a fresh config) means the
+	// default, which is on. Use [Settings.AutoUpdateEnabled] to read it and
+	// [Bool] to write it.
+	AutoUpdate *bool `json:"autoUpdate,omitempty"`
+	// LastUpdateCheck is when the client last asked GitHub Releases for a
+	// newer build, as Unix seconds. Zero means never; the shell rate-limits
+	// its startup check against it (at most once per 24 h).
+	LastUpdateCheck int64 `json:"lastUpdateCheck,omitempty"`
+}
+
+// NoUpdateEnvVar disables the automatic release check when set to a true-ish
+// value. An explicit `kube-workspaces update` still works: the variable only
+// stops the client phoning home on its own.
+const NoUpdateEnvVar = "KUBE_WORKSPACES_NO_UPDATE"
+
+// NoUpdateSentinel is a file a managed or packaged install drops into the
+// config directory to disable every update network call, including the
+// explicit `update --check`. Archive installs never create it.
+const NoUpdateSentinel = "no-auto-update"
+
+// AutoUpdateEnabled reports whether automatic update checks are on. Absent
+// means on: a user who never touched the setting gets updates offered, and
+// only an explicit false opts out.
+func (s Settings) AutoUpdateEnabled() bool {
+	return s.AutoUpdate == nil || *s.AutoUpdate
+}
+
+// Bool returns a pointer to b, for writing tri-state settings like
+// [Settings.AutoUpdate] where absent must stay distinguishable from false.
+func Bool(b bool) *bool { return &b }
+
+// SentinelPath returns the path of the [NoUpdateSentinel] file, whether or
+// not it exists.
+func SentinelPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, NoUpdateSentinel), nil
 }
 
 // Config is the on-disk configuration document.

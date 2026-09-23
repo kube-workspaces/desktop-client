@@ -437,7 +437,12 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 
 	body.Skip(th.Pad)
 	done := ui.Button{ID: idSettingsDone, Text: i18n.Get("settings.done"), Variant: ui.ButtonPrimary}
-	if done.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)[0]) ||
+	buttons := ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)
+	updates := ui.Button{ID: "updates", Text: i18n.Get("updates.title"), Disabled: a.opts.Updater == nil}
+	if updates.Layout(ctx, buttons[1]) {
+		out = intent{kind: intentUpdates}
+	}
+	if done.Layout(ctx, buttons[0]) ||
 		ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentSettingsDone}
 	}
@@ -511,6 +516,9 @@ func (a *App) drawHeader(r ui.Rect, out *intent) {
 	profiles := ui.Button{ID: idProfiles, Text: i18n.Get("header.profiles"), Variant: ui.ButtonQuiet}
 	signOut := ui.Button{ID: idSignOut, Text: i18n.Get("header.signout"), Variant: ui.ButtonQuiet}
 	settings := ui.Button{ID: idSettings, Text: i18n.Get("header.settings"), Variant: ui.ButtonQuiet}
+	if a.updates.result.Available {
+		settings.Text = i18n.Get("updates.availableBadge")
+	}
 	buttonsW := profiles.Width(ctx) + signOut.Width(ctx) + settings.Width(ctx) + th.Gap
 	signOutRect, rest := ui.CutRight(r, buttonsW)
 	cols := ui.Row(signOutRect, th.Gap/2, profiles.Width(ctx), settings.Width(ctx), signOut.Width(ctx))

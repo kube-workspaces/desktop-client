@@ -12,6 +12,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/shell"
+	"github.com/kube-workspaces/desktop-client/internal/update"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
@@ -109,6 +110,38 @@ func runShell(ctx context.Context, args []string) error {
 	backend := viewer.NewSDLBackend()
 
 	app, err := shell.New(shell.Options{
+		Version: version,
+		FirstFrame: func() string {
+			exe, err := os.Executable()
+			if err != nil {
+				return err.Error()
+			}
+			notice, err := update.ConfirmPending(exe, version)
+			if err != nil {
+				return err.Error()
+			}
+			if failure := update.TakeError(exe); failure != "" {
+				return failure
+			}
+			return notice
+		},
+		Updater: &update.Installer{},
+		UpdatePolicy: func() (bool, bool) {
+			p, err := config.SentinelPath()
+			if err != nil {
+				return true, false
+			}
+			_, err = os.Stat(p)
+			v := os.Getenv(config.NoUpdateEnvVar)
+			return !os.IsNotExist(err), v != "" && v != "0" && v != "false"
+		},
+		RestartUpdate: func(p *update.Prepared) error {
+			exe, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			return update.StartHelper(p, exe, append([]string{"shell"}, args...))
+		},
 		Backend: backend,
 		// The factory returns the API client and the connector together, so
 		// that the connector can close over the concrete *kwclient.Client the

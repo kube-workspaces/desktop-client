@@ -30,6 +30,10 @@ var version = "dev"
 
 func main() {
 	console.AttachParent()
+	if len(os.Args) == 2 && os.Args[1] == "version" {
+		fmt.Println(version)
+		return
+	}
 
 	// Ctrl-C should tear down the webview cleanly rather than kill the child
 	// mid-handshake.

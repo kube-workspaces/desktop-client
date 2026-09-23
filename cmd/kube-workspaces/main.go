@@ -18,6 +18,7 @@ import (
 
 	"github.com/kube-workspaces/desktop-client/internal/console"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
+	"github.com/kube-workspaces/desktop-client/internal/update"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -30,6 +31,12 @@ type command struct {
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "update-helper" {
+		if err := update.RunHelper(os.Args[2]); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	// First, before anything can print. The Windows build is linked as a GUI
 	// subsystem binary so that launching it from Explorer does not open a
 	// stray console window alongside the shell; the cost is that the
@@ -55,6 +62,7 @@ func main() {
 		{"probe", "Probe a VM workspace's display capabilities and bandwidth", runProbe},
 		{"screenshot", "Capture a VM workspace's display to a PNG file", runScreenshot},
 		{"version", "Print the client version", runVersion},
+		{"update", "Check for and install desktop-client releases", runUpdate},
 	}
 
 	// Ctrl-C should tear down a live session cleanly: the server's console slot

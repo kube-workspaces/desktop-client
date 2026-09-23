@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
@@ -70,6 +71,11 @@ const (
 	intentChangeServer
 	intentOpenSettings
 	intentSettingsDone
+	intentUpdates
+	intentCheckUpdate
+	intentDownloadUpdate
+	intentRestartUpdate
+	intentToggleUpdate
 	intentQuit
 )
 
@@ -182,12 +188,24 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.loadProfiles()
 		a.m.NeedServer("")
 	case intentOpenSettings:
-		// Settings are only ever opened from the workspace list, so getting
-		// out of them is a return, not a hop.
+		if a.m.State != StateSettings && a.m.State != StateUpdates {
+			a.settingsReturn = a.m.State
+		}
 		a.m.Err, a.m.Notice = "", ""
 		a.m.State = StateSettings
 	case intentSettingsDone:
-		a.m.State = StateWorkspaces
+		a.m.State = a.settingsReturn
+	case intentUpdates:
+		a.m.State = StateUpdates
+	case intentCheckUpdate:
+		a.checkUpdate(ctx, true)
+	case intentDownloadUpdate:
+		a.downloadUpdate(ctx)
+	case intentRestartUpdate:
+		a.restartUpdate()
+	case intentToggleUpdate:
+		a.updates.auto = !a.updates.auto
+		a.saveSettings()
 	case intentQuit:
 		a.quit = true
 	}
@@ -1000,9 +1018,12 @@ func spawnWebExe(exe, profile, namespace, name, launchDisplay string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", what, err)
 	}
-	go func() { _ = cmd.Wait() }()
+	webProcesses.Add(1)
+	go func() { defer webProcesses.Add(-1); _ = cmd.Wait() }()
 	return nil
 }
+
+var webProcesses atomic.Int64
 
 // launchDisplayEnv is the environment variable the shell sets on the spawned
 // web child with the usable bounds, "x,y,w,h", of the display the shell's own

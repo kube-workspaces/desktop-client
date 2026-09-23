@@ -433,6 +433,30 @@ time, since actions and pricing drift.
 
 ## CI
 
+### Binary updater contract
+
+- `internal/update` discovers stable GitHub Releases and verifies `SHA256SUMS`
+  before extraction. The shell remains cgo-free. `update --check`, `update`,
+  and `update --yes` share the same implementation as Settings → Updates.
+- Preserve archive names `kube-workspaces-<tag>-<os>-<arch>.tar.gz` (`.zip` on
+  Windows), the single `kube-workspaces-<os>-<arch>/` stage directory, and the
+  shell/child sibling layout (inside `.app/Contents/MacOS` on macOS).
+  `scripts/verify-update-archives.py` checks all six targets after assembly and
+  before release publication. Five targets require the child; Windows arm64 is
+  shell-only. Final checksums must follow child injection and future signing.
+- Use a new release tag for changed update payloads. Release stamping, archive
+  naming, and updater version comparison must agree. A first updater-capable
+  release needs a manual installation to bootstrap older clients.
+- Updates are staged before applying; the GUI helper waits for process exit.
+  Held sessions and tracked web children block restart. `.prev` files survive
+  until first-frame confirmation; interrupted transactions have explicit
+  `update --recover`. Tests cover corrupt downloads, archive traversal,
+  six-target layouts, rollback, Linux helper/relaunch, and shell policy.
+- Native acceptance on all six targets is separate from cross-compilation;
+  record evidence in `tracking/desktop-client-auto-update-plan.md`. Signed
+  macOS bundles are refused by this binary-only updater until whole-bundle
+  signature-aware replacement is implemented by the signing workstream.
+
 - `.github/workflows/build.yml` — the `build` job cross-builds all six shell
   targets on every push to `main` and uploads them as `shell-*` artifacts; the
   `web-child` matrix builds the webview child natively per OS (linux/amd64+arm64

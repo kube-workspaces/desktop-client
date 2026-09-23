@@ -40,6 +40,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
+	"github.com/kube-workspaces/desktop-client/internal/update"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
@@ -82,6 +83,11 @@ const (
 
 // Options configures an [App]. Backend and NewClient are required.
 type Options struct {
+	Version       string
+	Updater       UpdateService
+	UpdatePolicy  func() (managed, envDisabled bool)
+	RestartUpdate func(*update.Prepared) error
+	FirstFrame    func() string
 	// Backend is the window. The shell opens and closes it, and lends it to
 	// the session viewer in between.
 	Backend viewer.Backend
@@ -162,10 +168,11 @@ func (o *Options) applyDefaults() {
 // done elsewhere gets back. Nothing else crosses a goroutine boundary, so
 // there is no lock in this package.
 type App struct {
-	opts Options
-	be   viewer.Backend
-	ctx  *ui.Context
-	m    Model
+	updates updateState
+	opts    Options
+	be      viewer.Backend
+	ctx     *ui.Context
+	m       Model
 
 	api     API
 	dialer  SessionDialer
@@ -183,7 +190,8 @@ type App struct {
 
 	// settings is the client's own appearance. It is applied as a theme at
 	// startup and whenever the settings screen changes it.
-	settings Settings
+	settings       Settings
+	settingsReturn State
 
 	// geomW/geomH cache the shell window's last seen size for the geometry
 	// persistence below; geomSavedAt rate-limits the writes.
@@ -248,6 +256,7 @@ func New(opts Options) (*App, error) {
 		// as a screen change and places the initial focus.
 		lastState: State(-1),
 	}
+	a.updates.auto = true
 	a.serverField.ID = idServer
 	a.serverField.Placeholder = i18n.Get("server.placeholder")
 	a.emailField.ID = idEmail
@@ -300,6 +309,9 @@ func (a *App) Run(ctx context.Context) error {
 	// Background work outlives nothing: closing done releases any goroutine
 	// still trying to deliver a result into a queue nobody is draining.
 	defer close(a.done)
+	defer a.stopUpdates()
+	ctx, cancelUpdates := context.WithCancel(ctx)
+	defer cancelUpdates()
 
 	// The loop below blocks in the backend rather than in a select, so
 	// cancellation has to arrive as an event like everything else. Registered
@@ -395,6 +407,8 @@ func (a *App) Start(ctx context.Context) {
 		a.applySettings(DefaultSettings())
 	} else {
 		a.applySettings(settingsFromConfig(s))
+		a.updates.auto = s.AutoUpdateEnabled()
+		a.updates.last = s.LastUpdateCheck
 	}
 
 	profile, token, err := a.opts.Store.Load()
@@ -475,6 +489,9 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 // tick handles everything that happens because time passed rather than because
 // the user did something: the list refresh and a deferred repaint.
 func (a *App) tick(ctx context.Context, now time.Time) {
+	if a.updates.busy || a.m.State == StateUpdates {
+		a.dirty = true
+	}
 	if !a.repaintAt.IsZero() && !now.Before(a.repaintAt) {
 		a.repaintAt = time.Time{}
 		a.dirty = true
@@ -538,6 +555,11 @@ func (a *App) draw(ctx context.Context) error {
 		}
 	case StateSettings:
 		intent = a.drawSettingsScreen(a.canvas.Bounds())
+	case StateUpdates:
+		intent = a.drawUpdatesScreen(a.canvas.Bounds())
+	}
+	if (a.m.State == StateServer || a.m.State == StateLogin) && a.drawStandaloneSettings(a.canvas.Bounds()) {
+		intent.kind = intentOpenSettings
 	}
 	a.ctx.End()
 
@@ -557,6 +579,13 @@ func (a *App) draw(ctx context.Context) error {
 	// click was tested against, and that a command which blocks (opening a
 	// browser) does so with the window already updated.
 	a.act(ctx, intent)
+	if !a.updates.started {
+		a.updates.started = true
+		if a.opts.FirstFrame != nil {
+			a.updates.status = a.opts.FirstFrame()
+		}
+		a.checkUpdate(ctx, false)
+	}
 	return nil
 }
 

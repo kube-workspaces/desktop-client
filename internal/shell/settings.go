@@ -109,10 +109,14 @@ func (a *App) applySettings(s Settings) {
 // store access, so the store is only ever touched from one goroutine and a
 // test that settles can assert on what was saved.
 func (a *App) saveSettings() {
-	saved := a.settings.toConfig()
-	saved.WindowWidth, saved.WindowHeight = a.geomW, a.geomH
 	a.background(func() func() {
 		return func() {
+			// Results may arrive out of order; persist the current preferences,
+			// not the snapshot from when this save was scheduled.
+			saved := a.settings.toConfig()
+			saved.AutoUpdate = config.Bool(a.updates.auto)
+			saved.LastUpdateCheck = a.updates.last
+			saved.WindowWidth, saved.WindowHeight = a.geomW, a.geomH
 			if err := a.opts.Store.SaveSettings(saved); err != nil {
 				a.logf("save settings: %v", err)
 			}
@@ -151,6 +155,8 @@ func (a *App) flushGeometry() {
 	}
 	a.geomW, a.geomH = w, h
 	saved := a.settings.toConfig()
+	saved.AutoUpdate = config.Bool(a.updates.auto)
+	saved.LastUpdateCheck = a.updates.last
 	saved.WindowWidth, saved.WindowHeight = w, h
 	if err := a.opts.Store.SaveSettings(saved); err != nil {
 		a.logf("save window size: %v", err)
