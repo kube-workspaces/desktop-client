@@ -29,16 +29,15 @@ package viewer
 // A glyph's raster is as tall as the whole line box for its scale — the band
 // between the top of the ascent and the bottom of the descent — and the
 // baseline sits inside it, so a ragged mix of descenders and tall characters
-// still types on one true baseline. Rasters are computed once per scale on
-// first use and cached, so a long session pays the rasterisation cost exactly
-// three times.
+// still types on one true baseline. Rasters are resolved once per rune per
+// scale on first use and cached (see chain_font.go), so a long session pays
+// the rasterisation cost once per distinct character it shows.
 
 import (
 	_ "embed"
 	"image"
 
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -49,27 +48,33 @@ var interRegular []byte
 var interSemiBold []byte
 
 const (
-	cleanMaxScale = 3
+	cleanMaxScale = 6
 )
 
 var (
-	cleanSize = [cleanMaxScale + 1]int{0: 0, 1: 11, 2: 16, 3: 24}
-	cleanBase = [cleanMaxScale + 1]int{0: 0, 1: 12, 2: 17, 3: 25}
-	cleanCell = [cleanMaxScale + 1]int{0: 0, 1: 16, 2: 22, 3: 32}
-	cleanLine = [cleanMaxScale + 1]int{0: 0, 1: 18, 2: 24, 3: 34}
-	cleanAvg  = [cleanMaxScale + 1]int{0: 0, 1: 6, 2: 9, 3: 13}
+	// The three small scales match the bitmap faces' Small, Body and Title
+	// rows (11/16/24px); the three large ones carry the HiDPI theme scales
+	// (a 2x interface draws body text at scale 4, titles higher). Scales
+	// above 6 clamp: the raster bound in fonts.go sizes the cache entries.
+	cleanSize = [cleanMaxScale + 1]int{0: 0, 1: 11, 2: 16, 3: 24, 4: 32, 5: 40, 6: 48}
+	cleanBase = [cleanMaxScale + 1]int{0: 0, 1: 12, 2: 17, 3: 25, 4: 33, 5: 41, 6: 49}
+	cleanCell = [cleanMaxScale + 1]int{0: 0, 1: 16, 2: 22, 3: 32, 4: 43, 5: 53, 6: 63}
+	cleanLine = [cleanMaxScale + 1]int{0: 0, 1: 18, 2: 24, 3: 34, 4: 45, 5: 55, 6: 65}
+	cleanAvg  = [cleanMaxScale + 1]int{0: 0, 1: 6, 2: 9, 3: 13, 4: 18, 5: 22, 6: 26}
 )
 
-// CleanFont is the clean face the "clean" style draws with.
+// CleanFont is the clean face the "clean" style draws with: Inter where it
+// reaches, DejaVu Sans behind it (see chain_font.go).
 var CleanFont = Font{
 	GlyphW:       cleanAvg[1],
 	GlyphH:       cleanCell[1],
 	GlyphAdvance: cleanAvg[1],
 	LineAdvance:  cleanLine[1],
-	Glyph:        cleanRaster,
-	Advance:      cleanGlyphAdvance,
+	Glyph:        chainRaster,
+	Advance:      chainGlyphAdvance,
 	TextHeight:   cleanTextHeight,
 	LineHeight:   cleanLineHeight,
+	Covers:       chainCovers,
 }
 
 // cleanScale clamps a requested scale into the range the face is built for.
@@ -84,94 +89,9 @@ func cleanScale(scale int) int {
 }
 
 // cleanTextHeight and cleanLineHeight are the face's per-scale row heights,
-// because three non-multiple sizes cannot be described by one base cell.
+// because non-multiple sizes cannot be described by one base cell.
 func cleanTextHeight(scale int) int { return cleanCell[cleanScale(scale)] }
 func cleanLineHeight(scale int) int { return cleanLine[cleanScale(scale)] }
-
-// cleanRaster returns the clean face's raster for r at scale. It is the font's
-// Glyph accessor; rasters are cached per scale.
-func cleanRaster(r rune, scale int) Raster {
-	s := cleanScale(scale)
-	cs := &cleanCache[s]
-	if !cs.ready {
-		cs.build(s)
-	}
-	if r < glyphFirst || r > glyphLast {
-		return cleanMissing(s)
-	}
-	return cs.set[r-glyphFirst]
-}
-
-// cleanGlyphAdvance is the font's proportional advance accessor: each glyph
-// steps by its own width, so there is no inter-glyph gap to paper over.
-func cleanGlyphAdvance(r rune, scale int) int {
-	s := cleanScale(scale)
-	cs := &cleanCache[s]
-	if !cs.ready {
-		cs.build(s)
-	}
-	if r < glyphFirst || r > glyphLast {
-		return cleanAvg[s]
-	}
-	return cs.adv[r-glyphFirst]
-}
-
-// cleanCache is one set of rasters and advances per scale, built on first use.
-// Nothing about the cache ever becomes stale: the embedded font bytes cannot
-// change after build, and the set is immutable once built.
-var cleanCache [cleanMaxScale + 1]cleanSet
-
-type cleanSet struct {
-	ready bool
-	set   [glyphLast - glyphFirst + 1]Raster
-	adv   [glyphLast - glyphFirst + 1]int
-}
-
-func (cs *cleanSet) build(scale int) {
-	cs.buildRasterized(scale)
-	cs.ready = true
-}
-
-// buildRasterized rasterises every printable ASCII rune at one scale. On a
-// parse failure — impossible with the committed asset, but a field of blank
-// text is the subtlest way to break — every glyph becomes the missing box, so
-// broken text stays visible.
-func (cs *cleanSet) buildRasterized(scale int) {
-	for i := range cs.set {
-		cs.set[i] = cleanMissing(scale)
-		cs.adv[i] = cleanAvg[scale]
-	}
-
-	ttf := interRegular
-	if scale >= 3 {
-		ttf = interSemiBold
-	}
-	f, err := opentype.Parse(ttf)
-	if err != nil {
-		return
-	}
-	face, err := opentype.NewFace(f, &opentype.FaceOptions{
-		Size:    float64(cleanSize[scale]),
-		DPI:     72,
-		Hinting: font.HintingFull,
-	})
-	if err != nil {
-		return
-	}
-	defer func() { _ = face.Close() }()
-
-	for r := glyphFirst; r <= glyphLast; r++ {
-		idx := r - glyphFirst
-		if a, ok := face.GlyphAdvance(r); ok {
-			adv := a.Round()
-			if scale > 1 {
-				adv += 1
-			}
-			cs.adv[idx] = adv
-		}
-		cs.set[idx] = rasterizeGlyph(face, r, cleanBase[scale], cleanCell[scale])
-	}
-}
 
 // rasterizeGlyph draws one rune into a cell exactly as wide as its ink and
 // returns the ink coverage. The advance that steps past the cell is the

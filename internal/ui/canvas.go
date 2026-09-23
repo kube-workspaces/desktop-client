@@ -261,7 +261,7 @@ func (c *Canvas) Text(s string, x, y, scale int, col color.RGBA) int {
 		f = viewer.RetroFont
 	}
 	start := x
-	for _, r := range viewer.FoldToFont(s) {
+	for _, r := range viewer.FoldToFace(s, f.Covers) {
 		g := f.Glyph(r, scale)
 		for row := 0; row < g.H; row++ {
 			for col0 := 0; col0 < g.W; col0++ {

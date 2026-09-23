@@ -10,10 +10,26 @@ import (
 )
 
 // Ellipsis is what [Truncate] appends to text it had to shorten. It is three
-// full stops rather than U+2026 because the fonts are ASCII and the fold would
-// produce these three characters anyway; spelling it out keeps the width
-// arithmetic honest.
+// full stops for the bitmap faces, whose ASCII repertoire folds U+2026 away
+// anyway; faces that cover the real ellipsis get it (see ellipsisFor), which
+// keeps the width arithmetic honest in both cases.
 const Ellipsis = "..."
+
+// ellipsisFor returns the truncation marker for f: the single character when
+// the face can draw it, the three-stop ASCII spelling otherwise.
+func ellipsisFor(f viewer.Font) string {
+	if f.Covers != nil && f.Covers('…') {
+		return "…"
+	}
+	return Ellipsis
+}
+
+// fold rewrites s into runes f can draw, after normalising f. Every
+// measurement and drawing path goes through here, so what is measured is what
+// is drawn however wide the face's repertoire is.
+func fold(s string, f viewer.Font) string {
+	return viewer.FoldToFace(s, f.Covers)
+}
 
 // The three faces, re-exported so layout code does not have to import
 // internal/viewer to measure text.
@@ -59,7 +75,7 @@ func TextWidth(s string, scale int, f viewer.Font) int {
 	f = normalize(f)
 	if f.Advance != nil {
 		total := 0
-		for _, r := range viewer.FoldToFont(s) {
+		for _, r := range fold(s, f) {
 			total += f.Advance(r, scale)
 		}
 		return total
@@ -87,9 +103,11 @@ func LineHeight(scale int, f viewer.Font) int {
 	return f.LineAdvance * scale
 }
 
-// RuneCount returns the number of glyph cells s occupies once folded to the
-// fonts' shared repertoire. It is not len([]rune(s)): an ellipsis folds to
-// three cells and a tab to one, and every face shares the same repertoire.
+// RuneCount returns the number of glyph cells s occupies once folded to
+// ASCII. It is not len([]rune(s)): an ellipsis folds to three cells and a tab
+// to one. Faces with wider repertoires draw some of those runes narrower than
+// this counts — the count is conservative, which is the safe direction for
+// the layout budgets that consume it.
 func RuneCount(s string) int {
 	n := 0
 	for range viewer.FoldToFont(s) {
@@ -110,12 +128,13 @@ func Truncate(s string, scale int, f viewer.Font, maxWidth int) string {
 		return ""
 	}
 	f = normalize(f)
-	folded := viewer.FoldToFont(s)
+	folded := fold(s, f)
 	if TextWidth(folded, scale, f) <= maxWidth {
 		return folded
 	}
 	runes := []rune(folded)
-	ellipsisW := TextWidth(Ellipsis, scale, f)
+	marker := ellipsisFor(f)
+	ellipsisW := TextWidth(marker, scale, f)
 	// Not even the marker fits: show as much of the head as there is room
 	// for, which is more useful than showing nothing at all.
 	if ellipsisW > maxWidth {
@@ -136,10 +155,10 @@ func Truncate(s string, scale int, f viewer.Font, maxWidth int) string {
 	}
 	for n := len(runes); n > 0; n-- {
 		if TextWidth(string(runes[:n]), scale, f)+gap+ellipsisW <= maxWidth {
-			return string(runes[:n]) + Ellipsis
+			return string(runes[:n]) + marker
 		}
 	}
-	return Ellipsis
+	return marker
 }
 
 // Wrap breaks s into lines that each fit in maxWidth pixels when drawn in the
@@ -151,11 +170,11 @@ func Truncate(s string, scale int, f viewer.Font, maxWidth int) string {
 // in it. Fitting is measured with [TextWidth], so it stays exact whether the
 // font's glyphs are all one width (the bitmap faces) or not (the clean face).
 func Wrap(s string, scale int, f viewer.Font, maxWidth int) []string {
-	folded := viewer.FoldToFont(s)
 	if scale <= 0 || maxWidth <= 0 {
 		return nil
 	}
 	f = normalize(f)
+	folded := fold(s, f)
 
 	var lines []string
 	for _, paragraph := range strings.Split(folded, "\n") {

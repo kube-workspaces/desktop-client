@@ -1050,12 +1050,28 @@ var asciiFolds = map[rune]string{
 	'×': "x",
 }
 
-// foldToFont rewrites s into runes the font can draw, collapsing anything that
-// is not printable (tabs, newlines, control characters from a server's error
-// text) into single spaces.
+// foldToFont rewrites s into runes the bitmap font can draw, collapsing
+// anything that is not printable (tabs, newlines, control characters from a
+// server's error text) into single spaces.
 func foldToFont(s string) string {
+	return foldToFace(s, asciiCovers)
+}
+
+// foldToFace rewrites s into runes covers can draw. A rune the face lacks but
+// the legibility table knows becomes its ASCII equivalent; anything else
+// unprintable becomes a space, and anything merely uncovered is left alone to
+// render as the missing-glyph box. A nil covers means the ASCII repertoire,
+// which is what callers with no face get.
+func foldToFace(s string, covers func(rune) bool) string {
+	if covers == nil {
+		covers = asciiCovers
+	}
 	out := make([]rune, 0, len(s))
 	for _, r := range s {
+		if covers(r) {
+			out = append(out, r)
+			continue
+		}
 		if sub, ok := asciiFolds[r]; ok {
 			out = append(out, []rune(sub)...)
 			continue
@@ -1100,7 +1116,14 @@ const (
 // font does not cover. It never panics.
 func GlyphFor(r rune) Glyph { return glyphFor(r) }
 
-// FoldToFont rewrites s into runes the font can draw: typographic punctuation
-// is replaced by its ASCII equivalent and control characters become spaces.
-// Runes it cannot fold are left alone and render as the missing-glyph box.
+// FoldToFont rewrites s into runes the bitmap font can draw: typographic
+// punctuation is replaced by its ASCII equivalent and control characters
+// become spaces. Runes it cannot fold are left alone and render as the
+// missing-glyph box.
 func FoldToFont(s string) string { return foldToFont(s) }
+
+// FoldToFace rewrites s into runes covers can draw, with the same legibility
+// table and control handling as [FoldToFont]. Faces with wider repertoires
+// keep what they can draw: only genuinely uncovered runes fall back to ASCII
+// or, failing that, to the missing-glyph box.
+func FoldToFace(s string, covers func(rune) bool) string { return foldToFace(s, covers) }

@@ -38,6 +38,12 @@ type Font struct {
 	// faces' missingGlyph, so unknown text is visible rather than lost.
 	Glyph func(r rune, scale int) Raster
 
+	// Covers reports whether the face can draw r. The bitmap faces cover
+	// printable ASCII; the clean face covers whatever its font chain does.
+	// A nil Covers means ASCII, which is what test doubles built before this
+	// field existed get without updating.
+	Covers func(r rune) bool
+
 	// Advance returns the horizontal step for r at the given scale, in
 	// pixels. nil means every glyph advances by GlyphAdvance*scale, which is
 	// exact for the bitmap faces and is what they were laid out with.
@@ -52,16 +58,22 @@ type Font struct {
 
 // MaxRasterW and MaxRasterH bound every Raster this package produces, so the
 // raster can live in a fixed array with no allocation. They cover the largest
-// cell any face draws: the clean face's 24px title row, whose ink is at most
-// 24px wide and whose raster is 32 rows tall.
+// cell any face draws: a 48px clean title (about 50px of ink, 65 rows) and a
+// 5x8 bitmap glyph at interface scale 6 (30 by 48).
 const (
-	MaxRasterW = 26
-	MaxRasterH = 34
+	MaxRasterW = 52
+	MaxRasterH = 70
 )
 
 // rasterScaleCap is the largest scale a glyph will be asked at. The ui uses
-// its theme's Body/Title/Small scales, all well under this.
-const rasterScaleCap = 3
+// its theme's Body/Title/Small scales, which reach 6/9/3 on a 3x interface;
+// the clean face clamps to its own six built sizes and the bitmap faces draw
+// block-expanded to this cap.
+const rasterScaleCap = 6
+
+// asciiCovers reports whether r is in the bitmap faces' repertoire: the whole
+// printable ASCII range the tables cover.
+func asciiCovers(r rune) bool { return r >= glyphFirst && r <= glyphLast }
 
 // RetroFont is the client's original 5x8 face, exactly as shipped.
 var RetroFont = Font{
@@ -70,6 +82,7 @@ var RetroFont = Font{
 	GlyphAdvance: GlyphAdvance,
 	LineAdvance:  LineAdvance,
 	Glyph:        bitmapRaster(GlyphFor),
+	Covers:       asciiCovers,
 }
 
 // BubblyFont is the chunky 5x8 face, same cell and metrics as RetroFont.
@@ -79,6 +92,7 @@ var BubblyFont = Font{
 	GlyphAdvance: GlyphAdvance,
 	LineAdvance:  LineAdvance,
 	Glyph:        bitmapRaster(BubblyGlyphFor),
+	Covers:       asciiCovers,
 }
 
 // bitmapRaster turns one of the 1-bit 5x8 faces into per-cell coverage by

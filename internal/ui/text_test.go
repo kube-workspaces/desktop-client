@@ -117,6 +117,24 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
+func TestTruncateUsesTheFacesOwnEllipsis(t *testing.T) {
+	const scale = 2
+	full := "cf-debian-gnome-vm-0"
+	// A face that draws U+2026 truncates to the single character; a bitmap
+	// face keeps the three-stop ASCII spelling.
+	if got := Truncate(full, scale, viewer.CleanFont, TextWidth(full, scale, viewer.CleanFont)-1); !strings.HasSuffix(got, "…") || strings.HasSuffix(got, Ellipsis) {
+		t.Fatalf("clean Truncate = %q, want the single-character ellipsis", got)
+	}
+	if got := Truncate(full, scale, viewer.RetroFont, TextWidth(full, scale, viewer.RetroFont)-1); !strings.HasSuffix(got, Ellipsis) {
+		t.Fatalf("retro Truncate = %q, want %q", got, Ellipsis)
+	}
+	// Covered non-ASCII text survives truncation under the clean face.
+	name := "müller-gnome-vm-0"
+	if got := Truncate(name, scale, viewer.CleanFont, TextWidth(name, scale, viewer.CleanFont)); got != name {
+		t.Fatalf("covered text that fits was truncated to %q", got)
+	}
+}
+
 // TestTruncateAlwaysFits is the invariant that matters: whatever the input,
 // the result is drawable inside the width it was given.
 func TestTruncateAlwaysFits(t *testing.T) {
