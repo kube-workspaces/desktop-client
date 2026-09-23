@@ -20,6 +20,7 @@ var english = map[string]string{
 	"updates.checking":       "Checking GitHub Releases...",
 	"updates.failed":         "Update failed: %v. Try again when ready.",
 	"updates.latest":         "Latest stable release: %s",
+	"updates.upToDate":       "You are up to date.",
 	"updates.downloading":    "Downloading and verifying release...",
 	"updates.bytes":          "Downloaded: %d bytes",
 	"updates.ready":          "Verified update ready to install.",

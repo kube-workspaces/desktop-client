@@ -77,7 +77,11 @@ func (a *App) checkUpdate(ctx context.Context, manual bool) {
 				return
 			}
 			a.updates.result = r
-			a.updates.status = i18n.Sprintf("updates.latest", r.Latest)
+			if !r.Available {
+				a.updates.status = i18n.Get("updates.upToDate")
+			} else {
+				a.updates.status = i18n.Sprintf("updates.latest", r.Latest)
+			}
 		}
 	})
 }
