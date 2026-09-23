@@ -195,6 +195,18 @@ script header). `make icons` needs `inkscape` and ImageMagick's
 automatically) to build the Windows resources. The generated artwork is
 committed, so plain `make build`/`build-all` need none of those tools.
 
+## Building from source
+
+Use the `make` targets to build binaries locally. 
+
+| Target | Description | Includes Webview? |
+|---|---|---|
+| `make build` | Builds standard cgo-free shell | No |
+| `make build-windows` | Builds shell-only Windows binary | No |
+| `make build-windows-cgo` | Builds shell with webview shim | Yes (needs `make build-web-windows`) |
+
+To get the full experience (shell + webview child) on Windows, you must build both the shell and the child binary, then ensure `kube-workspaces.exe` and `kube-workspaces-web.exe` reside in the same folder.
+
 ## Getting started
 
 ### The graphical shell
