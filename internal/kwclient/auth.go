@@ -79,8 +79,9 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-// loginResponse is the POST /auth/login/local success body. The token is
-// deliberately absent: it only ever travels in the Set-Cookie header.
+// loginResponse is the POST /auth/login/local success body. The local-login
+// token travels in the Set-Cookie header; the native flow
+// (POST /auth/native/token) returns it in the response body instead.
 type loginResponse struct {
 	Status             string `json:"status"`
 	MustChangePassword bool   `json:"mustChangePassword"`
@@ -103,8 +104,9 @@ func (c *Client) AuthConfig(ctx context.Context) (*AuthConfig, error) {
 // LoginLocal performs an email/password login against POST /auth/login/local
 // and returns the session token plus whether the password must be changed.
 //
-// The token is extracted from the kw-session Set-Cookie header: the response
-// body never contains it. The token is not stored on the client; call
+// The token is extracted from the kw-session Set-Cookie header on local
+// login: that response body never contains it. (The native flow returns the
+// token in the POST /auth/native/token body instead.) The token is not stored on the client; call
 // [Client.SetToken] once it has been persisted to the keyring.
 //
 // Failures map to [ErrRateLimited], [ErrLocalAuthDisabled],
@@ -139,8 +141,8 @@ func (c *Client) LoginLocal(ctx context.Context, email, password string) (token 
 
 // Me fetches GET /auth/me.
 //
-// This endpoint reads the kw-session cookie only and ignores
-// Authorization: Bearer, which is why the client always sends both.
+// The endpoint accepts Authorization: Bearer as well as the kw-session
+// cookie; the client always sends both.
 func (c *Client) Me(ctx context.Context) (*Identity, error) {
 	var out Identity
 	if err := c.doJSON(ctx, requestSpec{

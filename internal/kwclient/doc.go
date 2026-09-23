@@ -24,7 +24,8 @@
 // Transport of the token differs per endpoint:
 //
 //   - /v1/* accepts Authorization: Bearer <token>.
-//   - /auth/me is cookie-only and ignores the Authorization header.
+//   - /auth/me and /auth/change-password accept Authorization: Bearer
+//     as well as the kw-session cookie.
 //
 // The client therefore always sends both the bearer header and the
 // kw-session cookie, which is accepted everywhere.

@@ -186,7 +186,7 @@ func TestLoginLocalErrorCodes(t *testing.T) {
 }
 
 // TestDefaultClientDoesNotFollowRedirects guards the reason the default client
-// stops at the first redirect: the session token only ever arrives in a
+// stops at the first redirect: the local-login session token arrives in a
 // Set-Cookie header, and a followed redirect (there is no cookie jar) would
 // drop it before LoginLocal could read it.
 func TestDefaultClientDoesNotFollowRedirects(t *testing.T) {
@@ -243,7 +243,7 @@ func TestMe(t *testing.T) {
 	if gotPath != "/auth/me" {
 		t.Errorf("path = %q, want /auth/me", gotPath)
 	}
-	// /auth/me is cookie-only, so the cookie must be present.
+	// The client sends both bearer and cookie; the cookie must be present.
 	if gotCookie != "tok.sig" {
 		t.Errorf("kw-session cookie = %q, want tok.sig", gotCookie)
 	}

@@ -324,8 +324,8 @@ func (c *Client) newRequest(ctx context.Context, spec requestSpec) (*http.Reques
 
 // authenticate adds both credential forms to h.
 //
-// /v1/* accepts the bearer token, while /auth/me only ever looks at the
-// cookie, so sending both keeps a single code path for all endpoints.
+// /v1/*, /auth/me and /auth/change-password all accept the bearer token as
+// well as the cookie, so sending both keeps a single code path for all endpoints.
 func (c *Client) authenticate(h http.Header) {
 	token := c.Token()
 	if token == "" {
