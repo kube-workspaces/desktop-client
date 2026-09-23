@@ -256,7 +256,11 @@ func TestBrowserSignIn(t *testing.T) {
 
 	r.focus(idBrowser)
 	r.clickFocused()
-	for i := 0; i < 5; i++ {
+	// The Notify callback arrives from the login flow's goroutine, so the
+	// URL lands whenever that goroutine is scheduled — not after a fixed
+	// number of loop steps. Wait for it boundedly instead of assuming five
+	// steps is enough on every machine.
+	for i := 0; i < 200 && r.app.authorizeURL == ""; i++ {
 		r.step()
 	}
 
