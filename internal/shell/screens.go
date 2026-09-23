@@ -365,7 +365,7 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 		{id: idStyleRetro, label: "Retro"},
 		{id: idStyleClean, label: "Clean"},
 	}); picked != styleIndex(a.settings.Style) {
-		a.applySettings(Settings{Style: styleFromIndex(picked), Mode: a.settings.Mode})
+		a.applySettings(Settings{Style: styleFromIndex(picked), Mode: a.settings.Mode, UIScale: a.settings.UIScale})
 		a.saveSettings()
 	}
 
@@ -384,8 +384,30 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 		if picked == 1 {
 			mode = ui.ModeLight
 		}
-		a.applySettings(Settings{Style: a.settings.Style, Mode: mode})
+		a.applySettings(Settings{Style: a.settings.Style, Mode: mode, UIScale: a.settings.UIScale})
 		a.saveSettings()
+	}
+
+	body.Skip(th.Pad)
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), "INTERFACE SIZE", ui.LabelStyle{
+		Color: th.TextMuted, Scale: th.Small,
+	})
+	scaleRow := body.Next(th.ControlHeight)
+	scaleOpts := []styleOption{
+		{id: idScaleAuto, label: "Auto"},
+		{id: idScale100, label: "100%"},
+		{id: idScale150, label: "150%"},
+		{id: idScale200, label: "200%"},
+	}
+	if picked := a.drawChoice(ctx, scaleRow, uiScaleIndex(a.settings.UIScale), scaleOpts); picked != uiScaleIndex(a.settings.UIScale) {
+		a.applySettings(Settings{Style: a.settings.Style, Mode: a.settings.Mode, UIScale: uiScaleSteps()[picked]})
+		a.saveSettings()
+	}
+	// A launch flag wins over the stored choice and the screen shows what is
+	// stored, so say so when they disagree rather than letting the row lie.
+	if a.opts.UIScale > 0 && a.opts.UIScale != a.settings.UIScale {
+		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)),
+			"The --ui-scale flag overrides this choice for this run.", ui.LabelStyle{Color: th.TextMuted})
 	}
 
 	body.Skip(th.Pad)

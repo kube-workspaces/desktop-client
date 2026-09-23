@@ -125,6 +125,8 @@ func (f *fakeBackend) Size() (w, h int) {
 	return f.w, f.h
 }
 
+func (f *fakeBackend) ScaleFactor() float64 { return 1 }
+
 func (f *fakeBackend) SetSize(w, h int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

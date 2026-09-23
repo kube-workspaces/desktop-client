@@ -114,6 +114,12 @@ type Options struct {
 	// Width and Height are the initial window size.
 	Width, Height int
 
+	// UIScale overrides the interface scale: 0 means automatic (the
+	// display's scale factor, or the stored setting below it). A positive
+	// value pins the shell to it, which is how a user on an odd panel — or a
+	// test — gets a predictable size. Valid range is 1 to 3.
+	UIScale float64
+
 	// Title is the window title. Empty means "Kube Workspaces".
 	Title string
 
@@ -404,6 +410,10 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 	}
 	if a.in.Resized {
 		a.dirty = true
+		// A scale change arrives as a resize (SDL emits
+		// PIXEL_SIZE_CHANGED for it), so this is also where the theme
+		// follows the window across mixed-DPI displays.
+		a.refreshTheme()
 	}
 
 	if a.m.State == StateSession {

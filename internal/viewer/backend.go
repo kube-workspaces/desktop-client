@@ -303,6 +303,21 @@ type Backend interface {
 	// Size returns the current drawable size in pixels.
 	Size() (w, h int)
 
+	// ScaleFactor returns the ratio of drawable pixels to window coordinates:
+	// 1 on an ordinary display, 2 on a Retina / 200%-scaled one, 1.5 on the
+	// fractional scales common on Windows and Wayland.
+	//
+	// The shell renders into a drawable-sized surface, so without this every
+	// interface metric would be drawn at window scale into a denser buffer —
+	// small but sharp. Multiplying the theme by this factor (see ui.Theme)
+	// restores the intended physical size, crisply.
+	//
+	// A scale change — dragging the window across mixed-DPI displays, changing
+	// the OS scale — arrives as an [EventResize] (SDL emits
+	// EVENT_WINDOW_PIXEL_SIZE_CHANGED for it), so re-reading this on resize
+	// is sufficient; there is no separate scale event to watch.
+	ScaleFactor() float64
+
 	// SetSize resizes the window.
 	//
 	// The viewer calls it at most once per session: the window now opens

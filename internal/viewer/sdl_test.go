@@ -668,8 +668,7 @@ func TestSDLScaleMode(t *testing.T) {
 	}
 }
 
-func TestSDLBackendToSurface(t *testing.T) {
-	// The common case: no display scaling, so window and drawable agree.
+func TestSDLBackendToSurface(t *testing.T) { // The common case: no display scaling, so window and drawable agree.
 	b := &SDLBackend{winW: 800, winH: 600, outW: 800, outH: 600}
 	if x, y := b.toSurface(100, 200); x != 100 || y != 200 {
 		t.Fatalf("toSurface without scaling = (%d,%d), want (100,200)", x, y)
@@ -688,6 +687,28 @@ func TestSDLBackendToSurface(t *testing.T) {
 	b = &SDLBackend{}
 	if x, y := b.toSurface(10, 20); x != 10 || y != 20 {
 		t.Fatalf("toSurface with no window = (%d,%d), want (10,20)", x, y)
+	}
+}
+
+func TestSDLBackendScaleFactor(t *testing.T) {
+	// Unscaled, fractional, and Retina densities read straight off the
+	// window/drawable ratio the metrics refresh maintains.
+	for _, tc := range []struct {
+		winW, outW int
+		want       float64
+	}{
+		{800, 800, 1},
+		{800, 1200, 1.5},
+		{800, 1600, 2},
+	} {
+		b := &SDLBackend{winW: tc.winW, winH: 600, outW: tc.outW, outH: 1200}
+		if got := b.ScaleFactor(); got != tc.want {
+			t.Errorf("ScaleFactor(%d/%d) = %v, want %v", tc.outW, tc.winW, got, tc.want)
+		}
+	}
+	// Before the window exists there is no ratio; unscaled, not NaN.
+	if got := (&SDLBackend{}).ScaleFactor(); got != 1 {
+		t.Fatalf("ScaleFactor with no window = %v, want 1", got)
 	}
 }
 

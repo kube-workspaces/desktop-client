@@ -185,14 +185,17 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 	}
 	b.opened = true
 
-	flags := sdl.WINDOW_RESIZABLE
+	flags := sdl.WINDOW_RESIZABLE | sdl.WINDOW_HIGH_PIXEL_DENSITY
 	if opts.Fullscreen {
 		flags |= sdl.WINDOW_FULLSCREEN
 	}
-	// SDL_WINDOW_HIGH_PIXEL_DENSITY is deliberately not requested. The guest
-	// is resized to match the window, so the framebuffer already arrives at
-	// the window's resolution and there is nothing to gain from a denser
-	// backbuffer except a scaling factor to get wrong.
+	// HIGH_PIXEL_DENSITY is requested so the drawable — and therefore the
+	// shell surface and the session texture — actually has the display's
+	// pixels on a scaled display. Without it SDL hands back a 1x drawable the
+	// compositor upscales, and everything the client draws is blurry.
+	// The cost is a scaling factor to get right rather than wrong: the shell
+	// multiplies its theme by ScaleFactor, and the session guest follows the
+	// drawable size (a Retina guest at full pixels, which is the point).
 	width, height := opts.Width, opts.Height
 	if width <= 0 || height <= 0 {
 		width, height = 1280, 800
@@ -572,6 +575,17 @@ func (b *SDLBackend) drawOverlay(ov Overlay) error {
 
 // Size returns the drawable size in pixels.
 func (b *SDLBackend) Size() (int, int) { return b.outW, b.outH }
+
+// ScaleFactor returns the ratio of drawable pixels to window coordinates; see
+// [Backend.ScaleFactor]. It is 1 until the first successful metrics read, so
+// a backend that was never opened — or a platform that reports no window
+// size — reads as unscaled rather than dividing by zero.
+func (b *SDLBackend) ScaleFactor() float64 {
+	if b.winW <= 0 || b.outW <= 0 {
+		return 1
+	}
+	return float64(b.outW) / float64(b.winW)
+}
 
 // SetSize resizes the window, which the viewer does once, when the first
 // connection reveals the guest's resolution.

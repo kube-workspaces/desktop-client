@@ -5,6 +5,7 @@ package ui
 
 import (
 	"image/color"
+	"math"
 
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
@@ -190,6 +191,68 @@ func ThemeFor(style Style, mode Mode) *Theme {
 // mode. It is what an unconfigured client opens with, which is why
 // "bubbly, dark" is also the fallback for settings that name nothing.
 func DefaultTheme() *Theme { return ThemeFor(StyleBubbly, ModeDark) }
+
+// QuantizeUIScale maps a display content scale to one of the steps the theme
+// can actually render. Geometry scales continuously, but glyphs do not — the
+// bitmap faces are only crisp at whole multiples of the cell — so the factor
+// is rounded to the nearest half, bounded to [1, 3]. A quarter-step display
+// (1.25x) lands on 1.5x: slightly large, but legible beats exact.
+func QuantizeUIScale(f float64) float64 {
+	if f <= 1 {
+		return 1
+	}
+	q := math.Round(f*2) / 2
+	if q < 1 {
+		return 1
+	}
+	if q > 3 {
+		return 3
+	}
+	return q
+}
+
+// Scaled returns a copy of the theme with every size multiplied by factor:
+// insets, gaps, radii, control and row heights, border widths, and the Body,
+// Title and Small font scales.
+//
+// This is the whole HiDPI story for the shell. The shell draws into a
+// drawable-sized surface — twice the window in each dimension on a Retina
+// display — so unscaled metrics would render at half physical size. Scaling
+// the theme instead of the canvas keeps every layout function, hit test and
+// text measurement in one coordinate space (drawable pixels) with no
+// conversion at the call sites.
+//
+// Font scales stay integers: fractional bitmap glyphs are mush, and the clean
+// face selects a raster per integer step. A factor at or below 1 returns the
+// theme unchanged.
+func (t Theme) Scaled(factor float64) *Theme {
+	if factor <= 1 {
+		c := t
+		return &c
+	}
+	c := t
+	c.Pad = scalePx(t.Pad, factor)
+	c.Gap = scalePx(t.Gap, factor)
+	c.Radius = scalePx(t.Radius, factor)
+	c.ControlHeight = scalePx(t.ControlHeight, factor)
+	c.RowHeight = scalePx(t.RowHeight, factor)
+	c.BorderWidth = scalePx(t.BorderWidth, factor)
+	c.FocusWidth = scalePx(t.FocusWidth, factor)
+	c.Body = scalePx(t.Body, factor)
+	c.Title = scalePx(t.Title, factor)
+	c.Small = scalePx(t.Small, factor)
+	return &c
+}
+
+// scalePx multiplies a pixel metric by factor, rounding to the nearest whole
+// pixel and never below one. A zero input stays zero: an unset optional scale
+// must not become a one-pixel artefact.
+func scalePx(v int, factor float64) int {
+	if v <= 0 {
+		return 0
+	}
+	return max(1, int(math.Round(float64(v)*factor)))
+}
 
 // palette returns the colours for a mode, with the retro metrics baked in so
 // that StyleRetro is exactly the original theme — a user who switches back

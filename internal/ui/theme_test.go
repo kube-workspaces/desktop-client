@@ -105,3 +105,81 @@ func TestLightModeIsDistinctFromDark(t *testing.T) {
 		t.Fatal("light mode has no background")
 	}
 }
+
+func TestQuantizeUIScale(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want float64
+	}{
+		{0, 1},
+		{0.5, 1},
+		{1, 1},
+		{1.25, 1.5},
+		{1.5, 1.5},
+		{1.75, 2},
+		{2, 2},
+		{2.5, 2.5},
+		{3, 3},
+		{4, 3},
+	} {
+		if got := QuantizeUIScale(tc.in); got != tc.want {
+			t.Errorf("QuantizeUIScale(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestScaledThemeDoublesTheBubblyMetrics(t *testing.T) {
+	base := ThemeFor(StyleBubbly, ModeDark)
+	got := base.Scaled(2)
+	// Bubbly body/title/small 2/3/1, pad/gap/radius 14/8/2, control/row
+	// 30/32, border/focus 1/1.
+	if got.Body != 4 || got.Title != 6 || got.Small != 2 {
+		t.Fatalf("scaled font scales are %d/%d/%d, want 4/6/2", got.Body, got.Title, got.Small)
+	}
+	if got.Pad != 28 || got.Gap != 16 || got.Radius != 4 {
+		t.Fatalf("scaled insets are %d/%d/%d, want 28/16/4", got.Pad, got.Gap, got.Radius)
+	}
+	if got.ControlHeight != 60 || got.RowHeight != 64 {
+		t.Fatalf("scaled controls are %d/%d, want 60/64", got.ControlHeight, got.RowHeight)
+	}
+	if got.BorderWidth != 2 || got.FocusWidth != 2 {
+		t.Fatalf("scaled strokes are %d/%d, want 2/2", got.BorderWidth, got.FocusWidth)
+	}
+	// Scaling sizes, not the look: colours ride along unchanged, and so does
+	// the typeface (compared by cell, since Font holds funcs that == cannot
+	// touch).
+	if got.Background != base.Background || got.Accent != base.Accent ||
+		got.Font.GlyphW != base.Font.GlyphW || got.Font.GlyphH != base.Font.GlyphH {
+		t.Fatal("scaling changed the palette or the typeface")
+	}
+	// And the base is untouched: Scaled copies.
+	if base.Body != 2 || base.Pad != 14 {
+		t.Fatal("Scaled modified the theme it was called on")
+	}
+}
+
+func TestScaledThemeAtOrBelowOneIsIdentity(t *testing.T) {
+	base := ThemeFor(StyleBubbly, ModeDark)
+	for _, f := range []float64{1, 0.5, 0, -2} {
+		got := base.Scaled(f)
+		// Font holds func fields, so the structs cannot be compared with
+		// ==; compare the metrics instead.
+		if got.Body != base.Body || got.Title != base.Title || got.Small != base.Small ||
+			got.Pad != base.Pad || got.Gap != base.Gap || got.Radius != base.Radius ||
+			got.ControlHeight != base.ControlHeight || got.RowHeight != base.RowHeight {
+			t.Fatalf("Scaled(%v) changed the theme", f)
+		}
+	}
+}
+
+func TestScaledThemeRoundsFractionalFactors(t *testing.T) {
+	base := ThemeFor(StyleBubbly, ModeDark)
+	got := base.Scaled(1.5)
+	// Font scales stay whole: fractional bitmap glyphs are mush.
+	if got.Body != 3 || got.Title != 5 || got.Small != 2 {
+		t.Fatalf("1.5x font scales are %d/%d/%d, want 3/5/2", got.Body, got.Title, got.Small)
+	}
+	if got.ControlHeight != 45 {
+		t.Fatalf("1.5x control height is %d, want 45", got.ControlHeight)
+	}
+}

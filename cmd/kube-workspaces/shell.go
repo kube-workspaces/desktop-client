@@ -42,6 +42,7 @@ func runShell(ctx context.Context, args []string) error {
 	refresh := fs.Duration("refresh", shell.DefaultRefreshInterval, "how often to refresh the workspace list (0 to disable)")
 	width := fs.Int("width", shell.DefaultWidth, "initial window width")
 	height := fs.Int("height", shell.DefaultHeight, "initial window height")
+	uiScale := fs.Float64("ui-scale", 0, "interface scale factor 1-3 (0 follows the display)")
 	verbose := fs.Bool("v", false, "log diagnostics to stderr")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces shell [flags]\n\n")
@@ -60,6 +61,9 @@ func runShell(ctx context.Context, args []string) error {
 	// that a zero Options value can still mean "use the default".
 	if *refresh == 0 {
 		*refresh = -1
+	}
+	if err := checkUIScale(*uiScale); err != nil {
+		return err
 	}
 
 	var logf func(string, ...any)
@@ -103,6 +107,7 @@ func runShell(ctx context.Context, args []string) error {
 		RefreshInterval: *refresh,
 		Width:           *width,
 		Height:          *height,
+		UIScale:         *uiScale,
 		Title:           windowTitle,
 		Logf:            logf,
 	})
@@ -122,6 +127,16 @@ func runShell(ctx context.Context, args []string) error {
 
 // windowTitle is the application's name as the window manager shows it.
 const windowTitle = "Kube Workspaces"
+
+// checkUIScale validates a --ui-scale value: 0 follows the display, 1-3
+// pins the interface to a factor. It is a separate function so the rule can
+// be tested without running the shell.
+func checkUIScale(f float64) error {
+	if f == 0 || (f >= 1 && f <= 3) {
+		return nil
+	}
+	return fmt.Errorf("invalid --ui-scale %v (want 0 for automatic, or 1-3)", f)
+}
 
 // profileStore is the shell's [shell.Store], with the --profile flag applied.
 //

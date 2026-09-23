@@ -34,14 +34,17 @@ type fakeBackend struct {
 
 	opened, closed int
 	w, h           int
-	texW, texH     int
-	title          string
-	fullscreen     bool
-	queue          []viewer.Event
-	uploads        int
-	presents       int
-	clipboard      string
-	sized          [][2]int
+	// scaleFactor simulates a high-density display: Size reports w,h scaled
+	// by it, the way a real backend reports drawable pixels. Zero means 1.
+	scaleFactor float64
+	texW, texH  int
+	title       string
+	fullscreen  bool
+	queue       []viewer.Event
+	uploads     int
+	presents    int
+	clipboard   string
+	sized       [][2]int
 
 	// wake stands in for SDL's event queue as far as WaitEvents is concerned:
 	// a buffered slot, so that a wake delivered while nobody is waiting is
@@ -123,6 +126,7 @@ func (f *fakeBackend) SetClipboard(text string) error               { f.setClipb
 func (f *fakeBackend) Clipboard() (string, error)                   { return f.getClipboard(), nil }
 func (f *fakeBackend) PollEvents(dst []viewer.Event) []viewer.Event { return f.drain(dst) }
 func (f *fakeBackend) Size() (int, int)                             { return f.size() }
+func (f *fakeBackend) ScaleFactor() float64                         { return f.scale() }
 func (f *fakeBackend) Fullscreen() bool                             { return f.isFullscreen() }
 
 func (f *fakeBackend) OpenAudio(format viewer.AudioFormat) error {
@@ -237,7 +241,20 @@ func (f *fakeBackend) getClipboard() string {
 func (f *fakeBackend) size() (int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.scaleFactor > 1 {
+		return int(float64(f.w) * f.scaleFactor), int(float64(f.h) * f.scaleFactor)
+	}
 	return f.w, f.h
+}
+
+// scale reports the simulated display scale, defaulting to 1.
+func (f *fakeBackend) scale() float64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.scaleFactor <= 0 {
+		return 1
+	}
+	return f.scaleFactor
 }
 
 func (f *fakeBackend) drain(dst []viewer.Event) []viewer.Event {

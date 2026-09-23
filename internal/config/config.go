@@ -47,6 +47,9 @@ type Settings struct {
 	// Mode names the colour scheme: "dark" (the default) or "light". Empty
 	// means the default.
 	Mode string `json:"mode,omitempty"`
+	// UIScale pins the interface scale factor: 1, 1.5 or 2. Zero (or absent)
+	// means automatic — follow the display the window is on.
+	UIScale float64 `json:"uiScale,omitempty"`
 }
 
 // Config is the on-disk configuration document.

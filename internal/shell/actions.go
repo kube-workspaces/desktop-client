@@ -852,5 +852,9 @@ const (
 	idStyleClean   ui.FocusID = "style-clean"
 	idModeDark     ui.FocusID = "mode-dark"
 	idModeLight    ui.FocusID = "mode-light"
+	idScaleAuto    ui.FocusID = "scale-auto"
+	idScale100     ui.FocusID = "scale-100"
+	idScale150     ui.FocusID = "scale-150"
+	idScale200     ui.FocusID = "scale-200"
 	idSettingsDone ui.FocusID = "settings-done"
 )
