@@ -58,6 +58,8 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - internal/web$
+      - internal/webcmd$
 
 formatters:
   enable:
@@ -69,3 +71,5 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - internal/web$
+      - internal/webcmd$

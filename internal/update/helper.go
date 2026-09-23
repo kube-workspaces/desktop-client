@@ -115,7 +115,9 @@ func RunHelper(job string) error {
 // TakeError returns the previous helper's failure once.
 func TakeError(exe string) string {
 	l, err := LayoutForExe(exe)
-	if err != nil { return "" }
+	if err != nil {
+		return ""
+	}
 	p := filepath.Join(l.Dir, ".update-error")
 	b, err := os.ReadFile(p)
 	if err != nil {
