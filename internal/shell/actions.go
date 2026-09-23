@@ -54,6 +54,16 @@ const (
 	intentOpenInBrowser
 	intentStartWorkspace
 	intentStopWorkspace
+	intentCreateWorkspace
+	intentCreateSubmit
+	intentCreateClose
+	intentOpenProfiles
+	intentSwitchProfile
+	intentProfilesClose
+	intentOpenSessions
+	intentSessionsClose
+	intentSwitchSession
+	intentCloseSession
 	intentInfoWorkspace
 	intentInfoClose
 	intentSignOut
@@ -71,6 +81,11 @@ type intent struct {
 	workspace kwclient.Workspace
 	// observer indicates that intentActivate should open as an observer.
 	observer bool
+	// profile is the name of the subject of intentSwitchProfile.
+	profile string
+	// sessionKey is the workspace key of the subject of intentSwitchSession
+	// and intentCloseSession.
+	sessionKey string
 }
 
 // act performs the frame's intent.
@@ -115,6 +130,38 @@ func (a *App) act(ctx context.Context, in intent) {
 		if ws, ok := a.resolve(in.workspace); ok && ws.Running() {
 			a.setStopped(ctx, ws, true)
 		}
+	case intentCreateWorkspace:
+		a.openCreate()
+	case intentCreateSubmit:
+		a.submitCreate(ctx)
+	case intentCreateClose:
+		a.m.CloseCreate()
+		// Return the keyboard to the New button it came from.
+		a.ctx.Focus().Set(idCreate)
+	case intentOpenProfiles:
+		a.loadProfiles()
+		a.m.ShowProfiles()
+	case intentSwitchProfile:
+		a.switchProfile(ctx, in.profile)
+	case intentProfilesClose:
+		a.m.CloseProfiles()
+		a.ctx.Focus().Set(idProfiles)
+	case intentOpenSessions:
+		a.m.ShowSessionList()
+	case intentSessionsClose:
+		a.m.CloseSessionList()
+		a.ctx.Focus().Set(idSessions)
+	case intentSwitchSession:
+		if rec, ok := a.sessions[in.sessionKey]; ok {
+			a.m.CloseSessionList()
+			if rec.observer {
+				a.m.OpenAsObserver(rec.ws)
+			} else {
+				a.m.Open(rec.ws)
+			}
+		}
+	case intentCloseSession:
+		a.closeSessionEntry(ctx, in.sessionKey)
 	case intentInfoWorkspace:
 		if ws, ok := a.resolve(in.workspace); ok {
 			a.m.ShowInfo(ws)
@@ -131,6 +178,8 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.signOut()
 	case intentChangeServer:
 		a.cancelInFlight()
+		a.closeAllSessions()
+		a.loadProfiles()
 		a.m.NeedServer("")
 	case intentOpenSettings:
 		// Settings are only ever opened from the workspace list, so getting
@@ -496,6 +545,10 @@ func (a *App) resolve(ws kwclient.Workspace) (kwclient.Workspace, bool) {
 // activate opens a workspace in-app: a display session for a VM, an integrated
 // terminal for container and scratch workspaces. Workspace types the client
 // cannot render yet fall back to the browser rather than pretending to.
+//
+// Opening a workspace that already has a held session resumes it: the dial
+// happened on the first open and the transport has been up since. Passing
+// observer opens the shared-display observer instead of the primary surface.
 func (a *App) activate(ctx context.Context, ws kwclient.Workspace, observer bool) {
 	switch {
 	case !ws.Running():
@@ -503,23 +556,30 @@ func (a *App) activate(ctx context.Context, ws kwclient.Workspace, observer bool
 		a.m.Err = i18n.Sprintf("workspaces.notOpenable", ws.Name, StatusText(ws))
 	case ws.IsVM(), ws.Type == kwclient.WorkspaceTypeContainer, ws.Type == kwclient.WorkspaceTypeScratch:
 		if observer {
-			// Observe is the VM-only exception to the normal connector: it
-			// dials the shared display stream read-only. The default
-			// display/terminal connector (built by the client factory) is
-			// restored once the observer window closes.
-			restore := a.connect
-			a.connect = func(ctx context.Context, ws kwclient.Workspace) error {
-				defer func() { a.connect = restore }()
-				return connectObserver(ctx, a.api, ws, SessionOptions{Logf: a.logf})
-			}
+			a.m.OpenAsObserver(ws)
+		} else {
+			a.m.Open(ws)
 		}
-		a.m.Open(ws)
 	default:
 		// A workspace the client cannot open in-app yet, so it still gets the
 		// browser: the grant flow hands the user's session to their browser,
 		// which is the honest option for a surface we do not render.
 		a.openInBrowser(ctx, ws)
 	}
+}
+
+// closeSessionEntry releases one held session. From the switcher, where the
+// user can see what is held, this is the honest disconnect: the window-close
+// path only parks.
+func (a *App) closeSessionEntry(ctx context.Context, key string) {
+	rec, ok := a.sessions[key]
+	if !ok {
+		return
+	}
+	title := sessionEntryFor(rec).Title
+	a.closeSession(key)
+	a.m.Notice = i18n.Sprintf("sessions.closed", title)
+	a.refreshWorkspaces(ctx, true)
 }
 
 // openWeb spawns the embedded-webview child process (the `web` child binary,
@@ -596,6 +656,116 @@ func (a *App) openInBrowser(ctx context.Context, ws kwclient.Workspace) {
 	})
 }
 
+// openCreate opens the "new workspace" form modal with fresh defaults: an
+// empty name, the profile (or platform-default) namespace, the container type
+// and the first image that supports it.
+func (a *App) openCreate() {
+	a.createNameField.SetValue("")
+	ns := "workspaces"
+	if a.profile != nil && a.profile.Namespace != "" {
+		ns = a.profile.Namespace
+	}
+	a.createNamespaceField.SetValue(ns)
+	a.createType = kwclient.WorkspaceTypeContainer
+	a.createImageIdx = 0
+	a.createImageList.Selected = 0
+	a.m.ShowCreate()
+	a.ctx.Focus().Set(idCreateName)
+}
+
+// validWorkspaceName reports whether name is a legal workspace name: 1–63
+// lowercase alphanumerics and dashes, starting and ending with one. It mirrors
+// the server's pattern so a typo fails in the form, not after a round trip.
+func validWorkspaceName(name string) bool {
+	if len(name) < 1 || len(name) > 63 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			continue
+		}
+		return false
+	}
+	return name[0] != '-' && name[len(name)-1] != '-'
+}
+
+// createImages returns the catalog entries supporting the form's type, in
+// catalog order.
+func (a *App) createImages() []kwclient.Image {
+	out := make([]kwclient.Image, 0, len(a.m.Images))
+	for _, img := range a.m.Images {
+		if img.SupportsType(a.createType) {
+			out = append(out, img)
+		}
+	}
+	return out
+}
+
+// submitCreate validates the form and posts it.
+func (a *App) submitCreate(ctx context.Context) {
+	if a.api == nil || a.m.Busy {
+		return
+	}
+	name := strings.TrimSpace(a.createNameField.Value())
+	namespace := strings.TrimSpace(a.createNamespaceField.Value())
+	if namespace == "" {
+		namespace = "workspaces"
+	}
+	if !validWorkspaceName(name) {
+		a.m.Err = i18n.Get("create.invalidName")
+		a.ctx.Focus().Set(idCreateName)
+		return
+	}
+	images := a.createImages()
+	if a.createImageIdx < 0 || a.createImageIdx >= len(images) {
+		a.m.Err = i18n.Get("create.noImage")
+		return
+	}
+	img := images[a.createImageIdx]
+	a.m.Err = ""
+	a.createWorkspace(ctx, kwclient.CreateWorkspacePayload{
+		Name:      name,
+		Namespace: namespace,
+		Type:      a.createType,
+		Container: &kwclient.WorkspaceContainerSpec{Name: name, Image: img.Image},
+	})
+}
+
+// createWorkspace posts the form and refreshes the list so the new workspace
+// shows up under the user.
+func (a *App) createWorkspace(ctx context.Context, payload kwclient.CreateWorkspacePayload) {
+	api := a.api
+	a.m.Working(i18n.Sprintf("busy.creating", payload.Name))
+	opCtx, cancel := context.WithTimeout(ctx, listTimeout)
+	a.cancelInFlight()
+	a.cancelPending = cancel
+	a.background(func() func() {
+		ws, err := api.CreateWorkspace(opCtx, payload)
+		return func() {
+			cancel()
+			a.cancelPending = nil
+			if a.m.State != StateWorkspaces {
+				return
+			}
+			a.m.Done()
+			if err != nil {
+				if errors.Is(err, kwclient.ErrAlreadyExists) {
+					a.m.Err = i18n.Sprintf("create.taken", payload.Name)
+					a.ctx.Focus().Set(idCreateName)
+					return
+				}
+				a.m.Err = Describe(err)
+				return
+			}
+			a.m.CloseCreate()
+			a.ctx.Focus().Set(idOpen)
+			a.m.Notice = i18n.Sprintf("create.created", ws.Key())
+			a.refreshWorkspaces(ctx, true)
+		}
+	})
+}
+
 // setStopped starts or stops a workspace and refreshes the list so the new
 // state shows up under the user.
 func (a *App) setStopped(ctx context.Context, ws kwclient.Workspace, stop bool) {
@@ -642,10 +812,80 @@ func (a *App) setStopped(ctx context.Context, ws kwclient.Workspace, stop bool) 
 	})
 }
 
+// switchProfile moves the shell to another instance profile without a
+// relaunch: the in-flight work is cancelled, the client and connector are
+// rebuilt for the new server, and the stored token (if any) is verified,
+// landing on the list or the login screen exactly like a fresh start.
+//
+// The profile is saved as current so the CLI and the next launch agree with
+// what the shell is showing.
+func (a *App) switchProfile(ctx context.Context, name string) {
+	profiles, err := a.opts.Store.ListProfiles()
+	if err != nil {
+		a.m.Err = Describe(err)
+		return
+	}
+	a.profiles = profiles
+	var p *config.Profile
+	for _, cand := range profiles {
+		if cand != nil && cand.Name == name {
+			p = cand
+			break
+		}
+	}
+	if p == nil {
+		a.m.Err = i18n.Sprintf("profiles.missing", name)
+		return
+	}
+	if a.profile != nil && p.Name == a.profile.Name {
+		a.m.CloseProfiles()
+		return
+	}
+	a.cancelInFlight()
+	a.closeAllSessions()
+	a.profile = p
+	a.m.Server, a.m.Insecure = p.Server, p.InsecureSkipVerify
+	a.serverField.SetValue(p.Server)
+	a.emailField.SetValue(p.Email)
+	a.passwordField.Clear()
+	a.insecureBox.Checked = p.InsecureSkipVerify
+	a.m.Workspaces, a.m.Images = nil, nil
+	a.m.Selected = ""
+	a.m.CloseInfo()
+	a.m.CloseCreate()
+	a.m.CloseProfiles()
+	a.m.Err, a.m.Notice = "", ""
+	a.m.Busy, a.m.BusyText = false, ""
+	a.nextRefresh = time.Time{}
+	if err := a.useServer(p.Server, p.InsecureSkipVerify); err != nil {
+		a.m.NeedServer(Describe(err))
+		return
+	}
+	token, err := a.opts.Store.TokenFor(p)
+	if err != nil {
+		a.logf("load token for %s: %v", p.Name, err)
+	}
+	// Record the switch even before signing in: the profile is the thing the
+	// user picked, and a restart mid-login should come back here, not to the
+	// previous instance.
+	if err := a.opts.Store.Save(p, ""); err != nil {
+		a.logf("save profile: %v", err)
+	}
+	if token == "" {
+		a.m.State = StateLogin
+		a.ensureAuthConfig(ctx)
+		return
+	}
+	a.api.SetToken(token)
+	a.verifySession(ctx)
+}
+
 // signOut forgets the session but keeps the profile, so signing back in does
-// not mean retyping the server address.
+// not mean retyping the server address. Held sessions are released: their
+// transports were authenticated by the session being forgotten.
 func (a *App) signOut() {
 	a.cancelInFlight()
+	a.closeAllSessions()
 	if a.api != nil {
 		a.api.SetToken("")
 	}
@@ -669,6 +909,17 @@ func (a *App) rememberProfile(server string, insecure bool, email string) {
 	if email != "" {
 		a.profile.Email = email
 	}
+}
+
+// loadProfiles refreshes the cached profile list from the store. It is local
+// disk state, so it runs synchronously on the loop: no spinner, no intent.
+func (a *App) loadProfiles() {
+	profiles, err := a.opts.Store.ListProfiles()
+	if err != nil {
+		a.logf("list profiles: %v", err)
+		return
+	}
+	a.profiles = profiles
 }
 
 // post schedules fn to run on the loop's goroutine. It is for callbacks that
@@ -846,6 +1097,19 @@ const (
 	idInfoClose ui.FocusID = "info-close"
 	idInfoStart ui.FocusID = "info-start"
 	idInfoStop  ui.FocusID = "info-stop"
+
+	idCreate          ui.FocusID = "create"
+	idCreateName      ui.FocusID = "create-name"
+	idCreateNamespace ui.FocusID = "create-namespace"
+	idCreateImages    ui.FocusID = "create-images"
+	idCreateSubmit    ui.FocusID = "create-submit"
+	idCreateClose     ui.FocusID = "create-close"
+
+	idProfiles      ui.FocusID = "profiles"
+	idProfilesClose ui.FocusID = "profiles-close"
+
+	idSessions      ui.FocusID = "sessions"
+	idSessionsClose ui.FocusID = "sessions-close"
 
 	idSettings     ui.FocusID = "settings"
 	idStyleBubbly  ui.FocusID = "style-bubbly"

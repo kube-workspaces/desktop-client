@@ -46,6 +46,9 @@ type API interface {
 	// They report the workspace with its new stopped state.
 	StartWorkspace(ctx context.Context, namespace, name string) (*kwclient.Workspace, error)
 	StopWorkspace(ctx context.Context, namespace, name string) (*kwclient.Workspace, error)
+	// CreateWorkspace powers the shell's "+ New" control. A taken name
+	// reports an [*APIError] wrapping [kwclient.ErrAlreadyExists].
+	CreateWorkspace(ctx context.Context, payload kwclient.CreateWorkspacePayload) (*kwclient.Workspace, error)
 	// WorkspaceURL builds the URL a browser should open for a workspace.
 	WorkspaceURL(ws kwclient.Workspace, img *kwclient.Image) string
 	// GrantBrowserSession hands this client's session to the browser: the
@@ -79,15 +82,41 @@ var _ API = (*kwclient.Client)(nil)
 // its display session; a non-VM workspace opens an integrated terminal.
 type Connector func(ctx context.Context, ws kwclient.Workspace) error
 
-// ClientFactory builds the client for an instance, and the connector that goes
-// with it.
+// SessionHandle is one held session: a transport that outlives its window.
+//
+// Attach opens the window and blocks until it closes or ctx ends; it may be
+// called again to resume the same transport in a fresh window. Close releases
+// the server side (the VNC slot, the display membership) and is idempotent —
+// calling it on a never-attached or already-closed handle is a no-op.
+type SessionHandle interface {
+	// Attach runs the window for the session. A nil return means the user
+	// closed the window; the transport stays held for a later Attach.
+	Attach(ctx context.Context) error
+	// Close ends the session and frees what it holds on the server.
+	Close()
+	// Kind names the session for the switcher: "display", "terminal",
+	// "observer" or "tier1".
+	Kind() string
+}
+
+// SessionDialer opens holdable sessions for the concurrent-session manager.
+//
+// Dial establishes the transport (and fails fast when the workspace cannot
+// be opened); the window only appears on the first Attach. This is what lets
+// several sessions stay connected while one window is visible.
+type SessionDialer interface {
+	Dial(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error)
+}
+
+// ClientFactory builds the client for an instance, and the dialer that opens
+// sessions through it.
 //
 // The two are built together because a display session needs the concrete
 // [*kwclient.Client] (it dials the WebSocket bridge through it) while the
 // screens only need [API]. Returning both from one call keeps the type
 // assertion that would otherwise be needed out of the shell entirely: the
 // caller in cmd/ has the concrete client in hand and closes over it.
-type ClientFactory func(server string, insecure bool) (API, Connector, error)
+type ClientFactory func(server string, insecure bool) (API, SessionDialer, error)
 
 // Store persists the instance profile and its session token between runs.
 //
@@ -104,6 +133,13 @@ type Store interface {
 	// Forget removes the stored token, leaving the profile in place so the
 	// user does not have to retype the server URL to sign back in.
 	Forget(profile *config.Profile) error
+	// ListProfiles returns every configured profile in stable sorted order,
+	// for the in-shell profile switcher.
+	ListProfiles() ([]*config.Profile, error)
+	// TokenFor returns the stored token for a profile without making it
+	// active. An empty token with a nil error means "signed out", which is
+	// the state the login screen exists for, not a failure.
+	TokenFor(profile *config.Profile) (string, error)
 
 	// LoadSettings returns the client's own preferences. Zero-valued fields
 	// mean the defaults, so a never-written config reads back as empty, not
@@ -166,6 +202,34 @@ func (ConfigStore) Forget(profile *config.Profile) error {
 		return nil
 	}
 	return config.DeleteToken(profile.Name)
+}
+
+// ListProfiles implements [Store].
+func (ConfigStore) ListProfiles() ([]*config.Profile, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	names := cfg.Names()
+	out := make([]*config.Profile, 0, len(names))
+	for _, name := range names {
+		if p := cfg.Get(name); p != nil {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// TokenFor implements [Store].
+func (ConfigStore) TokenFor(profile *config.Profile) (string, error) {
+	if profile == nil {
+		return "", nil
+	}
+	token, err := config.LoadToken(profile.Name)
+	if err != nil && errors.Is(err, config.ErrNoToken) {
+		return "", nil
+	}
+	return token, err
 }
 
 // LoadSettings implements [Store].

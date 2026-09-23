@@ -4,6 +4,8 @@
 package shell
 
 import (
+	"time"
+
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 )
@@ -108,6 +110,7 @@ func (a *App) applySettings(s Settings) {
 // test that settles can assert on what was saved.
 func (a *App) saveSettings() {
 	saved := a.settings.toConfig()
+	saved.WindowWidth, saved.WindowHeight = a.geomW, a.geomH
 	a.background(func() func() {
 		return func() {
 			if err := a.opts.Store.SaveSettings(saved); err != nil {
@@ -115,4 +118,41 @@ func (a *App) saveSettings() {
 			}
 		}
 	})
+}
+
+// geomSaveInterval rate-limits geometry writes: a live resize drag produces a
+// resize event per frame, and each one fsyncing the config would be felt.
+const geomSaveInterval = 5 * time.Second
+
+// recordGeometry notes a new window size and persists it when due. The final
+// size of a session is always written on the way out (see [App.Run]), so the
+// interval only bounds writes mid-drag.
+func (a *App) recordGeometry(now time.Time) {
+	w, h := a.be.Size()
+	if w <= 0 || h <= 0 || (w == a.geomW && h == a.geomH) {
+		return
+	}
+	a.geomW, a.geomH = w, h
+	if now.Sub(a.geomSavedAt) < geomSaveInterval {
+		return
+	}
+	a.geomSavedAt = now
+	a.saveSettings()
+}
+
+// flushGeometry writes the current window size synchronously. It runs on the
+// way out ([App.Run] defers it) so the size at close — the one the user
+// arranged — is what the next launch restores, regardless of where the
+// rate limiter stood.
+func (a *App) flushGeometry() {
+	w, h := a.be.Size()
+	if w <= 0 || h <= 0 {
+		return
+	}
+	a.geomW, a.geomH = w, h
+	saved := a.settings.toConfig()
+	saved.WindowWidth, saved.WindowHeight = w, h
+	if err := a.opts.Store.SaveSettings(saved); err != nil {
+		a.logf("save window size: %v", err)
+	}
 }

@@ -102,9 +102,28 @@ type Model struct {
 	// refresh underneath the modal cannot change what it says while it is up.
 	Info *kwclient.Workspace
 
+	// Creating reports whether the "new workspace" form modal is open. The
+	// form's field contents live on the App (they are widget state, like the
+	// login fields), so this is only the open flag.
+	Creating bool
+
+	// Profiles reports whether the profile switcher modal is open.
+	Profiles bool
+
 	// Opening is the workspace whose session is being started; it is only
 	// meaningful in StateSession.
 	Opening kwclient.Workspace
+
+	// OpenObserver records that the opening session is a shared-display
+	// observer rather than the workspace's primary surface.
+	OpenObserver bool
+
+	// Sessions are the held transports, for the switcher: workspaces whose
+	// windows are closed but whose connections are still up.
+	Sessions []SessionEntry
+
+	// SessionList reports whether the sessions modal is open.
+	SessionList bool
 
 	// Busy and BusyText describe work in flight. Busy suppresses the actions
 	// that would race it rather than covering the screen with a modal.
@@ -129,6 +148,8 @@ func (m *Model) NeedServer(reason string) {
 	m.Identity = nil
 	m.Workspaces, m.Images = nil, nil
 	m.Info = nil
+	m.Creating = false
+	m.Profiles = false
 	m.Busy, m.BusyText = false, ""
 	m.Err = reason
 	m.Notice = ""
@@ -171,6 +192,8 @@ func (m *Model) SignOut(reason string) {
 	m.Workspaces, m.Images = nil, nil
 	m.Selected = ""
 	m.Info = nil
+	m.Creating = false
+	m.Profiles = false
 	m.Busy, m.BusyText = false, ""
 	m.Err = ""
 	m.Notice = reason
@@ -251,13 +274,31 @@ func (m *Model) WorkspacesLoaded(workspaces []kwclient.Workspace, at time.Time) 
 // workspace root is a reasonable fallback.
 func (m *Model) ImagesLoaded(images []kwclient.Image) { m.Images = images }
 
+// SessionEntry is one held session as the switcher shows it.
+type SessionEntry struct {
+	// Key is the workspace's "namespace/name".
+	Key string
+	// Title is the display name, including the observer suffix when watched.
+	Title string
+	// Kind is the handle kind: "display", "terminal", "observer" or "tier1".
+	Kind string
+}
+
 // Open moves to the session screen for ws.
 func (m *Model) Open(ws kwclient.Workspace) {
 	m.Opening = ws
+	m.OpenObserver = false
 	m.Selected = ws.Key()
 	m.Err, m.Notice = "", ""
 	m.Busy, m.BusyText = false, ""
 	m.State = StateSession
+}
+
+// OpenAsObserver moves to the session screen for ws as a shared-display
+// observer.
+func (m *Model) OpenAsObserver(ws kwclient.Workspace) {
+	m.Open(ws)
+	m.OpenObserver = true
 }
 
 // ShowInfo opens the info modal for ws. The workspace is snapshotted, so a
@@ -271,6 +312,55 @@ func (m *Model) ShowInfo(ws kwclient.Workspace) {
 // CloseInfo dismisses the info modal, returning to the list.
 func (m *Model) CloseInfo() { m.Info = nil }
 
+// ShowCreate opens the "new workspace" form modal.
+func (m *Model) ShowCreate() {
+	m.Info = nil
+	m.Err, m.Notice = "", ""
+	m.Creating = true
+}
+
+// CloseCreate dismisses the "new workspace" form modal.
+func (m *Model) CloseCreate() { m.Creating = false }
+
+// ShowProfiles opens the profile switcher modal.
+func (m *Model) ShowProfiles() {
+	m.Info = nil
+	m.Creating = false
+	m.Err, m.Notice = "", ""
+	m.Profiles = true
+}
+
+// CloseProfiles dismisses the profile switcher modal.
+func (m *Model) CloseProfiles() { m.Profiles = false }
+
+// ShowSessionList opens the sessions modal.
+func (m *Model) ShowSessionList() {
+	m.Info = nil
+	m.Creating = false
+	m.Profiles = false
+	m.Err, m.Notice = "", ""
+	m.SessionList = true
+}
+
+// CloseSessionList dismisses the sessions modal.
+func (m *Model) CloseSessionList() { m.SessionList = false }
+
+// SessionParked returns from a cleanly closed window to the workspace list,
+// keeping the transport held in the background. It is the normal way a
+// session ends up in the switcher: the window is gone, the connection is not.
+func (m *Model) SessionParked(ws kwclient.Workspace) {
+	m.Opening = kwclient.Workspace{}
+	m.OpenObserver = false
+	m.State = StateWorkspaces
+	m.Busy, m.BusyText = false, ""
+	m.Err = ""
+	m.Notice = i18n.Sprintf("sessions.parked", ws.Key())
+}
+
+// It returns to the list whatever happened, including on a failure. The window
+// belongs to the shell and a session that could not start is not a reason to
+// leave the user looking at nothing — which is exactly what the connect
+// subcommand does, because there it is the whole process.
 // SessionEnded returns from a session to the workspace list.
 //
 // It returns to the list whatever happened, including on a failure. The window

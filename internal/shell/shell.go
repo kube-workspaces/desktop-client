@@ -168,12 +168,27 @@ type App struct {
 	m    Model
 
 	api     API
-	connect Connector
+	dialer  SessionDialer
 	profile *config.Profile
+
+	// sessions are the held transports, keyed by workspace key. At most one
+	// has a window at a time; the rest stay connected in the background.
+	// Everything here belongs to the loop's goroutine, like the model.
+	sessions map[string]*sessionRecord
+
+	// profiles is the cached profile list for the switcher UI. It is local
+	// disk state, reloaded whenever the switcher can be reached, so it never
+	// goes stale across CLI edits made while the shell runs.
+	profiles []*config.Profile
 
 	// settings is the client's own appearance. It is applied as a theme at
 	// startup and whenever the settings screen changes it.
 	settings Settings
+
+	// geomW/geomH cache the shell window's last seen size for the geometry
+	// persistence below; geomSavedAt rate-limits the writes.
+	geomW, geomH int
+	geomSavedAt  time.Time
 
 	// The widgets whose state has to survive a frame.
 	serverField   ui.TextInput
@@ -182,6 +197,15 @@ type App struct {
 	passwordField ui.TextInput
 	filterField   ui.TextInput
 	list          ui.List
+
+	// The "new workspace" form's widget state. The type and image selections
+	// are indices rather than widgets: the type row is three buttons and the
+	// images ride a second list widget.
+	createNameField      ui.TextInput
+	createNamespaceField ui.TextInput
+	createType           kwclient.WorkspaceType
+	createImageIdx       int
+	createImageList      ui.List
 
 	// The surface. img is reallocated on resize; canvas wraps it.
 	img           *image.RGBA
@@ -214,11 +238,12 @@ func New(opts Options) (*App, error) {
 	opts.applyDefaults()
 
 	a := &App{
-		opts:    opts,
-		be:      opts.Backend,
-		ctx:     ui.NewContext(opts.Theme),
-		results: make(chan func(), resultQueue),
-		done:    make(chan struct{}),
+		opts:     opts,
+		be:       opts.Backend,
+		ctx:      ui.NewContext(opts.Theme),
+		results:  make(chan func(), resultQueue),
+		done:     make(chan struct{}),
+		sessions: make(map[string]*sessionRecord),
 		// A state the machine can never be in, so that the first frame counts
 		// as a screen change and places the initial focus.
 		lastState: State(-1),
@@ -232,6 +257,12 @@ func New(opts Options) (*App, error) {
 	a.filterField.ID = idFilter
 	a.filterField.Placeholder = i18n.Get("workspaces.filter")
 	a.list.ID = idList
+	a.createNameField.ID = idCreateName
+	a.createNameField.Placeholder = i18n.Get("create.namePlaceholder")
+	a.createNamespaceField.ID = idCreateNamespace
+	a.createNamespaceField.Placeholder = "workspaces"
+	a.createType = kwclient.WorkspaceTypeContainer
+	a.createImageList.ID = idCreateImages
 	a.insecureBox.ID = idInsecure
 	a.insecureBox.Label = i18n.Get("server.tls")
 
@@ -259,6 +290,13 @@ func (a *App) Run(ctx context.Context) error {
 		return fmt.Errorf("shell: open window: %w", err)
 	}
 	defer a.be.Close()
+	// Held sessions never outlive the process: the window going away is the
+	// last chance to hand the server's single-seat slots back.
+	defer a.closeAllSessions()
+	// The size at close is the size the next launch restores. The resize
+	// path rate-limits its writes mid-drag; this flush is what makes the
+	// final arrangement durable.
+	defer a.flushGeometry()
 	// Background work outlives nothing: closing done releases any goroutine
 	// still trying to deliver a result into a queue nobody is draining.
 	defer close(a.done)
@@ -342,6 +380,11 @@ func (a *App) idleTimeout(now time.Time) time.Duration {
 // machine whose transitions are network results.
 func (a *App) Start(ctx context.Context) {
 	a.dirty = true
+	a.loadProfiles()
+
+	// Seed the geometry cache from the launch size so an appearance save
+	// before the first resize keeps the size the window actually opened at.
+	a.geomW, a.geomH = a.opts.Width, a.opts.Height
 
 	// Appearance first: unlike the profile it needs no instance, so even a
 	// first-run user sees their own chosen look on the very first screen.
@@ -415,6 +458,7 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 		// PIXEL_SIZE_CHANGED for it), so this is also where the theme
 		// follows the window across mixed-DPI displays.
 		a.refreshTheme()
+		a.recordGeometry(now)
 	}
 
 	if a.m.State == StateSession {
@@ -468,7 +512,7 @@ func (a *App) draw(ctx context.Context) error {
 	// A modal keeps the previous frame as a frozen, dimmed backdrop. The
 	// background is deliberately not cleared and the list is not drawn, so the
 	// buffer still holds the frame the user last saw and the modal dims it.
-	modal := a.m.State == StateWorkspaces && a.m.Info != nil
+	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList)
 	if !modal {
 		a.canvas.Fill(a.canvas.Bounds(), a.opts.Theme.Background)
 	}
@@ -480,9 +524,16 @@ func (a *App) draw(ctx context.Context) error {
 	case StateLogin:
 		intent = a.drawLoginScreen(a.canvas.Bounds())
 	case StateWorkspaces:
-		if modal {
+		switch {
+		case a.m.SessionList:
+			intent = a.drawSessionsModal(a.canvas.Bounds())
+		case a.m.Profiles:
+			intent = a.drawProfilesModal(a.canvas.Bounds())
+		case a.m.Creating:
+			intent = a.drawCreateModal(a.canvas.Bounds())
+		case modal:
 			intent = a.drawWorkspaceInfoModal(a.canvas.Bounds())
-		} else {
+		default:
 			intent = a.drawWorkspacesScreen(a.canvas.Bounds())
 		}
 	case StateSettings:
@@ -582,11 +633,11 @@ func (a *App) background(fn func() func()) {
 
 // useServer points the shell at an instance.
 func (a *App) useServer(server string, insecure bool) error {
-	api, connect, err := a.opts.NewClient(server, insecure)
+	api, dialer, err := a.opts.NewClient(server, insecure)
 	if err != nil {
 		return err
 	}
-	a.api, a.connect = api, connect
+	a.api, a.dialer = api, dialer
 	a.m.Server, a.m.Insecure = server, insecure
 	return nil
 }

@@ -53,6 +53,7 @@ var english = map[string]string{
 	"busy.openingBrowser": "Opening %s in your browser",
 	"busy.starting":       "Starting",
 	"busy.stopping":       "Stopping",
+	"busy.creating":       "Creating",
 	"busy.started":        "Started",
 	"busy.stopped":        "Stopped",
 
@@ -63,7 +64,8 @@ var english = map[string]string{
 	"workspaces.hint":          "Enter opens  ·  F5 refreshes  ·  Ctrl-F filters  ·  Tab moves",
 	"workspaces.updated":       "Updated %s",
 	"workspaces.loading":       "Loading workspaces...",
-	"workspaces.empty":         "You have no workspaces yet. Create one in the web UI.",
+	"workspaces.empty":         "You have no workspaces yet.",
+	"workspaces.new":           "New",
 	"workspaces.noMatch":       "No workspace matches %q.",
 	"workspaces.open":          "Open",
 	"workspaces.notOpenable":   "%s is %s and cannot be opened yet.",
@@ -107,10 +109,48 @@ var english = map[string]string{
 	"info.request":   "request %s",
 	"info.limit":     "limit %s",
 
+	// New-workspace form modal.
+	"create.title":       "New workspace",
+	"create.name":        "NAME",
+	"create.placeholder": "my-workspace",
+	"create.namespace":   "NAMESPACE",
+	"create.type":        "TYPE",
+	"create.container":   "Container",
+	"create.vm":          "VM",
+	"create.scratch":     "Scratch",
+	"create.image":       "IMAGE",
+	"create.noImages":    "No images support this type yet.",
+	"create.create":      "Create",
+	"create.cancel":      "Cancel",
+	"create.hint":        "Tab moves between fields  ·  Enter creates  ·  Esc closes",
+	"create.invalidName": "Name must be 1–63 lowercase letters, digits or dashes, starting and ending with one.",
+	"create.noImage":     "Pick an image for the workspace.",
+	"create.created":     "Created %s.",
+	"create.taken":       "A workspace named %s already exists.",
+
 	// Header.
 	"header.signout":  "Sign out",
 	"header.settings": "Settings",
+	"header.profiles": "Profiles",
 	"header.noAuth":   "authentication disabled",
+
+	// Profile switcher.
+	"profiles.title":   "Profiles",
+	"profiles.current": "(current)",
+	"profiles.none":    "No profiles yet. Connect to an instance to create one.",
+	"profiles.missing": "Profile %q is gone.",
+
+	// Sessions switcher.
+	"sessions.title":        "Sessions (%d)",
+	"sessions.none":         "No open sessions. Opening a workspace keeps it connected here.",
+	"sessions.switch":       "Switch",
+	"sessions.close":        "Close",
+	"sessions.parked":       "%s stays connected in the background.",
+	"sessions.closed":       "Closed %s.",
+	"sessions.kindDisplay":  "Display",
+	"sessions.kindTerminal": "Terminal",
+	"sessions.kindObserver": "Observer",
+	"sessions.kindTier1":    "Tier 1",
 
 	// Status words.
 	"status.stopped":  "stopped",

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -26,31 +27,117 @@ import (
 // exists on the adapter with exactly the window-facing signatures.
 var _ viewer.Tier1Input = (*selkies.Control)(nil)
 
-// runSession hands the window to the session viewer and blocks until the
-// session ends: a display for a VM, an integrated terminal otherwise.
+// sessionRecord is one held session: the workspace, whether it is an
+// observer, and the transport that outlives its windows.
+type sessionRecord struct {
+	ws       kwclient.Workspace
+	observer bool
+	handle   SessionHandle
+}
+
+// sessionEntry is the model's display copy of a held session.
+func sessionEntryFor(rec *sessionRecord) SessionEntry {
+	title := rec.ws.Key()
+	kind := rec.handle.Kind()
+	if rec.observer {
+		title += i18n.Get("workspaces.observer")
+	}
+	return SessionEntry{Key: rec.ws.Key(), Title: title, Kind: kind}
+}
+
+// syncSessions rebuilds the model's session list from the held transports,
+// in stable key order.
+func (a *App) syncSessions() {
+	keys := make([]string, 0, len(a.sessions))
+	for key := range a.sessions {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	entries := make([]SessionEntry, 0, len(keys))
+	for _, key := range keys {
+		entries = append(entries, sessionEntryFor(a.sessions[key]))
+	}
+	a.m.Sessions = entries
+}
+
+// closeSession releases one held session and forgets it. It is idempotent.
+func (a *App) closeSession(key string) {
+	if rec, ok := a.sessions[key]; ok {
+		delete(a.sessions, key)
+		rec.handle.Close()
+		a.syncSessions()
+	}
+}
+
+// closeAllSessions releases every held session. The shell calls it whenever
+// the identity or the instance goes away — sign-out, profile switch, server
+// change, process exit — so a held transport never outlives the session that
+// authenticated it, and the server's single-seat slots are handed back.
+func (a *App) closeAllSessions() {
+	for key, rec := range a.sessions {
+		delete(a.sessions, key)
+		rec.handle.Close()
+	}
+	a.syncSessions()
+}
+
+// runSession attaches the opening workspace's session and blocks until its
+// window closes: a display for a VM, an integrated terminal otherwise.
+//
+// The first open dials the transport; later opens of the same workspace
+// resume the held one. A clean window close parks the session — it stays
+// connected in the background and the shell returns to the list — while a
+// mid-flight failure closes it and reports. Explicit disconnects happen in
+// the sessions modal.
 //
 // It runs on the loop's goroutine, which is the goroutine that owns the
-// window, which is what the viewer requires. Blocking here is the design:
-// while a session is on screen there is no shell to draw, and a shell that
-// kept polling would be competing with the viewer for the same event queue.
+// window, which is what the viewer requires.
 func (a *App) runSession(ctx context.Context) error {
 	ws := a.m.Opening
-	if a.connect == nil {
+	observer := a.m.OpenObserver
+	if a.dialer == nil {
 		a.afterSession()
 		a.m.SessionEnded(errors.New("this build cannot open sessions"))
 		return nil
 	}
 
-	a.logf("opening a display session to %s", ws.Key())
-	err := a.connect(ctx, ws)
+	key := ws.Key()
+	rec := a.sessions[key]
+	if rec == nil || rec.observer != observer {
+		if rec != nil {
+			// A display and an observer of the same workspace are different
+			// sessions, not two windows on one: release the old before
+			// dialling the new.
+			a.closeSession(key)
+		}
+		a.logf("dialling a session to %s", key)
+		handle, err := a.dialer.Dial(ctx, ws, observer)
+		if err != nil {
+			a.afterSession()
+			a.m.SessionEnded(err)
+			return nil
+		}
+		rec = &sessionRecord{ws: ws, observer: observer, handle: handle}
+		a.sessions[key] = rec
+		a.syncSessions()
+	}
+
+	a.logf("attaching a session window to %s", key)
+	err := rec.handle.Attach(ctx)
 	a.afterSession()
 
 	if ctx.Err() != nil {
 		// The process is shutting down, not returning to the list.
+		a.closeAllSessions()
 		a.quit = true
 		return nil
 	}
-	a.m.SessionEnded(err)
+	if err != nil {
+		a.closeSession(key)
+		a.m.SessionEnded(err)
+		return nil
+	}
+	a.m.SessionParked(ws)
 	return nil
 }
 
@@ -91,145 +178,304 @@ type SessionOptions struct {
 	Logf func(format string, args ...any)
 }
 
-// SessionConnector returns the production [Connector]: it opens the workspace
-// in the client's own window. A VM gets its supervised RFB display session; any
-// other workspace gets the integrated terminal over the /exec bridge.
-func SessionConnector(client *kwclient.Client, opts SessionOptions) Connector {
-	terminalConnector := TerminalConnector(client, TerminalOptions{
-		Scale: 1, // the 5x8 bitmap at 1x (6x11 px cells); scale 2 reads too large
-		Logf:  opts.Logf,
-	})
-	return func(ctx context.Context, ws kwclient.Workspace) error {
+// sessionDialer is the production [SessionDialer]: it opens the workspace in
+// the client's own window. A VM gets its supervised RFB display session (via
+// Tier 1 when the image advertises Selkies); any other workspace gets the
+// integrated terminal over the /exec bridge.
+type sessionDialer struct {
+	client *kwclient.Client
+	opts   SessionOptions
+}
+
+// NewSessionDialer builds the production [SessionDialer] over a concrete
+// client. The concrete type is needed because sessions dial the WebSocket
+// bridges through it, while the screens only ever see [API].
+func NewSessionDialer(client *kwclient.Client, opts SessionOptions) SessionDialer {
+	return &sessionDialer{client: client, opts: opts}
+}
+
+// Dial establishes the session's transport without opening any window. The
+// window appears on the first Attach; the transport survives window closes
+// until Close, which is what makes several sessions concurrent.
+func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error) {
+	switch {
+	case observer:
 		if !ws.IsVM() {
-			return terminalConnector(ctx, ws)
+			return nil, errors.New("only VM workspaces can be observed")
 		}
-
+		return dialObserverSession(ctx, d.client, ws, d.opts)
+	case !ws.IsVM():
+		return &terminalHandle{
+			run: TerminalConnector(d.client, TerminalOptions{
+				Scale: 1, // the 5x8 bitmap at 1x (6x11 px cells); scale 2 reads too large
+				Logf:  d.opts.Logf,
+			}),
+			ws: ws,
+		}, nil
+	default:
 		if ws.RemoteDesktop != nil && ws.RemoteDesktop.Protocol == "selkies" {
-			if opts.Logf != nil {
-				opts.Logf("workspace %s advertises Selkies Tier 1 transport", ws.Key())
+			if d.opts.Logf != nil {
+				d.opts.Logf("workspace %s advertises Selkies Tier 1 transport", ws.Key())
 			}
-			err := connectTier1(ctx, client, ws, opts)
-			if err == nil {
-				return nil
-			}
-			if errors.Is(err, session.ErrNoFallback) {
-				// A refused agent, a rejected credential or a display owned
-				// elsewhere must surface, not be routed around.
-				return err
-			}
-			// Recoverable: dial, negotiation, startup or decode failed. Fall
-			// back (also after bounded live recovery) for the rest of this connection — once we drop a
-			// tier we do not probe it again mid-session (plan §7.2).
-			if opts.Logf != nil {
-				opts.Logf("Tier 1 to %s failed (%v); falling back to Tier 0", ws.Key(), err)
-			}
+			return &tier1Handle{client: d.client, ws: ws, opts: d.opts}, nil
 		}
-
-		encodings := append([]rfb.Encoding(nil), rfb.DefaultEncodings...)
-		if opts.Quality >= 0 {
-			encodings = append(encodings, rfb.QualityLevel(opts.Quality))
-		}
-		if opts.Compress >= 0 {
-			encodings = append(encodings, rfb.CompressLevel(opts.Compress))
-		}
-
-		cfg := viewer.Config{
-			AdaptiveQuality: !opts.FixedQuality,
-			Title:           ws.Key(),
-			ScaleQuality:    opts.ScaleQuality,
-			Logf:            opts.Logf,
-		}
-		view := viewer.New(viewer.NewSDLBackend(), cfg)
-
-		runCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
-		base := rfb.Config{Encodings: encodings}
-		if fm := view.AudioFormat(); fm != nil {
-			base.AudioFormat = fm
-		}
-		sess, err := session.DialReconnecting(runCtx, client, ws.Namespace, ws.Name, base, session.Options{
-			Policy:         reconnect.Default(),
-			UpdateInterval: opts.UpdateInterval,
-			OnState: func(state session.State, err error) {
-				if status, detail, ok := viewerStatus(state, err); ok {
-					view.SetStatus(status, detail)
-				}
-			},
-			// The RFB handshake reads its config once, when the connection is
-			// created, so the callbacks cannot be swapped later; the
-			// supervisor calls this immediately before each dial.
-			Config: func() rfb.Config { return view.RFBConfig(base) },
-		})
-		if err != nil {
-			return err
-		}
-		// Closing the session releases the server's single display slot. The
-		// KubeVirt console has no takeover endpoint, so leaking it locks the
-		// workspace's display out until the idle timeout — and the user is
-		// about to be looking at a list with that workspace on it.
-		defer func() { _ = sess.Close() }()
-		// Match the CLI consent flow, including after Tier 1 falls back.
-		view.SetTakeoverHandler(func() error {
-			res, err := client.VNCTakeover(runCtx, ws.Namespace, ws.Name)
-			if err != nil {
-				return err
-			}
-			if !res.OK {
-				return errors.New(i18n.Get("session.takeoverDeclined"))
-			}
-			sess.RetryNow()
-			return nil
-		})
-
-		runErr := view.Run(runCtx, sess)
-		cancel()
-		_ = sess.Close()
-
-		if ctx.Err() != nil {
-			return nil
-		}
-		return runErr
+		return dialExclusiveSession(ctx, d.client, ws, d.opts)
 	}
 }
 
-// connectObserver joins a shared display session as an observer and presents
-// it in a supervised window: the stream reconnects after drops, Ctrl+Alt+C
-// requests/releases control (with an Enter-to-take-over confirmation when
-// another participant holds it), and a poll applies remote role changes —
-// a take-over demotes us, a transfer promotes us — by re-attaching the
-// stream with the registry's role, the same contract as the browser screen.
-func connectObserver(ctx context.Context, client API, ws kwclient.Workspace, opts SessionOptions) error {
+// viewRef is the viewer the supervisor callbacks talk to. The handle swaps it
+// on every Attach, so redials and status updates after a resume reach the
+// live window instead of the parked one.
+type viewRef struct {
+	mu sync.Mutex
+	v  *viewer.Viewer
+}
+
+func (r *viewRef) get() *viewer.Viewer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.v
+}
+
+func (r *viewRef) set(v *viewer.Viewer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.v = v
+}
+
+// exclusiveHandle is a held Tier 0 (RFB) display session: one supervised
+// transport, any number of sequential windows over its lifetime.
+type exclusiveHandle struct {
+	client *kwclient.Client
+	ws     kwclient.Workspace
+	opts   SessionOptions
+	base   rfb.Config
+	sess   *session.ReconnectingSession
+	ref    *viewRef
+
+	closeOnce sync.Once
+}
+
+// Kind implements [SessionHandle].
+func (h *exclusiveHandle) Kind() string { return "display" }
+
+// dialExclusiveSession dials the supervised RFB display session for a VM
+// workspace. Closing the returned handle releases the server's single display
+// slot; merely returning from Attach does not.
+func dialExclusiveSession(ctx context.Context, client *kwclient.Client, ws kwclient.Workspace, opts SessionOptions) (*exclusiveHandle, error) {
+	h := &exclusiveHandle{client: client, ws: ws, opts: opts, ref: &viewRef{}}
+
+	encodings := append([]rfb.Encoding(nil), rfb.DefaultEncodings...)
+	if opts.Quality >= 0 {
+		encodings = append(encodings, rfb.QualityLevel(opts.Quality))
+	}
+	if opts.Compress >= 0 {
+		encodings = append(encodings, rfb.CompressLevel(opts.Compress))
+	}
+	h.base = rfb.Config{Encodings: encodings}
+
+	// The first window exists from the dial: its audio capability shapes the
+	// handshake, and its status overlay shows the dial itself.
+	first := h.newView(ctx)
+	h.ref.set(first)
+	if fm := first.AudioFormat(); fm != nil {
+		h.base.AudioFormat = fm
+	}
+	sess, err := session.DialReconnecting(ctx, client, ws.Namespace, ws.Name, h.base, session.Options{
+		Policy:         reconnect.Default(),
+		UpdateInterval: opts.UpdateInterval,
+		OnState: func(state session.State, err error) {
+			v := h.ref.get()
+			if v == nil {
+				return
+			}
+			if status, detail, ok := viewerStatus(state, err); ok {
+				v.SetStatus(status, detail)
+			}
+		},
+		// The RFB handshake reads its config once, when the connection is
+		// created, so the callbacks cannot be swapped later; the supervisor
+		// calls this immediately before each dial, and it always answers
+		// from the live window.
+		Config: func() rfb.Config {
+			if v := h.ref.get(); v != nil {
+				return v.RFBConfig(h.base)
+			}
+			return h.base
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	h.sess = sess
+	return h, nil
+}
+
+// newView builds a fresh window for the session, wired to this handle. Every
+// Attach gets one: windows are cheap, transports are not.
+func (h *exclusiveHandle) newView(ctx context.Context) *viewer.Viewer {
+	cfg := viewer.Config{
+		AdaptiveQuality: !h.opts.FixedQuality,
+		Title:           h.ws.Key(),
+		ScaleQuality:    h.opts.ScaleQuality,
+		Logf:            h.opts.Logf,
+	}
+	view := viewer.New(viewer.NewSDLBackend(), cfg)
+	// Match the CLI consent flow, including after Tier 1 falls back.
+	view.SetTakeoverHandler(func() error {
+		res, err := h.client.VNCTakeover(ctx, h.ws.Namespace, h.ws.Name)
+		if err != nil {
+			return err
+		}
+		if !res.OK {
+			return errors.New(i18n.Get("session.takeoverDeclined"))
+		}
+		h.sess.RetryNow()
+		return nil
+	})
+	return view
+}
+
+// Attach implements [SessionHandle]: it runs a fresh window over the held
+// transport and returns when the window closes.
+func (h *exclusiveHandle) Attach(ctx context.Context) error {
+	view := h.newView(ctx)
+	h.ref.set(view)
+	return view.Run(ctx, h.sess)
+}
+
+// Close implements [SessionHandle].
+func (h *exclusiveHandle) Close() {
+	h.closeOnce.Do(func() {
+		if h.sess != nil {
+			_ = h.sess.Close()
+		}
+	})
+}
+
+// terminalHandle is a held integrated terminal: every Attach redials the
+// /exec bridge fresh (the bridge is multi-session, so nothing needs holding).
+// Scrollback does not survive a switch; the shell underneath does.
+type terminalHandle struct {
+	run Connector
+	ws  kwclient.Workspace
+}
+
+// Kind implements [SessionHandle].
+func (h *terminalHandle) Kind() string { return "terminal" }
+
+// Attach implements [SessionHandle].
+func (h *terminalHandle) Attach(ctx context.Context) error { return h.run(ctx, h.ws) }
+
+// Close implements [SessionHandle]: nothing is held past the window.
+func (h *terminalHandle) Close() {}
+
+// tier1Handle is a held Tier 1 (Selkies) session. Like the terminal it
+// re-establishes per Attach; unlike the terminal it falls back to Tier 0 on
+// a recoverable failure, for the rest of the handle's life — once a tier is
+// dropped it is not probed again mid-session (plan §7.2).
+type tier1Handle struct {
+	client *kwclient.Client
+	ws     kwclient.Workspace
+	opts   SessionOptions
+
+	mu       sync.Mutex
+	fallback *exclusiveHandle
+}
+
+// Kind implements [SessionHandle].
+func (h *tier1Handle) Kind() string { return "tier1" }
+
+// Attach implements [SessionHandle].
+func (h *tier1Handle) Attach(ctx context.Context) error {
+	h.mu.Lock()
+	fb := h.fallback
+	h.mu.Unlock()
+	if fb != nil {
+		return fb.Attach(ctx)
+	}
+
+	agentBase := ""
+	if h.ws.RemoteDesktop != nil && h.ws.RemoteDesktop.Path != nil {
+		agentBase = *h.ws.RemoteDesktop.Path
+	}
+	err := session.RunTier1(ctx, h.client, h.ws.Namespace, h.ws.Name, agentBase,
+		viewer.NewSDLBackend(), session.Tier1Config{
+			Title:        h.ws.Key(),
+			Audio:        true,
+			ScaleQuality: h.opts.ScaleQuality,
+			Logf:         h.opts.Logf,
+		})
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	if errors.Is(err, session.ErrNoFallback) {
+		// A refused agent, a rejected credential or a display owned
+		// elsewhere must surface, not be routed around.
+		return err
+	}
+	// Recoverable: dial, negotiation, startup or decode failed. Fall back
+	// for the rest of this handle's life.
+	if h.opts.Logf != nil {
+		h.opts.Logf("Tier 1 to %s failed (%v); falling back to Tier 0", h.ws.Key(), err)
+	}
+	fb, derr := dialExclusiveSession(ctx, h.client, h.ws, h.opts)
+	if derr != nil {
+		return derr
+	}
+	h.mu.Lock()
+	h.fallback = fb
+	h.mu.Unlock()
+	return fb.Attach(ctx)
+}
+
+// Close implements [SessionHandle].
+func (h *tier1Handle) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.fallback != nil {
+		h.fallback.Close()
+	}
+}
+
+// observerHandle is a held shared-display observer session: one membership,
+// one supervised stream, any number of sequential windows. The membership
+// survives window closes by design (a disconnect keeps the participant id),
+// so a resume re-attaches the same participant instead of re-joining.
+type observerHandle struct {
+	client        API
+	ws            kwclient.Workspace
+	opts          SessionOptions
+	participantID string
+	sess          *session.SharedDisplay
+	ref           *viewRef
+
+	closeOnce sync.Once
+}
+
+// Kind implements [SessionHandle].
+func (h *observerHandle) Kind() string { return "observer" }
+
+// dialObserverSession joins a shared display session as an observer and
+// supervises the stream. The window appears on Attach; leaving the membership
+// happens on Close, not when a window closes.
+func dialObserverSession(ctx context.Context, client API, ws kwclient.Workspace, opts SessionOptions) (*observerHandle, error) {
 	// The shared display ships opt-in: check the capability advert before
 	// joining so a gated platform answers with its own message rather than a
 	// bare join failure.
 	cap, err := client.Display(ctx, ws.Namespace, ws.Name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !cap.Enabled {
-		return errors.New(i18n.Get("session.sharedDisabled"))
+		return nil, errors.New(i18n.Get("session.sharedDisabled"))
 	}
 
 	join, err := client.JoinDisplay(ctx, ws.Namespace, ws.Name, kwclient.DisplayRoleObserver)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	participantID := join.Participant.ID
-	defer func() {
-		leaveCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = client.LeaveDisplay(leaveCtx, ws.Namespace, ws.Name, participantID)
-	}()
-
-	view := viewer.New(viewer.NewSDLBackend(), viewer.Config{
-		AdaptiveQuality: !opts.FixedQuality,
-		Title:           ws.Key() + i18n.Get("workspaces.observer"),
-		ReadOnly:        true,
-		ControlRune:     'c',
-		ScaleQuality:    opts.ScaleQuality,
-		Logf:            opts.Logf,
-	})
+	h := &observerHandle{client: client, ws: ws, opts: opts, participantID: join.Participant.ID, ref: &viewRef{}}
 
 	// The broker serves the canonical framebuffer as Raw and treats each
 	// participant's encodings as its own negotiation, so the
@@ -237,21 +483,29 @@ func connectObserver(ctx context.Context, client API, ws kwclient.Workspace, opt
 	// SessionOptions mean nothing here. The default list already advertises
 	// every encoding the client can decode for the day the broker gains one.
 	base := rfb.Config{Encodings: append([]rfb.Encoding(nil), rfb.DefaultEncodings...)}
-
 	sess, err := session.DialSharedDisplay(ctx, session.SharedDisplayOptions{
 		Policy:         reconnect.Default(),
 		UpdateInterval: opts.UpdateInterval,
 		OnState: func(state session.State, err error) {
+			v := h.ref.get()
+			if v == nil {
+				return
+			}
 			if status, detail, ok := viewerStatus(state, err); ok {
-				view.SetStatus(status, detail)
+				v.SetStatus(status, detail)
 			}
 		},
 		// The RFB handshake reads its config once, at connect time, so the
-		// viewer's callbacks are installed per generation, like the
+		// live window's callbacks are installed per generation, like the
 		// exclusive-session path.
-		Config: func() rfb.Config { return view.RFBConfig(base) },
+		Config: func() rfb.Config {
+			if v := h.ref.get(); v != nil {
+				return v.RFBConfig(base)
+			}
+			return base
+		},
 		Dial: func(dialCtx context.Context, cfg rfb.Config, role string, force bool) (session.Link, error) {
-			conn, err := client.DialDisplayWS(dialCtx, ws.Namespace, ws.Name, participantID, role, force)
+			conn, err := client.DialDisplayWS(dialCtx, ws.Namespace, ws.Name, h.participantID, role, force)
 			if err != nil {
 				return nil, err
 			}
@@ -259,22 +513,49 @@ func connectObserver(ctx context.Context, client API, ws kwclient.Workspace, opt
 		},
 	})
 	if err != nil {
-		return err
+		leaveCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = client.LeaveDisplay(leaveCtx, ws.Namespace, ws.Name, h.participantID)
+		return nil, err
 	}
-	defer func() { _ = sess.Close() }()
+	h.sess = sess
+	return h, nil
+}
 
-	ctl := &sharedControl{client: client, ws: ws, participantID: participantID, sess: sess, view: view}
+// Attach implements [SessionHandle]: it runs a fresh read-only window over
+// the held membership and returns when the window closes.
+func (h *observerHandle) Attach(ctx context.Context) error {
+	view := viewer.New(viewer.NewSDLBackend(), viewer.Config{
+		AdaptiveQuality: !h.opts.FixedQuality,
+		Title:           h.ws.Key() + i18n.Get("workspaces.observer"),
+		ReadOnly:        true,
+		ControlRune:     'c',
+		ScaleQuality:    h.opts.ScaleQuality,
+		Logf:            h.opts.Logf,
+	})
+	h.ref.set(view)
+
+	ctl := &sharedControl{client: h.client, ws: h.ws, participantID: h.participantID, sess: h.sess, view: view}
 	view.SetControlHandler(ctl.toggle)
 
 	pollCtx, stopPoll := context.WithCancel(ctx)
 	defer stopPoll()
 	go ctl.watch(pollCtx)
 
-	runErr := view.Run(ctx, sess)
-	if ctx.Err() != nil {
-		return nil
-	}
-	return runErr
+	return view.Run(ctx, h.sess)
+}
+
+// Close implements [SessionHandle]: it leaves the membership and closes the
+// stream.
+func (h *observerHandle) Close() {
+	h.closeOnce.Do(func() {
+		leaveCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = h.client.LeaveDisplay(leaveCtx, h.ws.Namespace, h.ws.Name, h.participantID)
+		if h.sess != nil {
+			_ = h.sess.Close()
+		}
+	})
 }
 
 // sharedControl owns the control-transfer UX of one shared display window:
@@ -431,23 +712,6 @@ func (c *sharedControl) watch(ctx context.Context) {
 			c.mu.Unlock()
 		}
 	}
-}
-
-// connectTier1 opens an interactive Tier 1 (Selkies) session in a fresh window
-// for a workspace whose image advertises the selkies protocol. The window
-// belongs to this call and this call only, like the RFB viewer's own window.
-func connectTier1(ctx context.Context, client *kwclient.Client, ws kwclient.Workspace, opts SessionOptions) error {
-	agentBase := ""
-	if ws.RemoteDesktop != nil && ws.RemoteDesktop.Path != nil {
-		agentBase = *ws.RemoteDesktop.Path
-	}
-	return session.RunTier1(ctx, client, ws.Namespace, ws.Name, agentBase,
-		viewer.NewSDLBackend(), session.Tier1Config{
-			Title:        ws.Key(),
-			Audio:        true,
-			ScaleQuality: opts.ScaleQuality,
-			Logf:         opts.Logf,
-		})
 }
 
 // TerminalOptions tunes the integrated terminal sessions the shell opens.

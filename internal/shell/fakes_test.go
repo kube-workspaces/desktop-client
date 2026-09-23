@@ -329,6 +329,11 @@ type fakeAPI struct {
 	startCalls []string
 	stopCalls  []string
 
+	// createCalls records each CreateWorkspace payload, createErr makes the
+	// call fail.
+	createCalls []kwclient.CreateWorkspacePayload
+	createErr   error
+
 	// grantPaths records the redirect each GrantBrowserSession is asked for.
 	grantPaths []string
 	grantErr   error
@@ -471,6 +476,24 @@ func (f *fakeAPI) StopWorkspace(_ context.Context, namespace, name string) (*kwc
 	return f.startStop(namespace, name, true)
 }
 
+func (f *fakeAPI) CreateWorkspace(_ context.Context, payload kwclient.CreateWorkspacePayload) (*kwclient.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createCalls = append(f.createCalls, payload)
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	ws := kwclient.Workspace{Name: payload.Name, Namespace: payload.Namespace, Type: payload.Type}
+	if ws.Namespace == "" {
+		ws.Namespace = "workspaces"
+	}
+	if payload.Container != nil {
+		ws.Image = payload.Container.Image
+	}
+	f.workspaces = append(f.workspaces, ws)
+	return &ws, nil
+}
+
 func (f *fakeAPI) WorkspaceURL(ws kwclient.Workspace, img *kwclient.Image) string {
 	path := ""
 	if img != nil {
@@ -555,6 +578,8 @@ var _ API = (*fakeAPI)(nil)
 type memStore struct {
 	profile  *config.Profile
 	token    string
+	profiles []*config.Profile
+	tokens   map[string]string
 	loadErr  error
 	saveErr  error
 	forgot   int
@@ -588,6 +613,37 @@ func (m *memStore) Forget(*config.Profile) error {
 	return nil
 }
 
+func (m *memStore) ListProfiles() ([]*config.Profile, error) {
+	if m.loadErr != nil {
+		return nil, m.loadErr
+	}
+	seen := map[string]bool{}
+	var out []*config.Profile
+	for _, p := range append([]*config.Profile{m.profile}, m.profiles...) {
+		if p == nil || seen[p.Name] {
+			continue
+		}
+		seen[p.Name] = true
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (m *memStore) TokenFor(profile *config.Profile) (string, error) {
+	if profile == nil {
+		return "", nil
+	}
+	if m.tokens != nil {
+		if tok, ok := m.tokens[profile.Name]; ok {
+			return tok, nil
+		}
+	}
+	if m.profile != nil && profile.Name == m.profile.Name {
+		return m.token, nil
+	}
+	return "", nil
+}
+
 func (m *memStore) LoadSettings() (config.Settings, error) {
 	if m.loadErr != nil {
 		return config.Settings{}, m.loadErr
@@ -606,6 +662,32 @@ func (m *memStore) SaveSettings(settings config.Settings) error {
 
 var _ Store = (*memStore)(nil)
 
+// fakeDialer is a [SessionDialer] that records dials and answers attaches
+// from the rig's connect hook, so session tests control the outcome without
+// a network or a window.
+type fakeDialer struct {
+	dial func(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error)
+}
+
+func (d *fakeDialer) Dial(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error) {
+	return d.dial(ctx, ws, observer)
+}
+
+// fakeHandle is a [SessionHandle] with scripted attach and recorded close.
+type fakeHandle struct {
+	kind   string
+	attach func(ctx context.Context) error
+	close  func()
+}
+
+func (h *fakeHandle) Attach(ctx context.Context) error { return h.attach(ctx) }
+func (h *fakeHandle) Close() {
+	if h.close != nil {
+		h.close()
+	}
+}
+func (h *fakeHandle) Kind() string { return h.kind }
+
 // --- test rig ---------------------------------------------------------------
 
 // rig is an App wired to fakes, driven a step at a time on a controlled clock.
@@ -616,6 +698,7 @@ type rig struct {
 	store   *memStore
 	now     time.Time
 	opened  []kwclient.Workspace
+	closed  []string
 	connect func(context.Context, kwclient.Workspace) error
 	browsed []string
 	webbed  []kwclient.Workspace
@@ -630,18 +713,25 @@ func newRig(profile *config.Profile, token string) *rig {
 	}
 	app, err := New(Options{
 		Backend: r.be,
-		NewClient: func(server string, insecure bool) (API, Connector, error) {
+		NewClient: func(server string, insecure bool) (API, SessionDialer, error) {
 			r.api.set(func(f *fakeAPI) {
 				f.base = server
 				f.insecure = insecure
 			})
-			return r.api, func(ctx context.Context, ws kwclient.Workspace) error {
+			return r.api, &fakeDialer{dial: func(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error) {
 				r.opened = append(r.opened, ws)
-				if r.connect != nil {
-					return r.connect(ctx, ws)
-				}
-				return nil
-			}, nil
+				run := r.connect
+				return &fakeHandle{
+					kind: "display",
+					attach: func(ctx context.Context) error {
+						if run != nil {
+							return run(ctx, ws)
+						}
+						return nil
+					},
+					close: func() { r.closed = append(r.closed, ws.Key()) },
+				}, nil
+			}}, nil
 		},
 		Store: r.store,
 		OpenBrowser: func(rawURL string) error {

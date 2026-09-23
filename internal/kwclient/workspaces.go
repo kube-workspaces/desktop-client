@@ -269,6 +269,75 @@ func (c *Client) ListImages(ctx context.Context) ([]Image, error) {
 	return out, nil
 }
 
+// WorkspaceContainerSpec is the main container of a workspace being created.
+//
+// Only Name and Image are required; every other field is optional and left
+// for the server to default from the image catalog when absent. Pointers with
+// omitempty keep an unset field out of the body entirely, which matters: the
+// server distinguishes "absent" (apply the catalog default) from "zero".
+type WorkspaceContainerSpec struct {
+	// Name is the container name.
+	Name string `json:"name"`
+	// Image is the container image reference, matched against [Image.Image].
+	Image string `json:"image"`
+	// Port is the container port, if the image does not declare one.
+	Port *int `json:"port,omitempty"`
+	// CPURequest is the CPU request, e.g. "500m".
+	CPURequest *string `json:"cpu_request,omitempty"`
+	// MemoryRequest is the memory request, e.g. "512Mi".
+	MemoryRequest *string `json:"memory_request,omitempty"`
+	// CPULimit is the CPU limit.
+	CPULimit *string `json:"cpu_limit,omitempty"`
+	// MemoryLimit is the memory limit.
+	MemoryLimit *string `json:"memory_limit,omitempty"`
+}
+
+// CreateWorkspacePayload is the POST /v1/workspaces body.
+//
+// Name and Container are required. Namespace defaults server-side when empty,
+// but callers should send the profile namespace explicitly. Type defaults to
+// "container"; send it explicitly so the request says what the user picked.
+type CreateWorkspacePayload struct {
+	// Name is the workspace name: lowercase alphanumerics and dashes, ≤63.
+	Name string `json:"name"`
+	// Namespace is the target namespace.
+	Namespace string `json:"namespace,omitempty"`
+	// Type is "container", "vm" or "scratch".
+	Type WorkspaceType `json:"type,omitempty"`
+	// Container is the main container spec.
+	Container *WorkspaceContainerSpec `json:"container,omitempty"`
+}
+
+// createSentinel maps the create endpoint's statuses: 409 is a taken name
+// (not a held console session) and 400 is a rejected payload.
+func createSentinel(status int) error {
+	switch status {
+	case http.StatusConflict:
+		return ErrAlreadyExists
+	case http.StatusBadRequest:
+		return ErrInvalidRequest
+	default:
+		return sentinelForStatus(status)
+	}
+}
+
+// CreateWorkspace posts to /v1/workspaces and returns the created workspace.
+//
+// A taken name yields an [*APIError] wrapping [ErrAlreadyExists]; a rejected
+// payload wraps [ErrInvalidRequest].
+func (c *Client) CreateWorkspace(ctx context.Context, payload CreateWorkspacePayload) (*Workspace, error) {
+	var out Workspace
+	if err := c.doJSON(ctx, requestSpec{
+		method:   http.MethodPost,
+		path:     "/v1/workspaces",
+		body:     payload,
+		sentinel: createSentinel,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ProxyURL builds the workspace proxy URL
 // <base>/proxy/{namespace}/{name}/{path}.
 //

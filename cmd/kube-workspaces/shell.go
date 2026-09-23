@@ -40,8 +40,8 @@ func runShell(ctx context.Context, args []string) error {
 	scaleQuality := fs.String("scale-quality", "linear", "session scaling filter: nearest, linear or pixelart")
 	interval := fs.Duration("interval", 16*time.Millisecond, "session framebuffer update request interval")
 	refresh := fs.Duration("refresh", shell.DefaultRefreshInterval, "how often to refresh the workspace list (0 to disable)")
-	width := fs.Int("width", shell.DefaultWidth, "initial window width")
-	height := fs.Int("height", shell.DefaultHeight, "initial window height")
+	width := fs.Int("width", 0, "initial window width in pixels (0 restores the last size)")
+	height := fs.Int("height", 0, "initial window height in pixels (0 restores the last size)")
 	uiScale := fs.Float64("ui-scale", 0, "interface scale factor 1-3 (0 follows the display)")
 	verbose := fs.Bool("v", false, "log diagnostics to stderr")
 	fs.Usage = func() {
@@ -64,6 +64,27 @@ func runShell(ctx context.Context, args []string) error {
 	}
 	if err := checkUIScale(*uiScale); err != nil {
 		return err
+	}
+
+	// An unset size restores the last arrangement: the shell records its
+	// window on resize and on exit, so a relaunch opens where the user left
+	// it. An explicit flag always wins over the stored size.
+	if *width <= 0 || *height <= 0 {
+		store := profileStore{name: *profileName}
+		if s, err := store.LoadSettings(); err == nil {
+			if *width <= 0 && s.WindowWidth > 0 {
+				*width = s.WindowWidth
+			}
+			if *height <= 0 && s.WindowHeight > 0 {
+				*height = s.WindowHeight
+			}
+		}
+		if *width <= 0 {
+			*width = shell.DefaultWidth
+		}
+		if *height <= 0 {
+			*height = shell.DefaultHeight
+		}
 	}
 
 	var logf func(string, ...any)
@@ -92,7 +113,7 @@ func runShell(ctx context.Context, args []string) error {
 		// The factory returns the API client and the connector together, so
 		// that the connector can close over the concrete *kwclient.Client the
 		// session bridge needs without the shell having to know it exists.
-		NewClient: func(server string, insecure bool) (shell.API, shell.Connector, error) {
+		NewClient: func(server string, insecure bool) (shell.API, shell.SessionDialer, error) {
 			opts := []kwclient.Option{kwclient.WithUserAgent("kube-workspaces-desktop/" + version)}
 			if insecure {
 				opts = append(opts, kwclient.WithInsecureSkipVerify(true))
@@ -101,7 +122,7 @@ func runShell(ctx context.Context, args []string) error {
 			if err != nil {
 				return nil, nil, err
 			}
-			return client, shell.SessionConnector(client, sessionOpts), nil
+			return client, shell.NewSessionDialer(client, sessionOpts), nil
 		},
 		Store:           profileStore{name: *profileName},
 		RefreshInterval: *refresh,
@@ -174,6 +195,25 @@ func (p profileStore) Save(profile *config.Profile, token string) error {
 
 func (p profileStore) Forget(profile *config.Profile) error {
 	return shell.ConfigStore{}.Forget(profile)
+}
+
+// ListProfiles honours the pin: a pinned shell sees exactly the pinned
+// profile, so --profile keeps meaning "this one instance". Unpinned it is the
+// full list for the in-shell switcher.
+func (p profileStore) ListProfiles() ([]*config.Profile, error) {
+	if p.name == "" {
+		return shell.ConfigStore{}.ListProfiles()
+	}
+	profile, _, err := p.Load()
+	if err != nil || profile == nil {
+		return nil, err
+	}
+	return []*config.Profile{profile}, nil
+}
+
+// TokenFor reads a profile's token without changing the active profile.
+func (p profileStore) TokenFor(profile *config.Profile) (string, error) {
+	return shell.ConfigStore{}.TokenFor(profile)
 }
 
 func (p profileStore) LoadSettings() (config.Settings, error) {

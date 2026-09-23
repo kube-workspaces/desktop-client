@@ -5,6 +5,7 @@ package kwclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
@@ -572,6 +573,68 @@ func TestReboot(t *testing.T) {
 		})
 		if err := c.Reboot(context.Background(), "demo", "dev"); err == nil {
 			t.Fatal("Reboot: want error when server does not acknowledge")
+		}
+	})
+}
+
+func TestCreateWorkspace(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		var gotPath, gotVerb string
+		var gotBody map[string]any
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			gotPath, gotVerb = r.URL.Path, r.Method
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Errorf("decode request body: %v", err)
+			}
+			writeJSON(t, w, http.StatusCreated, `{"name":"dev","namespace":"demo","type":"container","ready_replicas":0,"stopped":false}`)
+		})
+		ws, err := c.CreateWorkspace(context.Background(), CreateWorkspacePayload{
+			Name:      "dev",
+			Namespace: "demo",
+			Type:      WorkspaceTypeContainer,
+			Container: &WorkspaceContainerSpec{Name: "dev", Image: "example.com/img:latest"},
+		})
+		if err != nil {
+			t.Fatalf("CreateWorkspace: %v", err)
+		}
+		if gotVerb != http.MethodPost || gotPath != "/v1/workspaces" {
+			t.Errorf("%s %s, want POST /v1/workspaces", gotVerb, gotPath)
+		}
+		if gotBody["name"] != "dev" || gotBody["namespace"] != "demo" || gotBody["type"] != "container" {
+			t.Errorf("body = %v, want name/namespace/type", gotBody)
+		}
+		cont, _ := gotBody["container"].(map[string]any)
+		if cont["name"] != "dev" || cont["image"] != "example.com/img:latest" {
+			t.Errorf("container = %v, want name/image", cont)
+		}
+		if _, ok := gotBody["container"].(map[string]any)["port"]; ok {
+			t.Errorf("port sent despite being unset; server defaults must apply")
+		}
+		if ws == nil || ws.Name != "dev" || ws.Namespace != "demo" {
+			t.Fatalf("workspace = %+v, want the created workspace", ws)
+		}
+	})
+
+	t.Run("name taken", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(t, w, http.StatusConflict, `"workspace demo/dev already exists"`)
+		})
+		_, err := c.CreateWorkspace(context.Background(), CreateWorkspacePayload{Name: "dev"})
+		if !errors.Is(err, ErrAlreadyExists) {
+			t.Fatalf("err = %v, want ErrAlreadyExists", err)
+		}
+		if errors.Is(err, ErrSessionInUse) {
+			t.Fatalf("err = %v, must not be ErrSessionInUse (that is the console 409)", err)
+		}
+	})
+
+	t.Run("invalid payload", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(t, w, http.StatusBadRequest, `"container is required"`)
+		})
+		_, err := c.CreateWorkspace(context.Background(), CreateWorkspacePayload{Name: "dev"})
+		if !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("err = %v, want ErrInvalidRequest", err)
 		}
 	})
 }

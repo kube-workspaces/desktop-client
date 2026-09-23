@@ -50,6 +50,13 @@ type Settings struct {
 	// UIScale pins the interface scale factor: 1, 1.5 or 2. Zero (or absent)
 	// means automatic — follow the display the window is on.
 	UIScale float64 `json:"uiScale,omitempty"`
+	// WindowWidth and WindowHeight remember the shell window's last size in
+	// pixels. Zero (or absent) means the default: a first run, or a version
+	// from before geometry was recorded. Values are clamped to the current
+	// display when restored, so a shrunken monitor never strands the window
+	// off-screen.
+	WindowWidth  int `json:"windowWidth,omitempty"`
+	WindowHeight int `json:"windowHeight,omitempty"`
 }
 
 // Config is the on-disk configuration document.

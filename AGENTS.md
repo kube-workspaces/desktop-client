@@ -70,6 +70,25 @@ Implemented and working:
   B); the child binary (`cmd/kube-workspaces-web` + `internal/web` via
   `webview_go`) owns the browser engine's cgo/windowing stack so the shell
   stays cgo-free.
+- **Concurrent sessions.** Several sessions stay connected at once: closing a
+  session window parks it (the transport is held — RFB reuses it without
+  redialling; terminal and Tier 1 re-establish on resume), the footer's
+  **Sessions** switcher resumes or disconnects each one, and sign-out, profile
+  switch, server change and process exit release everything. Only one window
+  is visible at a time. Dial/attach are split behind `shell.SessionDialer`;
+  Tier 1 keeps its sticky Tier 0 fallback per handle.
+- **Workspace create.** The footer **New** button opens a form (name,
+  namespace, container/VM/scratch type, catalog image filtered by type) over
+  `POST /v1/workspaces` (`kwclient.CreateWorkspace`; taken names report
+  `ErrAlreadyExists`).
+- **In-shell profile switching.** The header **Profiles** button and the
+  server screen list every configured profile; switching rebuilds the client
+  for the new instance, restores its token and verifies it, with no relaunch.
+  `--profile` still pins a launch to one profile.
+- **Window size persistence.** The shell records its window on resize (5 s
+  rate limit) and on exit into the settings file; `shell --width/--height`
+  default to 0, meaning "restore the last size", and an explicit flag wins.
+  Session windows keep following the guest.
 
 Not implemented, and must not be described otherwise:
 
@@ -85,7 +104,6 @@ Not implemented, and must not be described otherwise:
   Decode/display evidence is Linux/amd64 with dummy devices; five other native
   runtimes and physical A/V acceptance remain unverified. Native tests require
   `KW_NATIVE_MEDIA_TEST=1` and FFmpeg 5.1/libopus; no codec libraries are bundled.
-- Multiple concurrent sessions; one window per session, but only one session at a time.
 - **Code signing and notarisation.** Release binaries are unsigned; macOS
   Gatekeeper and Windows SmartScreen warn today. Backburnered on budget, not
   engineering — the plan and the load-bearing gotchas are under *Key Notes →

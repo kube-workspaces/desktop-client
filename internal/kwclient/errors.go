@@ -49,6 +49,10 @@ var (
 	// ErrInvalidRequest means the server rejected the request payload
 	// (error code "invalid_request").
 	ErrInvalidRequest = errors.New("invalid request")
+	// ErrAlreadyExists means the addressed object already exists (HTTP 409 on
+	// endpoints that create, e.g. POST /v1/workspaces). It is distinct from
+	// [ErrSessionInUse], which is the 409 of the single-session bridges.
+	ErrAlreadyExists = errors.New("already exists")
 )
 
 // Client-side sentinels, i.e. failures detected without (or after) a server

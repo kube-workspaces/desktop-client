@@ -76,6 +76,31 @@ func (a *App) drawServerScreen(bounds ui.Rect) intent {
 	})
 	body.Skip(th.Pad)
 
+	// Returning users pick up where they left off: every configured profile
+	// is one click from a switch, and typing an address below still works for
+	// a brand-new instance.
+	if len(a.profiles) > 0 {
+		ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("profiles.title"), ui.LabelStyle{
+			Color: th.TextMuted,
+			Scale: th.Small,
+		})
+		for i, p := range a.profiles {
+			if p == nil {
+				continue
+			}
+			b := ui.Button{
+				ID:      ui.FocusID(fmt.Sprintf("profile-%d", i)),
+				Text:    p.Name + "  ·  " + p.Server,
+				Variant: ui.ButtonSecondary,
+			}
+			if b.Layout(ctx, body.Next(th.ControlHeight)) {
+				out = intent{kind: intentSwitchProfile, profile: p.Name}
+				return out
+			}
+		}
+		body.Skip(th.Pad)
+	}
+
 	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("server.address"), ui.LabelStyle{
 		Color: th.TextMuted,
 		Scale: th.Small,
@@ -483,15 +508,19 @@ func (a *App) drawHeader(r ui.Rect, out *intent) {
 	th := a.opts.Theme
 	ctx := a.ctx
 
+	profiles := ui.Button{ID: idProfiles, Text: i18n.Get("header.profiles"), Variant: ui.ButtonQuiet}
 	signOut := ui.Button{ID: idSignOut, Text: i18n.Get("header.signout"), Variant: ui.ButtonQuiet}
 	settings := ui.Button{ID: idSettings, Text: i18n.Get("header.settings"), Variant: ui.ButtonQuiet}
-	buttonsW := signOut.Width(ctx) + settings.Width(ctx) + th.Gap/2
+	buttonsW := profiles.Width(ctx) + signOut.Width(ctx) + settings.Width(ctx) + th.Gap
 	signOutRect, rest := ui.CutRight(r, buttonsW)
-	cols := ui.Row(signOutRect, th.Gap/2, settings.Width(ctx), signOut.Width(ctx))
-	if settings.Layout(ctx, cols[0]) {
+	cols := ui.Row(signOutRect, th.Gap/2, profiles.Width(ctx), settings.Width(ctx), signOut.Width(ctx))
+	if profiles.Layout(ctx, cols[0]) {
+		*out = intent{kind: intentOpenProfiles}
+	}
+	if settings.Layout(ctx, cols[1]) {
 		*out = intent{kind: intentOpenSettings}
 	}
-	if signOut.Layout(ctx, cols[1]) {
+	if signOut.Layout(ctx, cols[2]) {
 		*out = intent{kind: intentSignOut}
 	}
 
@@ -686,6 +715,12 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	// Info is for looking, not acting, so it is secondary to the open button
 	// and disabled when there is no selection to look at.
 	info := ui.Button{ID: idInfo, Text: i18n.Get("workspaces.info"), Variant: ui.ButtonSecondary, Disabled: !has}
+	// New opens the create form. It is always available: an empty list is
+	// exactly when creating is the thing to do.
+	newBtn := ui.Button{ID: idCreate, Text: i18n.Get("workspaces.new"), Variant: ui.ButtonSecondary}
+	// Sessions opens the switcher. The count is the point: it is how a user
+	// learns windows they closed are still connected.
+	sessionsBtn := ui.Button{ID: idSessions, Text: i18n.Sprintf("sessions.title", len(a.m.Sessions)), Variant: ui.ButtonSecondary}
 
 	widths := []int{max(180, open.Width(ctx))}
 	if console {
@@ -700,7 +735,7 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if showStop {
 		widths = append(widths, stop.Width(ctx))
 	}
-	widths = append(widths, info.Width(ctx), 0)
+	widths = append(widths, info.Width(ctx), newBtn.Width(ctx), sessionsBtn.Width(ctx), 0)
 	cols := ui.Row(r, th.Gap, widths...)
 
 	ci := 0
@@ -734,6 +769,14 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	}
 	if info.Layout(ctx, cols[ci]) {
 		*out = intent{kind: intentInfoWorkspace, workspace: ws}
+	}
+	ci++
+	if newBtn.Layout(ctx, cols[ci]) {
+		*out = intent{kind: intentCreateWorkspace}
+	}
+	ci++
+	if sessionsBtn.Layout(ctx, cols[ci]) {
+		*out = intent{kind: intentOpenSessions}
 	}
 	ci++
 
@@ -863,6 +906,346 @@ func (a *App) drawWorkspaceInfoModal(bounds ui.Rect) intent {
 		out = intent{kind: intentInfoClose}
 	}
 	return out
+}
+
+// createTypes is the workspace-type row of the create form, in the order the
+// API documents them.
+var createTypes = []kwclient.WorkspaceType{
+	kwclient.WorkspaceTypeContainer,
+	kwclient.WorkspaceTypeVM,
+	kwclient.WorkspaceTypeScratch,
+}
+
+// createTypeLabel names a workspace type the way the form shows it.
+func createTypeLabel(t kwclient.WorkspaceType) string {
+	switch t {
+	case kwclient.WorkspaceTypeVM:
+		return i18n.Get("create.vm")
+	case kwclient.WorkspaceTypeScratch:
+		return i18n.Get("create.scratch")
+	default:
+		return i18n.Get("create.container")
+	}
+}
+
+// drawCreateModal draws the "new workspace" form over a dimmed, frozen copy
+// of the list, like the info modal: only the form is laid out, so nothing
+// behind it can take a click or the keyboard. Enter in a field submits, Esc
+// and Cancel close.
+func (a *App) drawCreateModal(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	var out intent
+
+	ctx.Canvas.Fill(bounds, modalScrim)
+
+	images := a.createImages()
+	if a.createImageIdx >= len(images) {
+		a.createImageIdx = max(len(images)-1, 0)
+	}
+	listRows := min(len(images), 5)
+	listH := listRows*th.RowHeight + 2*th.BorderWidth
+	if len(images) == 0 {
+		listH = ui.LineHeight(th.Body, th.Font)
+	}
+
+	fieldH := th.ControlHeight
+	labelH := ui.LineHeight(th.Small, th.Font)
+	parts := []int{
+		ui.TextHeight(th.Title, th.Font) + th.Gap/2, // title
+		labelH + th.Gap/2 + fieldH,                  // name
+		labelH + th.Gap/2 + fieldH,                  // namespace
+		labelH + th.Gap/2 + th.ControlHeight,        // type row
+		labelH + th.Gap/2 + listH,                   // image list
+		th.ControlHeight,                            // buttons
+	}
+	if a.m.Err != "" {
+		parts = append(parts, ui.LineHeight(th.Body, th.Font)) // error line
+	}
+	content := 2 * th.Pad
+	for i, p := range parts {
+		if i > 0 {
+			content += th.Gap
+		}
+		content += p
+	}
+
+	width := min(bounds.W-2*th.Pad, infoCardWidth)
+	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
+	if card.W <= 0 || card.H <= 0 {
+		return out
+	}
+	card.Y = max(card.Y, th.Gap)
+
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+
+	ui.Label(ctx, body.Next(parts[0]), i18n.Get("create.title"), ui.LabelStyle{Scale: th.Title})
+
+	ui.Label(ctx, body.Next(labelH), i18n.Get("create.name"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	if a.createNameField.Layout(ctx, body.Next(fieldH)) && !a.m.Busy {
+		out = intent{kind: intentCreateSubmit}
+	}
+
+	ui.Label(ctx, body.Next(labelH), i18n.Get("create.namespace"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	if a.createNamespaceField.Layout(ctx, body.Next(fieldH)) && !a.m.Busy {
+		out = intent{kind: intentCreateSubmit}
+	}
+
+	ui.Label(ctx, body.Next(labelH), i18n.Get("create.type"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	typeRect := body.Next(th.ControlHeight)
+	typeWidths := make([]int, len(createTypes))
+	typeCols := make([]ui.Rect, len(createTypes))
+	typeLabels := make([]string, len(createTypes))
+	totalW := 0
+	for i, t := range createTypes {
+		typeLabels[i] = createTypeLabel(t)
+		b := ui.Button{Text: typeLabels[i], Variant: ui.ButtonSecondary}
+		if t == a.createType {
+			b.Variant = ui.ButtonPrimary
+		}
+		typeWidths[i] = b.Width(ctx)
+		totalW += typeWidths[i]
+	}
+	// Buttons share the row in proportion to their labels; the row is built
+	// by hand because ui.Row divides evenly rather than by content.
+	x := typeRect.X
+	gap := th.Gap
+	if len(createTypes) > 1 {
+		spare := max(typeRect.W-totalW-(len(createTypes)-1)*gap, 0)
+		x += spare / 2
+	}
+	for i := range createTypes {
+		w := typeWidths[i]
+		if i == len(createTypes)-1 {
+			w = max(w, typeRect.X+typeRect.W-x)
+		}
+		typeCols[i] = ui.Rect{X: x, Y: typeRect.Y, W: w, H: typeRect.H}
+		x += w + gap
+	}
+	for i, t := range createTypes {
+		b := ui.Button{ID: ui.FocusID(fmt.Sprintf("create-type-%d", i)), Text: typeLabels[i], Variant: ui.ButtonSecondary}
+		if t == a.createType {
+			b.Variant = ui.ButtonPrimary
+		}
+		if b.Layout(ctx, typeCols[i]) && t != a.createType {
+			a.createType = t
+			a.createImageIdx = 0
+			a.createImageList.Selected = 0
+			a.createImageList.Offset = 0
+		}
+	}
+
+	ui.Label(ctx, body.Next(labelH), i18n.Get("create.image"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	imgRect := body.Next(listH)
+	if len(images) == 0 {
+		ui.Label(ctx, imgRect, i18n.Get("create.noImages"), ui.LabelStyle{Color: th.TextMuted})
+	} else {
+		a.createImageList.Selected = a.createImageIdx
+		a.createImageList.Layout(ctx, imgRect, len(images), func(ctx *ui.Context, row ui.Rect, state ui.RowState) {
+			img := images[state.Index]
+			name := img.DisplayName
+			if name == "" {
+				name = img.Name
+			}
+			if state.Index == a.createImageIdx {
+				ctx.Canvas.FillRounded(ui.InsetXY(row, th.Gap/2, 2), th.Radius, th.SurfaceSelected)
+			}
+			ui.Label(ctx, row, name+"  ·  "+img.Image, ui.LabelStyle{Middle: true})
+		})
+		if a.createImageList.Selected >= 0 && a.createImageList.Selected < len(images) {
+			a.createImageIdx = a.createImageList.Selected
+		}
+	}
+
+	if a.m.Err != "" {
+		ui.Label(ctx, body.Next(parts[len(parts)-2]), a.m.Err, ui.LabelStyle{Color: th.Danger, Wrap: true})
+	}
+
+	foot := body.Next(parts[len(parts)-1])
+	submit := ui.Button{ID: idCreateSubmit, Text: i18n.Get("create.create"), Variant: ui.ButtonPrimary, Disabled: a.m.Busy || len(images) == 0}
+	cancel := ui.Button{ID: idCreateClose, Text: i18n.Get("create.cancel"), Variant: ui.ButtonSecondary}
+	cancelRect, rest := ui.CutRight(foot, cancel.Width(ctx))
+	submitRect, _ := ui.CutRight(rest, submit.Width(ctx)+th.Gap)
+	if submit.Layout(ctx, submitRect) && !a.m.Busy && len(images) > 0 {
+		out = intent{kind: intentCreateSubmit}
+	}
+	if cancel.Layout(ctx, cancelRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentCreateClose}
+	}
+	return out
+}
+
+// drawProfilesModal lists every configured instance profile over a dimmed,
+// frozen copy of the list. Picking one switches the shell to it without a
+// relaunch; Esc and Close back out.
+func (a *App) drawProfilesModal(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	var out intent
+
+	ctx.Canvas.Fill(bounds, modalScrim)
+
+	current := ""
+	if a.profile != nil {
+		current = a.profile.Name
+	}
+	rows := len(a.profiles)
+	listH := rows*th.ControlHeight + max(rows-1, 0)*th.Gap/2
+	if rows == 0 {
+		listH = ui.LineHeight(th.Body, th.Font)
+	}
+	parts := []int{
+		ui.TextHeight(th.Title, th.Font) + th.Gap/2, // title
+		listH,            // profiles
+		th.ControlHeight, // close row
+	}
+	content := 2 * th.Pad
+	for i, p := range parts {
+		if i > 0 {
+			content += th.Gap
+		}
+		content += p
+	}
+
+	width := min(bounds.W-2*th.Pad, infoCardWidth)
+	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
+	if card.W <= 0 || card.H <= 0 {
+		return out
+	}
+	card.Y = max(card.Y, th.Gap)
+
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+
+	ui.Label(ctx, body.Next(parts[0]), i18n.Get("profiles.title"), ui.LabelStyle{Scale: th.Title})
+
+	listRect := body.Next(parts[1])
+	if rows == 0 {
+		ui.Label(ctx, listRect, i18n.Get("profiles.none"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	} else {
+		y := listRect.Y
+		for i, p := range a.profiles {
+			if p == nil {
+				continue
+			}
+			r := ui.Rect{X: listRect.X, Y: y, W: listRect.W, H: th.ControlHeight}
+			y += th.ControlHeight + th.Gap/2
+			label := p.Name + "  ·  " + p.Server
+			if p.Name == current {
+				label += "  " + i18n.Get("profiles.current")
+			}
+			b := ui.Button{
+				ID:       ui.FocusID(fmt.Sprintf("profile-%d", i)),
+				Text:     label,
+				Variant:  ui.ButtonSecondary,
+				Disabled: p.Name == current,
+			}
+			if b.Layout(ctx, r) {
+				out = intent{kind: intentSwitchProfile, profile: p.Name}
+			}
+		}
+	}
+
+	foot := body.Next(parts[2])
+	closeRow := ui.Button{ID: idProfilesClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
+	closeRect, _ := ui.CutRight(foot, closeRow.Width(ctx))
+	if closeRow.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentProfilesClose}
+	}
+	return out
+}
+
+// drawSessionsModal lists the held sessions over a dimmed, frozen copy of
+// the list. Switch resumes one in a fresh window; Close disconnects it for
+// good. Esc and Close back out.
+func (a *App) drawSessionsModal(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	var out intent
+
+	ctx.Canvas.Fill(bounds, modalScrim)
+
+	rows := len(a.m.Sessions)
+	listH := rows*(th.ControlHeight+th.Gap/2) + th.ControlHeight
+	if rows == 0 {
+		listH = ui.LineHeight(th.Body, th.Font) + th.Gap/2 + th.ControlHeight
+	}
+	parts := []int{
+		ui.TextHeight(th.Title, th.Font) + th.Gap/2, // title
+		listH,            // sessions
+		th.ControlHeight, // close row
+	}
+	content := 2 * th.Pad
+	for i, p := range parts {
+		if i > 0 {
+			content += th.Gap
+		}
+		content += p
+	}
+
+	width := min(bounds.W-2*th.Pad, infoCardWidth)
+	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
+	if card.W <= 0 || card.H <= 0 {
+		return out
+	}
+	card.Y = max(card.Y, th.Gap)
+
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+
+	ui.Label(ctx, body.Next(parts[0]), i18n.Sprintf("sessions.title", rows), ui.LabelStyle{Scale: th.Title})
+
+	listRect := body.Next(parts[1])
+	if rows == 0 {
+		ui.Label(ctx, ui.Rect{X: listRect.X, Y: listRect.Y, W: listRect.W, H: ui.LineHeight(th.Body, th.Font)}, i18n.Get("sessions.none"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	} else {
+		y := listRect.Y
+		for i, entry := range a.m.Sessions {
+			r := ui.Rect{X: listRect.X, Y: y, W: listRect.W, H: th.ControlHeight}
+			y += th.ControlHeight + th.Gap/2
+			sw := ui.Button{ID: ui.FocusID(fmt.Sprintf("session-switch-%d", i)), Text: i18n.Get("sessions.switch"), Variant: ui.ButtonSecondary}
+			cl := ui.Button{ID: ui.FocusID(fmt.Sprintf("session-close-%d", i)), Text: i18n.Get("sessions.close"), Variant: ui.ButtonSecondary}
+			swW, clW := sw.Width(ctx), cl.Width(ctx)
+			titleW := max(r.W-swW-clW-th.Gap, 0)
+			titleRect, ctrls := ui.CutLeft(r, titleW)
+			ui.Label(ctx, titleRect, entry.Title+"  ·  "+sessionKindLabel(entry.Kind), ui.LabelStyle{Middle: true})
+			swRect, rest := ui.CutLeft(ctrls, swW)
+			_, rest = ui.CutLeft(rest, th.Gap)
+			clRect, _ := ui.CutLeft(rest, clW)
+			if sw.Layout(ctx, swRect) {
+				out = intent{kind: intentSwitchSession, sessionKey: entry.Key}
+			}
+			if cl.Layout(ctx, clRect) {
+				out = intent{kind: intentCloseSession, sessionKey: entry.Key}
+			}
+		}
+	}
+
+	foot := body.Next(parts[2])
+	closeRow := ui.Button{ID: idSessionsClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
+	closeRect, _ := ui.CutRight(foot, closeRow.Width(ctx))
+	if closeRow.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentSessionsClose}
+	}
+	return out
+}
+
+// sessionKindLabel names a handle kind the way the switcher shows it.
+func sessionKindLabel(kind string) string {
+	switch kind {
+	case "terminal":
+		return i18n.Get("sessions.kindTerminal")
+	case "observer":
+		return i18n.Get("sessions.kindObserver")
+	case "tier1":
+		return i18n.Get("sessions.kindTier1")
+	default:
+		return i18n.Get("sessions.kindDisplay")
+	}
 }
 
 // workspaceInfoRows is the labelled detail the info modal shows. Empty values
