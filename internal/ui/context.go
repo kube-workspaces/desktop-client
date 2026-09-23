@@ -30,6 +30,12 @@ type Context struct {
 	// test without building a stub.
 	Clipboard func() (string, error)
 
+	// SetClipboard, when set, gives text fields copy and cut actions. It is
+	// separate from Clipboard rather than one interface for the same reason:
+	// each direction is independently optional, and a field degrades to
+	// keyboard-only selection when one is missing.
+	SetClipboard func(string) error
+
 	ring FocusRing
 
 	// repaint records that something this frame wants to be drawn again at
@@ -148,4 +154,14 @@ func (c *Context) paste() string {
 		return ""
 	}
 	return text
+}
+
+// copy replaces the host clipboard's text. Copying nothing is a no-op rather
+// than a clipboard wipe: Ctrl-C with no selection must not empty what the
+// user copied elsewhere. Like paste, a failing clipboard is silent.
+func (c *Context) copy(text string) {
+	if text == "" || c.SetClipboard == nil {
+		return
+	}
+	_ = c.SetClipboard(text)
 }

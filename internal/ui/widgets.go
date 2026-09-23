@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"math"
 	"time"
+	"unicode"
 
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
@@ -224,10 +225,11 @@ const cursorBlink = 530 * time.Millisecond
 // position, and doing that on a UTF-8 string means re-scanning it on every
 // keystroke and getting the boundaries wrong once.
 //
-// There is no selection. Selection needs shift-arrow, click-drag, double-click
-// word boundaries, and a clipboard cut path to be worth having at all, and the
-// fields here hold a URL, an email address and a password. Ctrl-U clears the
-// line, which covers the case selection would have been used for.
+// Selection is the range between anchor (the fixed end) and cursor (the moving
+// end). When the two are equal there is no selection. Shift-arrow extends,
+// plain movement collapses, and every editing operation acts on the selection
+// first. Copy/cut go through the context's clipboard; without one they are
+// silent no-ops.
 type TextInput struct {
 	// ID identifies the field to the focus ring.
 	ID FocusID
@@ -242,9 +244,19 @@ type TextInput struct {
 
 	text   []rune
 	cursor int
+	anchor int
 	// offset is the first visible rune, so that a cursor past the right edge
 	// scrolls the field rather than disappearing.
 	offset int
+	// dragging tracks a press-drag-release gesture across frames: set on a
+	// single press inside the field, cleared on release.
+	dragging bool
+	// lastPress records when and where the previous press landed, so that a
+	// second press soon after and nearby counts as a double-click (word
+	// select) and a third as a triple-click (select all).
+	lastPress   time.Time
+	lastPressAt Point
+	clicks      int
 }
 
 // Value returns the field's text.
@@ -258,7 +270,9 @@ func (t *TextInput) SetValue(s string) {
 		t.text = t.text[:t.MaxLen]
 	}
 	t.cursor = len(t.text)
+	t.anchor = t.cursor
 	t.offset = 0
+	t.dragging = false
 }
 
 // Len returns the length of the text in runes.
@@ -267,13 +281,135 @@ func (t *TextInput) Len() int { return len(t.text) }
 // Cursor returns the cursor's rune index.
 func (t *TextInput) Cursor() int { return t.cursor }
 
-// SetCursor moves the cursor, clamped to the text.
-func (t *TextInput) SetCursor(i int) { t.cursor = clampInt(i, 0, len(t.text)) }
+// SetCursor moves the cursor, clamped to the text. The selection collapses:
+// a programmatic placement is a new starting point, not an extension.
+func (t *TextInput) SetCursor(i int) {
+	t.cursor = clampInt(i, 0, len(t.text))
+	t.anchor = t.cursor
+}
+
+// HasSelection reports whether the field holds a non-empty selection.
+func (t *TextInput) HasSelection() bool {
+	lo, hi := t.SelectionRange()
+	return hi > lo
+}
+
+// SelectionRange returns the selected rune interval, ordered and clamped, or
+// two equal values when there is no selection.
+func (t *TextInput) SelectionRange() (int, int) {
+	lo, hi := t.anchor, t.cursor
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	return clampInt(lo, 0, len(t.text)), clampInt(hi, 0, len(t.text))
+}
+
+// SelectedText returns the selected runes. For a password field this is the
+// real text, not the mask: the user selected what they typed, and copy must
+// carry that rather than a row of asterisks.
+func (t *TextInput) SelectedText() string {
+	lo, hi := t.SelectionRange()
+	return string(t.text[lo:hi])
+}
+
+// SelectAll selects the whole field.
+func (t *TextInput) SelectAll() {
+	t.anchor = 0
+	t.cursor = len(t.text)
+}
+
+// DeleteSelection removes the selected runes, leaves the cursor at the lower
+// end, and reports whether it removed anything.
+func (t *TextInput) DeleteSelection() bool {
+	lo, hi := t.SelectionRange()
+	if hi == lo {
+		return false
+	}
+	t.text = append(t.text[:lo], t.text[hi:]...)
+	t.cursor, t.anchor = lo, lo
+	return true
+}
+
+// extend moves the cursor by delta runes and keeps the anchor where it is, so
+// the selection grows or shrinks around the fixed end.
+func (t *TextInput) extend(delta int) {
+	t.cursor = clampInt(t.cursor+delta, 0, len(t.text))
+}
+
+// extendToWord moves the cursor by one word in the given direction (-1 or +1)
+// and keeps the anchor where it is.
+func (t *TextInput) extendToWord(dir int) {
+	if dir < 0 {
+		t.cursor = wordStart(t.text, t.cursor)
+	} else {
+		t.cursor = wordEnd(t.text, t.cursor)
+	}
+}
+
+// selectWord selects the word containing rune index i, or the separator run
+// under the pointer when i is not on a word character. Unlike wordStart and
+// wordEnd — which skip over separators because Ctrl-arrow navigation must —
+// this expands strictly around the click: double-clicking "bar" in "foo bar"
+// selects "bar", not the previous word along with it.
+func (t *TextInput) selectWord(i int) {
+	i = clampInt(i, 0, len(t.text))
+	t.anchor, t.cursor = i, i
+	if i < len(t.text) && isWordChar(t.text[i]) {
+		for t.anchor > 0 && isWordChar(t.text[t.anchor-1]) {
+			t.anchor--
+		}
+		for t.cursor < len(t.text) && isWordChar(t.text[t.cursor]) {
+			t.cursor++
+		}
+		return
+	}
+	for t.anchor > 0 && !isWordChar(t.text[t.anchor-1]) {
+		t.anchor--
+	}
+	for t.cursor < len(t.text) && !isWordChar(t.text[t.cursor]) {
+		t.cursor++
+	}
+}
+
+// isWordChar reports whether r belongs inside a word for navigation and
+// double-click selection. Letters, digits and the underscore hang together;
+// everything else — spaces, slashes, dots, colons — is a boundary. That is
+// what makes double-clicking a URL select one segment of it rather than the
+// whole line.
+func isWordChar(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+// wordStart returns the start of the word containing or preceding i.
+func wordStart(text []rune, i int) int {
+	i = clampInt(i, 0, len(text))
+	for i > 0 && !isWordChar(text[i-1]) {
+		i--
+	}
+	for i > 0 && isWordChar(text[i-1]) {
+		i--
+	}
+	return i
+}
+
+// wordEnd returns the end of the word containing or following i.
+func wordEnd(text []rune, i int) int {
+	i = clampInt(i, 0, len(text))
+	for i < len(text) && !isWordChar(text[i]) {
+		i++
+	}
+	for i < len(text) && isWordChar(text[i]) {
+		i++
+	}
+	return i
+}
 
 // Insert inserts runes at the cursor and leaves the cursor after them.
+// A selection is replaced: typing over a selection is the reason it exists.
 // Non-printable runes are dropped: the font cannot draw them and a field is
 // not the place to discover that.
 func (t *TextInput) Insert(runes ...rune) {
+	t.DeleteSelection()
 	for _, r := range runes {
 		if r < 0x20 || r == 0x7f {
 			continue
@@ -287,11 +423,15 @@ func (t *TextInput) Insert(runes ...rune) {
 		t.text[t.cursor] = r
 		t.cursor++
 	}
+	t.anchor = t.cursor
 }
 
-// Backspace deletes the rune before the cursor and reports whether it deleted
-// anything.
+// Backspace deletes the selection, or the rune before the cursor when there
+// is none, and reports whether it deleted anything.
 func (t *TextInput) Backspace() bool {
+	if t.DeleteSelection() {
+		return true
+	}
 	if t.cursor <= 0 || len(t.text) == 0 {
 		return false
 	}
@@ -301,12 +441,16 @@ func (t *TextInput) Backspace() bool {
 	}
 	t.text = append(t.text[:t.cursor-1], t.text[t.cursor:]...)
 	t.cursor--
+	t.anchor = t.cursor
 	return true
 }
 
-// DeleteForward deletes the rune at the cursor and reports whether it deleted
-// anything.
+// DeleteForward deletes the selection, or the rune at the cursor when there
+// is none, and reports whether it deleted anything.
 func (t *TextInput) DeleteForward() bool {
+	if t.DeleteSelection() {
+		return true
+	}
 	if t.cursor >= len(t.text) {
 		return false
 	}
@@ -314,29 +458,37 @@ func (t *TextInput) DeleteForward() bool {
 	return true
 }
 
-// MoveCursor moves the cursor by delta runes, clamped to the text. Clamping
-// rather than wrapping is what makes holding the left arrow down settle at the
-// start of the line instead of jumping to the end.
+// MoveCursor moves the cursor by delta runes, clamped to the text, and
+// collapses the selection. Clamping rather than wrapping is what makes holding
+// the left arrow down settle at the start of the line instead of jumping to
+// the end.
 func (t *TextInput) MoveCursor(delta int) {
 	t.cursor = clampInt(t.cursor+delta, 0, len(t.text))
+	t.anchor = t.cursor
 }
 
-// MoveHome puts the cursor before the first rune.
-func (t *TextInput) MoveHome() { t.cursor = 0 }
+// MoveHome puts the cursor before the first rune and collapses the selection.
+func (t *TextInput) MoveHome() { t.cursor, t.anchor = 0, 0 }
 
-// MoveEnd puts the cursor after the last rune.
-func (t *TextInput) MoveEnd() { t.cursor = len(t.text) }
+// MoveEnd puts the cursor after the last rune and collapses the selection.
+func (t *TextInput) MoveEnd() { t.cursor, t.anchor = len(t.text), len(t.text) }
 
 // Clear empties the field.
 func (t *TextInput) Clear() {
 	t.text = t.text[:0]
-	t.cursor = 0
+	t.cursor, t.anchor = 0, 0
 	t.offset = 0
+	t.dragging = false
 }
 
-// KillToEnd deletes from the cursor to the end of the line (Ctrl-K).
+// KillToEnd deletes the selection, or from the cursor to the end of the line
+// (Ctrl-K) when there is none.
 func (t *TextInput) KillToEnd() {
+	if t.DeleteSelection() {
+		return
+	}
 	t.cursor = clampInt(t.cursor, 0, len(t.text))
+	t.anchor = t.cursor
 	t.text = t.text[:t.cursor]
 }
 
@@ -346,6 +498,12 @@ func (t *TextInput) KillToEnd() {
 // swallowing it here would mean every form needed a submit button.
 func (t *TextInput) HandleKey(ctx *Context, e EventKey) bool {
 	ctrl := e.Mods.Has(keysym.ModControl)
+	shift := e.Mods.Has(keysym.ModShift)
+	// Word jumps ride on Ctrl (and on Alt, which is Option on macOS), but
+	// never on Ctrl+Alt together: on Windows that combination is AltGr, the
+	// third-level shift a large part of the world types "@" and "€" with,
+	// and stealing it for navigation would eat those characters.
+	wordJump := (ctrl != e.Mods.Has(keysym.ModAlt)) && !e.Mods.Has(keysym.ModSuper)
 
 	switch e.Key {
 	case keysym.KeyBackSpace:
@@ -355,28 +513,76 @@ func (t *TextInput) HandleKey(ctx *Context, e EventKey) bool {
 		t.DeleteForward()
 		return true
 	case keysym.KeyLeft:
-		t.MoveCursor(-1)
+		if shift {
+			if wordJump {
+				t.extendToWord(-1)
+			} else {
+				t.extend(-1)
+			}
+		} else if wordJump {
+			t.SetCursor(wordStart(t.text, t.cursor))
+		} else {
+			t.MoveCursor(-1)
+		}
 		return true
 	case keysym.KeyRight:
-		t.MoveCursor(1)
+		if shift {
+			if wordJump {
+				t.extendToWord(1)
+			} else {
+				t.extend(1)
+			}
+		} else if wordJump {
+			t.SetCursor(wordEnd(t.text, t.cursor))
+		} else {
+			t.MoveCursor(1)
+		}
 		return true
 	case keysym.KeyHome:
-		t.MoveHome()
+		if shift {
+			t.cursor = 0
+		} else {
+			t.MoveHome()
+		}
 		return true
 	case keysym.KeyEnd:
-		t.MoveEnd()
+		if shift {
+			t.cursor = len(t.text)
+		} else {
+			t.MoveEnd()
+		}
 		return true
+	}
+
+	// Selection clipboard on Ctrl or Cmd (Super), so macOS muscle memory
+	// works without relearning. Alt is excluded so AltGr typing is
+	// unaffected (see wordJump above); the composed-text path drops the
+	// side-effect text these chords produce, so Ctrl-V pastes without also
+	// typing a "v".
+	if (ctrl || e.Mods.Has(keysym.ModSuper)) && !e.Mods.Has(keysym.ModAlt) {
+		switch lowerASCII(e.Rune) {
+		case 'a':
+			t.SelectAll()
+			return true
+		case 'c':
+			ctx.copy(t.SelectedText())
+			return true
+		case 'x':
+			if t.HasSelection() {
+				ctx.copy(t.SelectedText())
+				t.DeleteSelection()
+			}
+			return true
+		case 'v':
+			t.Insert([]rune(singleLine(ctx.paste()))...)
+			return true
+		}
 	}
 
 	if ctrl && !e.Mods.HasAny(keysym.ModAlt|keysym.ModSuper) {
 		// The readline bindings, because this is a developer tool and these
-		// are muscle memory. Ctrl-V is here too: without it a user cannot
-		// paste a server URL, and typing one out is exactly the sort of
-		// friction that makes a client feel unfinished.
+		// are muscle memory.
 		switch lowerASCII(e.Rune) {
-		case 'a':
-			t.MoveHome()
-			return true
 		case 'e':
 			t.MoveEnd()
 			return true
@@ -385,9 +591,6 @@ func (t *TextInput) HandleKey(ctx *Context, e EventKey) bool {
 			return true
 		case 'k':
 			t.KillToEnd()
-			return true
-		case 'v':
-			t.Insert([]rune(singleLine(ctx.paste()))...)
 			return true
 		}
 	}
@@ -440,12 +643,23 @@ func (t *TextInput) Layout(ctx *Context, r Rect) bool {
 				t.HandleText(e)
 			}
 		}
-		// The pointer places the cursor. Without this a user who clicks into
-		// the middle of a mistyped URL gets the cursor at whichever end it
-		// happened to be, which feels broken.
+		// The pointer places the cursor and, while held, extends the
+		// selection. A press starts (or multi-clicks) a gesture; later frames
+		// of the same hold stretch the moving end to the pointer.
 		if ctx.Input.PressedIn(r) {
-			t.cursorFromPointer(ctx, r, scale)
+			t.handlePress(ctx, r, scale)
+		} else if t.dragging {
+			if ctx.Input.Down {
+				t.cursor = t.indexFromPointer(ctx, r, scale)
+			} else {
+				t.dragging = false
+			}
 		}
+		if ctx.Input.Released {
+			t.dragging = false
+		}
+	} else {
+		t.dragging = false
 	}
 
 	hovered := ctx.Input.Hovering(r)
@@ -479,6 +693,19 @@ func (t *TextInput) Layout(ctx *Context, r Rect) bool {
 		visible = visible[t.offset:]
 	} else {
 		visible = nil
+	}
+
+	// The selection highlight goes down before the text, measured from the
+	// same origin in one run each so the proportional face's advances land
+	// exactly. Both theme modes pair a light-on-dark or dark-on-light text
+	// colour with a selected surface that keeps it legible.
+	if lo, hi := t.SelectionRange(); hi > lo {
+		lo = max(lo, t.offset)
+		if hi > lo {
+			x0 := inner.X + TextWidth(string(display[t.offset:lo]), scale, th.Font)
+			x1 := inner.X + TextWidth(string(display[t.offset:hi]), scale, th.Font)
+			ctx.Canvas.Fill(Rect{X: x0, Y: baseY, W: x1 - x0, H: TextHeight(scale, th.Font)}, th.SurfaceSelected)
+		}
 	}
 	ctx.Canvas.Text(string(visible), inner.X, baseY, scale, th.Text)
 
@@ -546,13 +773,50 @@ func (t *TextInput) scrollToCursor(width, scale int, f viewer.Font) {
 	t.offset = clampInt(t.offset, 0, len(t.text))
 }
 
-// cursorFromPointer places the cursor at the glyph the user clicked on.
-func (t *TextInput) cursorFromPointer(ctx *Context, r Rect, scale int) {
+// handlePress starts a pointer gesture: a single press collapses the
+// selection to the clicked glyph and arms a drag, a double-click selects the
+// word under the pointer (dragging extends from its start), and a
+// triple-click selects the whole field.
+func (t *TextInput) handlePress(ctx *Context, r Rect, scale int) {
+	now, at := ctx.Input.Now, ctx.Input.Mouse
+	if !now.IsZero() && !t.lastPress.IsZero() &&
+		now.Sub(t.lastPress) <= doubleClickInterval &&
+		abs(at.X-t.lastPressAt.X)+abs(at.Y-t.lastPressAt.Y) <= doubleClickRadius {
+		t.clicks++
+	} else {
+		t.clicks = 1
+	}
+	t.lastPress, t.lastPressAt = now, at
+
+	idx := t.indexFromPointer(ctx, r, scale)
+	switch {
+	case t.clicks >= 3:
+		t.SelectAll()
+		t.dragging = false
+	case t.clicks == 2:
+		t.selectWord(idx)
+		t.dragging = true
+	default:
+		t.cursor, t.anchor = idx, idx
+		t.dragging = true
+	}
+}
+
+// doubleClickInterval is how soon after a press a second press on the same
+// spot counts as a multi-click. Half a second is the desktop convention.
+const doubleClickInterval = 500 * time.Millisecond
+
+// doubleClickRadius is how far the pointer may wander, in Manhattan canvas
+// pixels, and still count as the same spot for multi-click purposes.
+const doubleClickRadius = 8
+
+// indexFromPointer returns the rune index of the glyph under the pointer,
+// rounding to the nearest gap the way a caret does.
+func (t *TextInput) indexFromPointer(ctx *Context, r Rect, scale int) int {
 	inner := InsetXY(r, ctx.Theme.Gap, 0)
 	px := ctx.Input.Mouse.X - inner.X
 	if px <= 0 {
-		t.SetCursor(t.offset)
-		return
+		return clampInt(t.offset, 0, len(t.text))
 	}
 	// Walk the advances of the visible run until the click falls in a glyph's
 	// left half, rounding to the nearest gap the way a caret does.
@@ -560,12 +824,11 @@ func (t *TextInput) cursorFromPointer(ctx *Context, r Rect, scale int) {
 	for i := t.offset; i < len(t.text); i++ {
 		total += advanceAt(ctx.Theme.Font, scale, t.text[i])
 		if px <= total-advanceAt(ctx.Theme.Font, scale, t.text[i])/2 {
-			idx = i
-			break
+			return i
 		}
 		idx = i + 1
 	}
-	t.SetCursor(idx)
+	return idx
 }
 
 // advanceAt is the horizontal step a glyph takes at the given scale, working

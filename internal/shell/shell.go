@@ -229,6 +229,7 @@ func New(opts Options) (*App, error) {
 	a.insecureBox.Label = "Ignore TLS certificate errors"
 
 	a.ctx.Clipboard = a.be.Clipboard
+	a.ctx.SetClipboard = a.be.SetClipboard
 	return a, nil
 }
 

@@ -276,8 +276,7 @@ func TestTextInputKeyboard(t *testing.T) {
 		t.Fatal("Enter was inserted as text")
 	}
 
-	// Ctrl-U clears, which is the readline binding this field offers instead
-	// of a selection.
+	// Ctrl-U clears the whole line; Ctrl-A now selects it (see below).
 	h.frame([]Event{runeDown('u', keysym.ModControl)}, body)
 	if f.Value() != "" {
 		t.Fatalf("Ctrl-U left %q", f.Value())
@@ -520,6 +519,241 @@ func TestTextInputPasswordMasking(t *testing.T) {
 	plain.frame(nil, func(ctx *Context) { f2.Layout(ctx, Rect{X: 10, Y: 10, W: 300, H: 34}) })
 	if string(masked) == string(plain.ctx.Canvas.Image().Pix) {
 		t.Fatal("a password field drew its contents in the clear")
+	}
+}
+
+func TestTextInputSelectionModel(t *testing.T) {
+	var f TextInput
+	f.SetValue("hello")
+	if f.HasSelection() {
+		t.Fatal("a fresh value must not be selected")
+	}
+
+	f.SelectAll()
+	if lo, hi := f.SelectionRange(); lo != 0 || hi != 5 {
+		t.Fatalf("select-all gave (%d, %d), want (0, 5)", lo, hi)
+	}
+	if f.SelectedText() != "hello" {
+		t.Fatalf("selected text = %q, want %q", f.SelectedText(), "hello")
+	}
+
+	// Typing replaces the selection: the reason it exists.
+	f.Insert('X')
+	if f.Value() != "X" || f.HasSelection() {
+		t.Fatalf("typing over a selection gave %q (selected: %v)", f.Value(), f.HasSelection())
+	}
+
+	// Backspace and DeleteForward prefer the selection over one rune.
+	f.SetValue("hello")
+	f.SelectAll()
+	if !f.Backspace() || f.Value() != "" {
+		t.Fatalf("backspace over a selection left %q", f.Value())
+	}
+	f.SetValue("hello")
+	f.SelectAll()
+	if !f.DeleteForward() || f.Value() != "" {
+		t.Fatalf("delete over a selection left %q", f.Value())
+	}
+
+	// Movement collapses; it does not extend.
+	f.SetValue("hello")
+	f.SelectAll()
+	f.MoveCursor(-1)
+	if f.HasSelection() || f.Cursor() != 4 {
+		t.Fatalf("MoveCursor left selection (%v) or cursor %d", f.HasSelection(), f.Cursor())
+	}
+	f.SelectAll()
+	f.SetCursor(2)
+	if f.HasSelection() || f.Cursor() != 2 {
+		t.Fatal("SetCursor did not collapse the selection")
+	}
+
+	// Shift-arrow extends from the fixed anchor.
+	f.SetCursor(5)
+	f.extend(-2)
+	if f.SelectedText() != "lo" {
+		t.Fatalf("shift-left selected %q, want %q", f.SelectedText(), "lo")
+	}
+	// Extending back over the anchor flips the moving end past it.
+	f.extend(1)
+	if f.SelectedText() != "o" {
+		t.Fatalf("shrinking the selection gave %q, want %q", f.SelectedText(), "o")
+	}
+
+	// KillToEnd takes the selection first, the tail second.
+	f.SelectAll()
+	f.KillToEnd()
+	if f.Value() != "" {
+		t.Fatalf("Ctrl-K over a selection left %q", f.Value())
+	}
+	f.SetValue("hello")
+	f.SetCursor(2)
+	f.KillToEnd()
+	if f.Value() != "he" {
+		t.Fatalf("Ctrl-K left %q, want %q", f.Value(), "he")
+	}
+
+	// A password field masks the drawing but copies what was typed.
+	var pw TextInput
+	pw.Password = true
+	pw.SetValue("hunter2")
+	pw.SelectAll()
+	if pw.SelectedText() != "hunter2" {
+		t.Fatalf("a masked field selected %q", pw.SelectedText())
+	}
+}
+
+func TestTextInputShiftArrowSelection(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+
+	h.frame([]Event{runeDown('h', keysym.ModNone), runeDown('e', keysym.ModNone),
+		runeDown('l', keysym.ModNone), runeDown('l', keysym.ModNone),
+		runeDown('o', keysym.ModNone)}, body)
+
+	h.frame([]Event{keyDown(keysym.KeyLeft, keysym.ModShift), keyDown(keysym.KeyLeft, keysym.ModShift)}, body)
+	if f.SelectedText() != "lo" {
+		t.Fatalf("shift-left selected %q, want %q", f.SelectedText(), "lo")
+	}
+
+	// Typing replaces the selection in place.
+	h.frame([]Event{runeDown('X', keysym.ModNone)}, body)
+	if f.Value() != "helX" {
+		t.Fatalf("typing over a selection gave %q, want %q", f.Value(), "helX")
+	}
+
+	// Plain movement collapses again.
+	h.frame([]Event{keyDown(keysym.KeyLeft, keysym.ModNone)}, body)
+	if f.HasSelection() {
+		t.Fatal("a plain arrow key did not collapse the selection")
+	}
+}
+
+func TestTextInputWordNavigation(t *testing.T) {
+	var f TextInput
+	f.SetValue("foo bar/baz")
+
+	f.SetCursor(0)
+	f.cursor = wordEnd(f.text, f.cursor)
+	if f.Cursor() != 3 {
+		t.Fatalf("Ctrl-Right stopped at %d, want 3", f.Cursor())
+	}
+	f.cursor = wordEnd(f.text, f.cursor)
+	if f.Cursor() != 7 {
+		t.Fatalf("Ctrl-Right stopped at %d, want 7", f.Cursor())
+	}
+
+	f.SetCursor(f.Len())
+	f.cursor = wordStart(f.text, f.cursor)
+	if f.Cursor() != 8 {
+		t.Fatalf("Ctrl-Left stopped at %d, want 8", f.Cursor())
+	}
+
+	// Word extension through the key path, the way a user reaches it.
+	h := newHarness(400, 100)
+	g := &TextInput{ID: "field"}
+	g.SetValue("foo bar")
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { g.Layout(ctx, rect) }
+	h.frame(nil, body)
+	h.frame([]Event{keyDown(keysym.KeyLeft, keysym.ModControl|keysym.ModShift)}, body)
+	if g.SelectedText() != "bar" {
+		t.Fatalf("Ctrl-Shift-Left selected %q, want %q", g.SelectedText(), "bar")
+	}
+}
+
+func TestTextInputClipboardKeys(t *testing.T) {
+	h := newHarness(400, 100)
+	var copied string
+	h.ctx.SetClipboard = func(s string) error { copied = s; return nil }
+	h.ctx.Clipboard = func() (string, error) { return "pasted", nil }
+	f := &TextInput{ID: "field"}
+	f.SetValue("hello")
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+
+	// Copy with no selection must not wipe the clipboard.
+	h.frame([]Event{runeDown('c', keysym.ModControl)}, body)
+	if copied != "" {
+		t.Fatalf("copy with no selection wrote %q to the clipboard", copied)
+	}
+
+	// Select all, copy, cut, paste back.
+	h.frame([]Event{runeDown('a', keysym.ModControl)}, body)
+	if !f.HasSelection() {
+		t.Fatal("Ctrl-A did not select all")
+	}
+	h.frame([]Event{runeDown('c', keysym.ModControl)}, body)
+	if copied != "hello" {
+		t.Fatalf("copy put %q on the clipboard, want %q", copied, "hello")
+	}
+	h.frame([]Event{runeDown('x', keysym.ModControl)}, body)
+	if f.Value() != "" || copied != "hello" {
+		t.Fatalf("cut left %q (clipboard %q)", f.Value(), copied)
+	}
+	h.frame([]Event{runeDown('v', keysym.ModControl)}, body)
+	if f.Value() != "pasted" {
+		t.Fatalf("paste produced %q, want %q", f.Value(), "pasted")
+	}
+
+	// Cmd (Super) variants, for macOS muscle memory.
+	h.frame([]Event{runeDown('a', keysym.ModSuper)}, body)
+	h.frame([]Event{runeDown('c', keysym.ModSuper)}, body)
+	if copied != "pasted" {
+		t.Fatalf("Cmd-C put %q on the clipboard, want %q", copied, "pasted")
+	}
+}
+
+func TestTextInputDragSelects(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	f.SetValue("abcdefgh")
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+
+	cell := h.ctx.Theme.Font.GlyphAdvance * h.ctx.Theme.Body
+	x0 := rect.X + h.ctx.Theme.Gap
+
+	// Press after the first glyph, drag to after the fourth, release.
+	h.frame([]Event{pointer(x0+cell+1, 20, true)}, body)
+	h.frame([]Event{pointer(x0+cell*4+1, 20, true)}, body)
+	if lo, hi := f.SelectionRange(); lo != 1 || hi != 4 {
+		t.Fatalf("drag selected (%d, %d), want (1, 4)", lo, hi)
+	}
+	h.frame([]Event{pointer(x0+cell*4+1, 20, false)}, body)
+	if lo, hi := f.SelectionRange(); lo != 1 || hi != 4 {
+		t.Fatalf("release collapsed the drag to (%d, %d)", lo, hi)
+	}
+}
+
+func TestTextInputDoubleClickSelectsWord(t *testing.T) {
+	h := newHarness(400, 100)
+	f := &TextInput{ID: "field"}
+	f.SetValue("foo bar")
+	rect := Rect{X: 10, Y: 10, W: 300, H: 34}
+	body := func(ctx *Context) { f.Layout(ctx, rect) }
+	h.frame(nil, body)
+
+	cell := h.ctx.Theme.Font.GlyphAdvance * h.ctx.Theme.Body
+	// Mid-word in "bar" (runes 4-6).
+	x := rect.X + h.ctx.Theme.Gap + cell*4 + 1
+
+	h.click(x, 20, body)
+	if f.HasSelection() {
+		t.Fatal("a single click must not select")
+	}
+	h.click(x, 20, body)
+	if f.SelectedText() != "bar" {
+		t.Fatalf("double-click selected %q, want %q", f.SelectedText(), "bar")
+	}
+	h.click(x, 20, body)
+	if lo, hi := f.SelectionRange(); lo != 0 || hi != f.Len() {
+		t.Fatalf("triple-click selected (%d, %d), want the whole field", lo, hi)
 	}
 }
 
