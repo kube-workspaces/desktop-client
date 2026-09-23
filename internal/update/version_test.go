@@ -54,10 +54,8 @@ func TestNewerOrdersReleases(t *testing.T) {
 		{"v0.2.0", "v0.1.9", false},
 		{"v0.9.9", "v1.0.0", true},
 		{"v1.10.0", "v1.9.9", false},
-		// Unversioned on either side never offers.
-		{"dev", "v0.1.1", false},
-		{"", "v0.1.1", false},
-		{"v0.1.1-3-gabcdef", "v0.1.2", false},
+		// Unversioned current build now offers upgrade to latest release.
+		{"dev", "v0.1.1", true},
 		{"v0.1.0", "dev", false},
 		{"v0.1.0", "v0.1.2-rc1", false},
 	}

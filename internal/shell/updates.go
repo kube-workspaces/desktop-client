@@ -58,7 +58,11 @@ func (a *App) checkUpdate(ctx context.Context, manual bool) {
 		a.updates.status = i18n.Get("updates.managed")
 		return
 	}
-	if !manual && (update.IsUnversioned(a.opts.Version) || !p.ShouldCheck(time.Unix(a.updates.last, 0), time.Now())) {
+	// Only auto-check if current is a valid release; manual check always proceeds.
+	if !manual && update.IsUnversioned(a.opts.Version) {
+		return
+	}
+	if !manual && !p.ShouldCheck(time.Unix(a.updates.last, 0), time.Now()) {
 		return
 	}
 	if !manual && a.updates.status != "" {

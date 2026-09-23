@@ -86,17 +86,20 @@ func IsUnversioned(stamped string) bool {
 	return err != nil
 }
 
-// Newer reports whether latest is strictly newer than current. Either side
-// being unversioned means false: the updater only moves between two real
-// releases, never away from a build it cannot place.
+// Newer reports whether latest is strictly newer than current.
+// If current is unversioned (a dev/dirty build), we always return true if
+// latest is a valid stable release, so developers can upgrade to the
+// latest release.
 func Newer(current, latest string) bool {
-	c, err := Parse(current)
-	if err != nil {
-		return false
-	}
 	l, err := Parse(latest)
 	if err != nil {
 		return false
+	}
+	c, err := Parse(current)
+	if err != nil {
+		// current is unversioned (e.g. dev build); if latest is a valid stable
+		// release, treat it as an upgrade path.
+		return true
 	}
 	return l.Compare(c) > 0
 }
