@@ -79,6 +79,18 @@ const (
 	// API whose code store is per-replica, the first exchange can fail by
 	// landing on the wrong replica and the next login usually succeeds.
 	nativeLoginAttempts = 3
+
+	// nativeExchangeAttempts is how many times the same single-use code is
+	// re-sent to POST /auth/native/token before the flow gives up on it and
+	// restarts the whole browser login. The platform keeps each code on the
+	// API replica that minted it (in-memory per replica on older builds, and
+	// on the memory fallback during a K8s outage even on Secret-backed builds),
+	// so an exchange that lands elsewhere fails with invalid_code without
+	// consuming the code — re-exchanging lets the load balancer try another
+	// replica with no browser round trip and no repeated IdP consent. The
+	// endpoint is rate-limited at 10/min per client IP, which bounds this:
+	// nativeLoginAttempts × (1 + nativeExchangeAttempts) stays just under it.
+	nativeExchangeAttempts = 2
 )
 
 // Sentinel errors specific to the browser login flow.
@@ -100,10 +112,11 @@ var (
 	// informational: the caller should show the URL and keep waiting.
 	ErrBrowserLaunchFailed = errors.New("could not open a system browser")
 	// ErrNativeCodeUnredeemable means a completed loopback login had its
-	// single-use code refused by the platform, and restarting the flow the
-	// bounded number of times did not produce a redeemable one. The identity
-	// provider's sign-in succeeded; the token exchange did not. No retry is
-	// possible from here — a fresh login is the only recovery.
+	// single-use code refused by the platform, both by re-exchanging the same
+	// code and by restarting the flow the bounded number of times, so no
+	// redeemable code could be produced. The identity provider's sign-in
+	// succeeded; the token exchange did not. No retry is possible from here —
+	// a fresh login is the only recovery.
 	ErrNativeCodeUnredeemable = errors.New("the sign-in code could not be redeemed")
 )
 
@@ -219,14 +232,17 @@ type callbackResult struct {
 // The loopback listener is bound before the browser is opened (so the port in
 // the redirect is real) and torn down the moment the callback is answered.
 //
-// A completed login whose code the platform will not redeem is retried with a
-// fresh login, up to [nativeLoginAttempts] times. The platform stores each
-// single-use code on the API replica that finished the OIDC dance, so an
-// exchange that reaches a different replica (or a replica mid-fallback) fails
-// with invalid_code; its own handler treats that as "just restart the login",
-// which is what this loop does. The verifier, challenge, state and code are
-// regenerated every attempt — a used code is never re-sent. Cancelling the
-// context (or exhausting the timeout) aborts between attempts.
+// A completed login whose code the platform will not redeem is first
+// re-exchanged against the same code (a store miss never consumes it, so
+// riding the load balancer around to the issuing replica needs no new browser
+// round trip) and then retried with a fresh login, up to [nativeLoginAttempts]
+// times. The platform stores each single-use code on the API replica that
+// finished the OIDC dance, so an exchange that reaches a different replica (or
+// a replica mid-fallback) fails with invalid_code; its own handler treats that
+// as "just restart the login", which is what this loop does. The verifier,
+// challenge, state and code are regenerated every full restart — a used code
+// is never re-sent. Cancelling the context (or exhausting the timeout) aborts
+// between attempts.
 func (c *Client) LoginBrowser(ctx context.Context, opts *BrowserLoginOptions) (*BrowserLogin, error) {
 	// One deadline covers every attempt: consent screens and MFA prompts take
 	// as long as the user takes, and a restart with a warm IdP session is far
@@ -319,7 +335,30 @@ func (c *Client) loginBrowserOnce(ctx context.Context, opts *BrowserLoginOptions
 	// RFC 8252 §8.3 wants it open only for the duration of the request.
 	shutdown()
 
-	return c.exchangeNativeCode(ctx, res.code, verifier)
+	login, err := c.exchangeNativeCode(ctx, res.code, verifier)
+	if err == nil {
+		return login, nil
+	}
+
+	// A code minted by one API replica cannot be redeemed from another when
+	// the platform keeps codes per replica (in-memory on older builds, and on
+	// the memory fallback during a K8s outage). A miss never consumes the
+	// code, so re-exchanging the SAME code lets the load balancer land the
+	// request on the issuing replica — no browser round trip, no repeated IdP
+	// consent. invalid_verifier is deliberately not a miss: the store had
+	// already surrendered the code before the PKCE check could run, so it can
+	// never be redeemed again.
+	if isNativeCodeMiss(err) {
+		for i := 0; i < nativeExchangeAttempts; i++ {
+			if login, err = c.exchangeNativeCode(ctx, res.code, verifier); err == nil {
+				return login, nil
+			}
+			if !isNativeCodeMiss(err) {
+				break
+			}
+		}
+	}
+	return nil, err
 }
 
 // retryNativeExchange reports whether a failed token exchange is worth another
@@ -329,17 +368,31 @@ func (c *Client) loginBrowserOnce(ctx context.Context, opts *BrowserLoginOptions
 // must be able to read (per-replica in memory on older builds, with an
 // in-memory fallback on K8s outage even on Secret-backed builds), so invalid_code
 // does not mean the user did anything wrong — the exchange simply did not reach
-// a replica holding the code, or the 60-second code TTL lapsed. invalid_verifier
-// means the code was already consumed against a challenge we can no longer
-// reproduce. The API's own handler documents the recovery for both: "a failed
-// exchange just restarts the login". A fresh login is the only meaningful retry
-// because a used code can never be redeemed again.
+// a replica holding the code, or the 60-second code TTL lapsed. [loginBrowserOnce]
+// already re-exchanges an invalid_code against the same code before this is
+// reached; what survives to a restart report is a code that no replica will
+// redeem. invalid_verifier means the code was already consumed against a
+// challenge we can no longer reproduce. The API's own handler documents the
+// recovery for both: "a failed exchange just restarts the login". A fresh
+// login is the remaining meaningful retry because a used code can never be
+// redeemed again.
 func retryNativeExchange(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		return false
 	}
 	return apiErr.Code == "invalid_code" || apiErr.Code == "invalid_verifier"
+}
+
+// isNativeCodeMiss reports whether a failed token exchange means the code was
+// simply not present in the store the request reached — i.e. the exchange
+// landed on an API replica that did not issue it. A miss is non-destructive
+// (Redeem only deletes a found entry), so re-sending the same code is safe.
+// invalid_verifier is deliberately not a miss: the store gave up the code
+// before the PKCE check ran, so it can never be redeemed again.
+func isNativeCodeMiss(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == "invalid_code"
 }
 
 // exchangeNativeCode redeems a single-use authorization code for the session

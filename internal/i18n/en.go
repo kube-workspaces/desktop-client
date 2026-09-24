@@ -216,7 +216,7 @@ var english = map[string]string{
 	"errors.stateMismatch":  "The browser sign-in could not be verified and was abandoned. Try again.",
 	"errors.authDenied":     "The identity provider refused the sign-in: %s",
 	"errors.nativeMissing":  "This instance is running an API build without browser sign-in.",
-	"errors.nativeCode":     "The browser sign-in finished but the sign-in code could not be redeemed, even after an automatic retry. Wait a moment and try signing in again.",
+	"errors.nativeCode":     "The browser sign-in finished but the platform would not accept the login code, even after several automatic attempts. Try again now; if it keeps happening, this usually means the platform's login-code store is not shared between its API servers — tell the administrator.",
 	"errors.expired":        "Your session has expired. Please sign in again.",
 	"errors.forbidden":      "You do not have access to that. Opening a display needs the editor or admin role.",
 	"errors.notFound":       "That workspace no longer exists.",

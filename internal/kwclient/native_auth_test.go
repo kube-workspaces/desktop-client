@@ -247,6 +247,10 @@ type nativeAuthServer struct {
 	failExchanges int
 	// exchanges counts POST /auth/native/token calls.
 	exchanges int
+	// redeemCodes records the code each exchange carried, in order, so a test
+	// can assert that a re-exchange re-sends the same single-use code rather
+	// than minting a new one.
+	redeemCodes []string
 }
 
 func newNativeAuthServer(t *testing.T) *nativeAuthServer {
@@ -288,14 +292,15 @@ func newNativeAuthServer(t *testing.T) *nativeAuthServer {
 	})
 	mux.HandleFunc("/auth/native/token", func(w http.ResponseWriter, r *http.Request) {
 		s.exchanges++
-		if s.failExchanges > 0 {
-			s.failExchanges--
-			writeJSONErrorBody(w, http.StatusBadRequest, "invalid_code", "unknown, expired or already used")
-			return
-		}
 		var body nativeTokenRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSONErrorBody(w, http.StatusBadRequest, "invalid_request", "bad body")
+			return
+		}
+		s.redeemCodes = append(s.redeemCodes, body.Code)
+		if s.failExchanges > 0 {
+			s.failExchanges--
+			writeJSONErrorBody(w, http.StatusBadRequest, "invalid_code", "unknown, expired or already used")
 			return
 		}
 		challenge, ok := s.issued[body.Code]
@@ -407,14 +412,52 @@ func TestLoginBrowserEndToEnd(t *testing.T) {
 	}
 }
 
-// TestLoginBrowserRestartsAnUnredeemableCode covers the platform's documented
-// recovery for a code that cannot be redeemed (multi-replica API whose code
-// store lives per replica; 60-second code TTL): the client restarts the whole
-// RFC 8252 flow with a fresh verifier, state and code instead of showing the
-// raw invalid_code error.
-func TestLoginBrowserRestartsAnUnredeemableCode(t *testing.T) {
+// TestLoginBrowserReExchangesALostCode covers the primary recovery for a code
+// that cannot be redeemed: a single exchange that lands on an API replica
+// without the code is followed by a re-exchange of the SAME code — no new
+// browser round trip — which succeeds once the load balancer reaches the
+// issuing replica.
+func TestLoginBrowserReExchangesALostCode(t *testing.T) {
 	srv := newNativeAuthServer(t)
-	srv.failExchanges = 1 // first exchange lands on a replica without the code
+	srv.failExchanges = 1 // only the first exchange lands on a replica without the code
+	c, err := New(srv.URL)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	got, err := c.LoginBrowser(context.Background(), &BrowserLoginOptions{
+		Timeout:     10 * time.Second,
+		openBrowser: browserFetch(t),
+	})
+	if err != nil {
+		t.Fatalf("LoginBrowser() error = %v", err)
+	}
+	if got.Token != srv.token {
+		t.Fatalf("token = %q, want %q", got.Token, srv.token)
+	}
+	if srv.logins != 1 {
+		t.Fatalf("/auth/login called %d times, want 1 (the re-exchange must not restart the browser)", srv.logins)
+	}
+	if srv.exchanges != 2 {
+		t.Fatalf("POST /auth/native/token called %d times, want 2 (one miss, one re-exchange)", srv.exchanges)
+	}
+	if srv.failExchanges != 0 {
+		t.Fatalf("failExchanges = %d, want 0", srv.failExchanges)
+	}
+	if len(srv.redeemCodes) != 2 || srv.redeemCodes[0] != srv.redeemCodes[1] {
+		t.Fatalf("redeem codes = %v, want the same single-use code re-sent", srv.redeemCodes)
+	}
+}
+
+// TestLoginBrowserRestartsEveryReExchangeMisses covers the backstop: when the
+// same code is refused on every re-exchange (an expired or burned code, or a
+// store the client can never reach), the flow restarts the whole browser login
+// with a fresh verifier, state and code instead of surfacing the raw
+// invalid_code error.
+func TestLoginBrowserRestartsEveryReExchangeMisses(t *testing.T) {
+	srv := newNativeAuthServer(t)
+	// Burn every exchange of the first attempt, then let the restart succeed.
+	srv.failExchanges = 1 + nativeExchangeAttempts
 	c, err := New(srv.URL)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -435,14 +478,14 @@ func TestLoginBrowserRestartsAnUnredeemableCode(t *testing.T) {
 	if srv.logins != 2 {
 		t.Fatalf("/auth/login called %d times, want 2 (a restart after the lost code)", srv.logins)
 	}
-	if srv.exchanges != 2 {
-		t.Fatalf("POST /auth/native/token called %d times, want 2", srv.exchanges)
+	if want := 1 + nativeExchangeAttempts + 1; srv.exchanges != want {
+		t.Fatalf("POST /auth/native/token called %d times, want %d", srv.exchanges, want)
 	}
 	if srv.failExchanges != 0 {
 		t.Fatalf("failExchanges = %d, want 0", srv.failExchanges)
 	}
 	if len(notified) != 2 {
-		t.Fatalf("Notify called %d times, want 2 (one authorize URL per attempt)", len(notified))
+		t.Fatalf("Notify called %d times, want 2 (one authorize URL per BrowserLogin attempt)", len(notified))
 	}
 }
 
