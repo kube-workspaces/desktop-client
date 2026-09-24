@@ -63,6 +63,8 @@ func Describe(err error) string {
 		return i18n.Sprintf("errors.authDenied", tail(err))
 	case errors.Is(err, kwclient.ErrNativeAuthUnsupported):
 		return i18n.Get("errors.nativeMissing")
+	case errors.Is(err, kwclient.ErrNativeCodeUnredeemable):
+		return i18n.Get("errors.nativeCode")
 
 	// The session.
 	case errors.Is(err, kwclient.ErrUnauthorized):

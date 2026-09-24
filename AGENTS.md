@@ -19,7 +19,13 @@ Implemented and working:
 
 - Platform API client, including browser-based OIDC login (RFC 8252 loopback
   redirect + PKCE) — **implemented and deployed**, both in the CLI (`login`,
-  `login --browser`) and in the shell's sign-in screen.
+  `login --browser`) and in the shell's sign-in screen. A completed login whose
+  code the API will not redeem (single-use codes live on the API replica that
+  finished the dance; older builds keep them in-memory per replica with a 60 s
+  TTL) is **restarted automatically** with fresh verifier/state/code, up to
+  three attempts (`kwclient.nativeLoginAttempts`), matching the API's own
+  "just restart the login" guidance; if every attempt loses the code the login
+  fails with `ErrNativeCodeUnredeemable`.
 - RFB/VNC protocol client: Tight (incl. JPEG), ZRLE, Hextile, zlib, CopyRect,
   Raw, cursor, ExtendedDesktopSize, LED state.
 - SDL3 session viewer: window, streaming texture upload, damage-tracked

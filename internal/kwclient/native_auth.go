@@ -71,6 +71,14 @@ const (
 	// take. Anything on the far side is a browser on the same machine, so this
 	// only exists to stop a stuck connection pinning the port open.
 	nativeCallbackReadTimeout = 10 * time.Second
+
+	// nativeLoginAttempts is how many full RFC 8252 round trips LoginBrowser
+	// runs before giving up when the platform refuses to redeem a single-use
+	// code. Each attempt mints a fresh verifier, challenge, state and code; the
+	// code itself is single-use and can never be re-sent. With a multi-replica
+	// API whose code store is per-replica, the first exchange can fail by
+	// landing on the wrong replica and the next login usually succeeds.
+	nativeLoginAttempts = 3
 )
 
 // Sentinel errors specific to the browser login flow.
@@ -91,6 +99,12 @@ var (
 	// ErrBrowserLaunchFailed means no system browser could be started. It is
 	// informational: the caller should show the URL and keep waiting.
 	ErrBrowserLaunchFailed = errors.New("could not open a system browser")
+	// ErrNativeCodeUnredeemable means a completed loopback login had its
+	// single-use code refused by the platform, and restarting the flow the
+	// bounded number of times did not produce a redeemable one. The identity
+	// provider's sign-in succeeded; the token exchange did not. No retry is
+	// possible from here — a fresh login is the only recovery.
+	ErrNativeCodeUnredeemable = errors.New("the sign-in code could not be redeemed")
 )
 
 // NativeAuthConfig is the "nativeAuth" object of GET /auth/config. It is absent
@@ -204,7 +218,40 @@ type callbackResult struct {
 //
 // The loopback listener is bound before the browser is opened (so the port in
 // the redirect is real) and torn down the moment the callback is answered.
+//
+// A completed login whose code the platform will not redeem is retried with a
+// fresh login, up to [nativeLoginAttempts] times. The platform stores each
+// single-use code on the API replica that finished the OIDC dance, so an
+// exchange that reaches a different replica (or a replica mid-fallback) fails
+// with invalid_code; its own handler treats that as "just restart the login",
+// which is what this loop does. The verifier, challenge, state and code are
+// regenerated every attempt — a used code is never re-sent. Cancelling the
+// context (or exhausting the timeout) aborts between attempts.
 func (c *Client) LoginBrowser(ctx context.Context, opts *BrowserLoginOptions) (*BrowserLogin, error) {
+	// One deadline covers every attempt: consent screens and MFA prompts take
+	// as long as the user takes, and a restart with a warm IdP session is far
+	// faster than the original dance.
+	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
+	defer cancel()
+
+	var lastErr error
+	for attempt := 1; attempt <= nativeLoginAttempts; attempt++ {
+		login, err := c.loginBrowserOnce(ctx, opts)
+		if err == nil {
+			return login, nil
+		}
+		lastErr = err
+		if !retryNativeExchange(err) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("kwclient: browser login: %w after %d attempts: %w; please try again", ErrNativeCodeUnredeemable, nativeLoginAttempts, lastErr)
+}
+
+// loginBrowserOnce runs one full RFC 8252 round trip: generate a fresh verifier
+// and state, bind a loopback listener, open the system browser, and exchange
+// the resulting single-use code for a session token.
+func (c *Client) loginBrowserOnce(ctx context.Context, opts *BrowserLoginOptions) (*BrowserLogin, error) {
 	verifier, err := newCodeVerifier()
 	if err != nil {
 		return nil, fmt.Errorf("kwclient: browser login: generate code verifier: %w", err)
@@ -229,9 +276,6 @@ func (c *Client) LoginBrowser(ctx context.Context, opts *BrowserLoginOptions) (*
 		"code_challenge_method": {"S256"},
 		"state":                 {state},
 	}).String()
-
-	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
-	defer cancel()
 
 	results, shutdown := serveLoopbackCallback(ln)
 	defer shutdown()
@@ -276,6 +320,26 @@ func (c *Client) LoginBrowser(ctx context.Context, opts *BrowserLoginOptions) (*
 	shutdown()
 
 	return c.exchangeNativeCode(ctx, res.code, verifier)
+}
+
+// retryNativeExchange reports whether a failed token exchange is worth another
+// full login attempt.
+//
+// The platform keeps each single-use code in a store the exchanging replica
+// must be able to read (per-replica in memory on older builds, with an
+// in-memory fallback on K8s outage even on Secret-backed builds), so invalid_code
+// does not mean the user did anything wrong — the exchange simply did not reach
+// a replica holding the code, or the 60-second code TTL lapsed. invalid_verifier
+// means the code was already consumed against a challenge we can no longer
+// reproduce. The API's own handler documents the recovery for both: "a failed
+// exchange just restarts the login". A fresh login is the only meaningful retry
+// because a used code can never be redeemed again.
+func retryNativeExchange(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Code == "invalid_code" || apiErr.Code == "invalid_verifier"
 }
 
 // exchangeNativeCode redeems a single-use authorization code for the session

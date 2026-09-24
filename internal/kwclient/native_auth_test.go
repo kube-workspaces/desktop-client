@@ -237,6 +237,14 @@ type nativeAuthServer struct {
 	errorRedirect string
 	// loginQuery records the query /auth/login was called with.
 	loginQuery url.Values
+	// logins counts POST... GET /auth/login calls, so a test can assert that a
+	// failed exchange restarted the flow.
+	logins int
+	// failExchanges, when > 0, makes the next N POST /auth/native/token calls
+	// answer invalid_code regardless of the code, like an exchange that lands
+	// on an API replica whose store does not hold the code. The store itself
+	// keeps issuing fresh codes, so a later attempt succeeds.
+	failExchanges int
 	// exchanges counts POST /auth/native/token calls.
 	exchanges int
 }
@@ -247,6 +255,7 @@ func newNativeAuthServer(t *testing.T) *nativeAuthServer {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		s.logins++
 		q := r.URL.Query()
 		s.loginQuery = q
 
@@ -279,6 +288,11 @@ func newNativeAuthServer(t *testing.T) *nativeAuthServer {
 	})
 	mux.HandleFunc("/auth/native/token", func(w http.ResponseWriter, r *http.Request) {
 		s.exchanges++
+		if s.failExchanges > 0 {
+			s.failExchanges--
+			writeJSONErrorBody(w, http.StatusBadRequest, "invalid_code", "unknown, expired or already used")
+			return
+		}
 		var body nativeTokenRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSONErrorBody(w, http.StatusBadRequest, "invalid_request", "bad body")
@@ -390,6 +404,76 @@ func TestLoginBrowserEndToEnd(t *testing.T) {
 	// And the port is closed again afterwards.
 	if _, err := http.Get(redirect.String()); err == nil {
 		t.Fatal("the loopback port is still open after a completed login")
+	}
+}
+
+// TestLoginBrowserRestartsAnUnredeemableCode covers the platform's documented
+// recovery for a code that cannot be redeemed (multi-replica API whose code
+// store lives per replica; 60-second code TTL): the client restarts the whole
+// RFC 8252 flow with a fresh verifier, state and code instead of showing the
+// raw invalid_code error.
+func TestLoginBrowserRestartsAnUnredeemableCode(t *testing.T) {
+	srv := newNativeAuthServer(t)
+	srv.failExchanges = 1 // first exchange lands on a replica without the code
+	c, err := New(srv.URL)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	var notified []string
+	got, err := c.LoginBrowser(context.Background(), &BrowserLoginOptions{
+		Timeout:     10 * time.Second,
+		openBrowser: browserFetch(t),
+		Notify:      func(u string, _ error) { notified = append(notified, u) },
+	})
+	if err != nil {
+		t.Fatalf("LoginBrowser() error = %v", err)
+	}
+	if got.Token != srv.token {
+		t.Fatalf("token = %q, want %q", got.Token, srv.token)
+	}
+	if srv.logins != 2 {
+		t.Fatalf("/auth/login called %d times, want 2 (a restart after the lost code)", srv.logins)
+	}
+	if srv.exchanges != 2 {
+		t.Fatalf("POST /auth/native/token called %d times, want 2", srv.exchanges)
+	}
+	if srv.failExchanges != 0 {
+		t.Fatalf("failExchanges = %d, want 0", srv.failExchanges)
+	}
+	if len(notified) != 2 {
+		t.Fatalf("Notify called %d times, want 2 (one authorize URL per attempt)", len(notified))
+	}
+}
+
+// TestLoginBrowserGivesUpAfterRepeatedFailures pins the failure mode when every
+// exchange is refused: the flow retries the bounded number of times and then
+// surfaces an error that wraps the last invalid_code, so the user is told the
+// sign-in could not be redeemed rather than given a bare server message.
+func TestLoginBrowserGivesUpAfterRepeatedFailures(t *testing.T) {
+	srv := newNativeAuthServer(t)
+	srv.failExchanges = 1000 // never redeemable
+	c, err := New(srv.URL)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = c.LoginBrowser(context.Background(), &BrowserLoginOptions{
+		Timeout:     10 * time.Second,
+		openBrowser: browserFetch(t),
+	})
+	if err == nil {
+		t.Fatal("persistently unredeemable codes were accepted")
+	}
+	if !strings.Contains(err.Error(), "could not be redeemed") {
+		t.Fatalf("error = %v, want an explanatory 'could not be redeemed' message", err)
+	}
+	if srv.logins != nativeLoginAttempts {
+		t.Fatalf("/auth/login called %d times, want %d", srv.logins, nativeLoginAttempts)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "invalid_code" {
+		t.Fatalf("error = %v, want the last failure unwrap to an invalid_code APIError", err)
 	}
 }
 
