@@ -186,16 +186,24 @@ func TestApplyRollbackRestoresBothFiles(t *testing.T) {
 			exe, child := filepath.Join(install, ShellBinary), filepath.Join(install, WebChildBinary)
 			put(t, exe, "old-shell")
 			put(t, child, "old-child")
+			// Apply resolves the install path through symlinks (macOS
+			// /var -> /private/var, Windows short-name expansion), so the
+			// post-swap verify must be compared against the same canonical
+			// path or the rollback branch never triggers.
+			installed, err := filepath.EvalSymlinks(exe)
+			if err != nil {
+				t.Fatal(err)
+			}
 			s := Staged{Shell: filepath.Join(stage, ShellBinary), WebChild: filepath.Join(stage, WebChildBinary), HasChild: true}
 			put(t, s.Shell, "new-shell")
 			put(t, s.WebChild, "new-child")
 			verify := func(binary, _ string) error {
-				if fail && binary == exe {
+				if fail && binary == installed {
 					return errors.New("installed check failed")
 				}
 				return nil
 			}
-			err := Apply(s, exe, "v1.2.3", verify)
+			err = Apply(s, exe, "v1.2.3", verify)
 			if (err != nil) != fail {
 				t.Fatalf("Apply: %v", err)
 			}
