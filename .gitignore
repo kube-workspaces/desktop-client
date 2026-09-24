@@ -8,6 +8,9 @@ dist/
 *.dylib
 /kube-workspaces
 
+# Updater transaction artefacts
+.pending-update
+
 # Test binary
 *.test
 
