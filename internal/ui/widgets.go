@@ -974,6 +974,14 @@ type List struct {
 
 	lastClickIndex int
 	lastClickAt    time.Time
+
+	// dragging is a thumb drag in flight: the primary button went down on the
+	// thumb and is still held, so Offset follows the pointer. dragGrab is how
+	// far below the thumb's top the pointer grabbed it, so the thumb tracks
+	// the pointer instead of jumping its head under the cursor on pickup.
+	// Both are valid only while dragging is true.
+	dragging bool
+	dragGrab int
 }
 
 // doubleClick is how close together two clicks on the same row have to be to
@@ -1073,6 +1081,10 @@ func (l *List) Layout(ctx *Context, r Rect, count int, row func(*Context, Rect, 
 
 	focused := ctx.register(l.ID, r)
 	activated := false
+	// sb is the scrollbar's hit band, empty while the list fits on screen. A
+	// gesture that begins there belongs to the scrollbar, not to a row, so row
+	// selection below refuses presses that started on it.
+	sb := l.scrollbarBand(r, rowH)
 
 	if ctx.Input.Hovering(r) && ctx.Input.Wheel.Y != 0 {
 		l.Scroll(-ctx.Input.Wheel.Y * orInt(l.WheelRows, 3))
@@ -1086,7 +1098,7 @@ func (l *List) Layout(ctx *Context, r Rect, count int, row func(*Context, Rect, 
 		}
 	}
 
-	if ctx.Input.ClickedIn(r) && rowH > 0 {
+	if ctx.Input.ClickedIn(r) && rowH > 0 && !sb.Contains(ctx.Input.PressOrigin.X, ctx.Input.PressOrigin.Y) {
 		if i := l.Offset + (ctx.Input.Mouse.Y-r.Y)/rowH; i >= 0 && i < count {
 			l.Select(i)
 			if l.lastClickIndex == i && !ctx.Input.Now.IsZero() &&
@@ -1120,26 +1132,92 @@ func (l *List) Layout(ctx *Context, r Rect, count int, row func(*Context, Rect, 
 	return activated
 }
 
-// drawScrollbar draws a thin proportional thumb on the right edge.
+// Scrollbar geometry. The drawn thumb is scrollbarWidth pixels wide; the hit
+// band is scrollbarHit, because a three-pixel strip is ungrabbable and
+// dragging is the point of a scrollbar.
+const (
+	scrollbarWidth = 3
+	scrollbarHit   = 8
+)
+
+// scrollbarBand is the right-edge strip of the list that answers to the
+// scrollbar, or an empty rect when the list fits on screen and has none. It
+// needs count and view from the current layout, so it is meaningful between
+// Layout calls like everything else on the List.
+func (l *List) scrollbarBand(r Rect, rowH int) Rect {
+	if l.count <= 0 || l.view <= 0 || rowH <= 0 || l.maxOffset() <= 0 {
+		return Rect{}
+	}
+	return Rect{X: r.X + r.W - scrollbarHit, Y: r.Y, W: scrollbarHit, H: l.view * rowH}
+}
+
+// drawScrollbar draws a thin proportional thumb on the right edge and drives
+// it.
 //
-// It is an indicator, not a control: it is two pixels wide and cannot be
-// dragged. A list this size is navigated with the wheel and the arrow keys,
-// and a draggable scrollbar would be a hit-testing surface to maintain for a
-// gesture nobody would use.
+// The thumb is a control, not merely an indicator: pressing it drags the
+// view, and pressing the track below or above it pages toward the press, as
+// a mouse user expects of a scrollbar. The hit band is wider than the drawn
+// thumb so the strip is grabbable, and a gesture that begins there is
+// excluded from row selection by [List.Layout].
 func (l *List) drawScrollbar(ctx *Context, r Rect, rowH int) {
 	if l.count <= 0 || l.view <= 0 || rowH <= 0 {
+		l.dragging = false
 		return
 	}
-	const width = 3
+
+	maxOff := l.maxOffset()
 	trackH := l.view * rowH
 	thumbH := max(rowH/2, trackH*l.view/l.count)
 	span := trackH - thumbH
-	y := r.Y
-	if maxOff := l.maxOffset(); maxOff > 0 {
-		y += span * l.Offset / maxOff
+	thumbY := r.Y
+	if maxOff > 0 && span > 0 {
+		thumbY += span * l.Offset / maxOff
 	}
-	ctx.Canvas.FillRounded(Rect{X: r.X + r.W - width, Y: y, W: width, H: thumbH},
-		width/2, ctx.Theme.BorderStrong)
+	track := Rect{X: r.X + r.W - scrollbarHit, Y: r.Y, W: scrollbarHit, H: trackH}
+	thumb := Rect{X: track.X + track.W - scrollbarWidth, Y: thumbY, W: scrollbarWidth, H: thumbH}
+
+	// A release ends any in-flight drag whether or not it lands on the bar:
+	// the button going up is the gesture ending, and the next drag starts afresh.
+	if ctx.Input.Released {
+		l.dragging = false
+	}
+
+	switch {
+	case l.dragging && ctx.Input.Down:
+		// The thumb follows the pointer, pinned under wherever it was grabbed
+		// and climbing nothing past either end of the track.
+		top := ctx.Input.Mouse.Y - l.dragGrab - r.Y
+		l.Offset = clampInt((top*maxOff+span/2)/span, 0, maxOff)
+
+	case ctx.Input.PressedIn(track):
+		switch {
+		case ctx.Input.Mouse.Y < thumbY || ctx.Input.Mouse.Y >= thumbY+thumbH:
+			// A press on the track pages toward the press: one page is what a
+			// mouse user expects of the strip around the thumb, and it keeps
+			// the anchor row on screen.
+			delta := l.view - 1
+			if ctx.Input.Mouse.Y < thumbY {
+				delta = -delta
+			}
+			l.Scroll(delta)
+
+		default:
+			// Grabbing the thumb pins the pointer's offset inside it so it
+			// does not jump its head under the cursor on pickup.
+			l.dragging = true
+			l.dragGrab = ctx.Input.Mouse.Y - thumbY
+		}
+	}
+
+	col := ctx.Theme.BorderStrong
+	if l.dragging || ctx.Input.Hovering(track) {
+		// The same accent the rest of the UI uses for a hovered control, so
+		// the bar reads as something alive and grabbable.
+		col = ctx.Theme.AccentHover
+	}
+	if thumbH > 0 {
+		ctx.Canvas.FillRounded(thumb, scrollbarWidth/2, col)
+	}
 }
 
 // maxOffset is the largest first-visible-row index that still fills the view.

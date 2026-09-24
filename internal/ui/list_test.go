@@ -250,3 +250,79 @@ func TestListDrawsOnlyVisibleRows(t *testing.T) {
 		t.Fatalf("drew %d rows of 1000; a list must not rasterise what is off screen", len(h.drawn))
 	}
 }
+
+func TestListScrollbarDragScrollsTheView(t *testing.T) {
+	h := newListHarness(20)
+	h.step()
+	if h.list.Selected != 0 {
+		t.Fatalf("initial selection %d, want 0", h.list.Selected)
+	}
+
+	// Grab the thumb at the top of the track (offset 0, thumb spans the first
+	// 25px) and drag it halfway down: with a 75px span over 15 offsets that
+	// landing puts the view at row 9, and it must not touch the selection.
+	h.step(pointer(listRect.W-4, 5, true))
+	h.step(pointer(listRect.W-4, 50, true))
+	if h.list.Offset != 9 {
+		t.Fatalf("dragging to mid-track left offset %d, want 9", h.list.Offset)
+	}
+	if h.list.Selected != 0 {
+		t.Fatalf("dragging the scrollbar moved the selection to %d", h.list.Selected)
+	}
+
+	// Still held, the thumb keeps following the pointer and clamps at both
+	// ends of the track.
+	h.step(pointer(listRect.W-4, 200, true))
+	if h.list.Offset != 15 {
+		t.Fatalf("dragging past the bottom left offset %d, want %d", h.list.Offset, 15)
+	}
+	h.step(pointer(listRect.W-4, 0, true))
+	if h.list.Offset != 0 {
+		t.Fatalf("dragging past the top left offset %d, want 0", h.list.Offset)
+	}
+
+	// Releasing where the gesture began ends it without selecting a row.
+	h.step(pointer(listRect.W-4, 0, false))
+	if h.list.Selected != 0 || h.activated != 0 {
+		t.Fatalf("releasing a drag selected row %d with %d activations", h.list.Selected, h.activated)
+	}
+}
+
+func TestListScrollbarTrackClickPages(t *testing.T) {
+	h := newListHarness(20)
+	h.step()
+
+	// Pressing the track below the thumb (which covers 0..25 at offset 0)
+	// pages down one view, anchoring the row the user was looking at.
+	h.step(pointer(listRect.W-4, 90, true))
+	h.step(pointer(listRect.W-4, 90, false))
+	if h.list.Offset != 4 {
+		t.Fatalf("track click left offset %d, want 4", h.list.Offset)
+	}
+	if h.list.Selected != 0 {
+		t.Fatalf("track click moved the selection to %d", h.list.Selected)
+	}
+
+	// Above the thumb it pages back, as far as the start.
+	h.step(pointer(listRect.W-4, 5, true))
+	h.step(pointer(listRect.W-4, 5, false))
+	if h.list.Offset != 0 {
+		t.Fatalf("reverse track click left offset %d, want 0", h.list.Offset)
+	}
+}
+
+func TestListWithoutOverflowHasNoScrollbar(t *testing.T) {
+	h := newListHarness(2)
+	h.step()
+
+	// With every row visible there is no scrollbar and no hit band, so the
+	// right edge is just a row: clicking there selects it.
+	h.step(pointer(listRect.W-2, listRowHeight+5, true))
+	h.step(pointer(listRect.W-2, listRowHeight+5, false))
+	if h.list.Selected != 1 {
+		t.Fatalf("clicking the right edge selected %d, want 1", h.list.Selected)
+	}
+	if h.activated != 0 {
+		t.Fatal("a single click at the right edge activated a row")
+	}
+}
