@@ -15,7 +15,7 @@ func TestStylesAndModesRoundTrip(t *testing.T) {
 			t.Fatalf("ParseStyle(%q) = %v, %t, want %v", style.String(), got, ok, style)
 		}
 	}
-	for _, mode := range []Mode{ModeDark, ModeLight} {
+	for _, mode := range []Mode{ModeDark, ModeLight, ModeSystem} {
 		if got, ok := ParseMode(mode.String()); !ok || got != mode {
 			t.Fatalf("ParseMode(%q) = %v, %t, want %v", mode.String(), got, ok, mode)
 		}
@@ -103,6 +103,13 @@ func TestLightModeIsDistinctFromDark(t *testing.T) {
 	}
 	if light.Background == Transparent {
 		t.Fatal("light mode has no background")
+	}
+	// ModeSystem is a resolution instruction, not a palette. A caller that
+	// fails to resolve it draws the historic default rather than a made-up
+	// scheme — the shell resolves the mode before it ever reaches ThemeFor.
+	system := ThemeFor(StyleBubbly, ModeSystem)
+	if system.Background != dark.Background {
+		t.Fatal("an unresolved system mode must fall back to the default dark scheme")
 	}
 }
 

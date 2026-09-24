@@ -157,6 +157,20 @@ func TestFoldTracksQuitAndResize(t *testing.T) {
 	}
 }
 
+func TestFoldTracksSystemThemeChange(t *testing.T) {
+	var zero Input
+	if zero.SystemThemeChanged {
+		t.Fatal("a fresh input reports a theme change")
+	}
+	in := zero.Fold(epoch, []Event{EventSystemTheme{}})
+	if !in.SystemThemeChanged {
+		t.Fatal("the theme change edge was not tracked")
+	}
+	if in := in.Fold(epoch, nil); in.SystemThemeChanged {
+		t.Fatal("the theme change edge survived an empty frame")
+	}
+}
+
 func TestHitTestHelpers(t *testing.T) {
 	r := Rect{X: 10, Y: 10, W: 20, H: 20}
 
@@ -410,5 +424,10 @@ func TestIdle(t *testing.T) {
 	// key press behind it. A frame skipped here leaves the field stale.
 	if typed := zero.Fold(epoch, []Event{text("漢字")}); typed.Idle() {
 		t.Fatal("committed text is not idle")
+	}
+	// A platform theme change must reach the drawing code: the frame a scheme
+	// flips is exactly the frame that has to repaint.
+	if theme := zero.Fold(epoch, []Event{EventSystemTheme{}}); theme.Idle() {
+		t.Fatal("a system theme change is not idle")
 	}
 }

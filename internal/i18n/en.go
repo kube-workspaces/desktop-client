@@ -191,6 +191,7 @@ var english = map[string]string{
 	"settings.retro":    "Retro",
 	"settings.clean":    "Clean",
 	"settings.colours":  "COLOURS",
+	"settings.system":   "System",
 	"settings.dark":     "Dark",
 	"settings.light":    "Light",
 	"settings.size":     "INTERFACE SIZE",

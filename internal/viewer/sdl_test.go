@@ -343,6 +343,22 @@ func TestTranslateDropsPreEditText(t *testing.T) {
 	}
 }
 
+// TestTranslateDispatchesSystemTheme: a platform scheme change is a global
+// SDL event (no window ID), so foreign() cannot swallow it; the backend must
+// surface it or the shell would keep the old colours until the user restarts.
+func TestTranslateDispatchesSystemTheme(t *testing.T) {
+	b := NewSDLBackend()
+	b.event = sdl.Event{Type: sdl.EVENT_SYSTEM_THEME_CHANGED}
+	got := b.translate(nil)
+
+	if len(got) != 1 {
+		t.Fatalf("translate produced %d events, want 1", len(got))
+	}
+	if _, ok := got[0].(EventSystemTheme); !ok {
+		t.Fatalf("translate produced %T, want EventSystemTheme", got[0])
+	}
+}
+
 // usLayout is enough of a US keyboard layout to type a server URL, keyed by
 // physical key and giving the unshifted and shifted characters.
 var usLayout = map[sdl.Scancode][2]sdl.Keycode{

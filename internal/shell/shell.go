@@ -474,6 +474,13 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 		a.refreshTheme()
 		a.recordGeometry(now)
 	}
+	if a.in.SystemThemeChanged {
+		// The platform flipped its light/dark scheme while the client was
+		// running. Re-resolving picks the new scheme up; refreshTheme is
+		// cheap enough to run on the change rather than tracking which
+		// mode changed.
+		a.refreshTheme()
+	}
 
 	if a.m.State == StateSession {
 		return a.runSession(ctx)

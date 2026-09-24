@@ -1136,6 +1136,7 @@ const (
 	idStyleBubbly  ui.FocusID = "style-bubbly"
 	idStyleRetro   ui.FocusID = "style-retro"
 	idStyleClean   ui.FocusID = "style-clean"
+	idModeSystem   ui.FocusID = "mode-system"
 	idModeDark     ui.FocusID = "mode-dark"
 	idModeLight    ui.FocusID = "mode-light"
 	idScaleAuto    ui.FocusID = "scale-auto"

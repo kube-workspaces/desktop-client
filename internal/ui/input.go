@@ -111,6 +111,13 @@ type Input struct {
 
 	// ClipboardChanged reports that the host clipboard may have changed.
 	ClipboardChanged bool
+
+	// SystemThemeChanged is an edge reporting that the platform reported a
+	// change to its colour scheme in this batch. It describes the change, not
+	// the value: a shell following the platform asks its backend for the
+	// current scheme when it acts on it, so the choice is made against the
+	// freshest value the platform has rather than one that is a frame stale.
+	SystemThemeChanged bool
 }
 
 // Fold returns in updated with a batch of backend events applied.
@@ -124,6 +131,7 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 	out.Wheel = Point{}
 	out.Resized = false
 	out.ClipboardChanged = false
+	out.SystemThemeChanged = false
 	out.Keys = nil
 	out.Edits = nil
 
@@ -191,6 +199,9 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 
 		case EventClipboard:
 			out.ClipboardChanged = true
+
+		case EventSystemTheme:
+			out.SystemThemeChanged = true
 		}
 	}
 	return out
@@ -206,7 +217,7 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 // text from before.
 func (in Input) Idle() bool {
 	return !in.Pressed && !in.Released && !in.Resized && !in.Quit &&
-		in.Wheel == (Point{}) && len(in.Edits) == 0
+		in.Wheel == (Point{}) && len(in.Edits) == 0 && !in.SystemThemeChanged
 }
 
 // Hovering reports whether the pointer is inside r.

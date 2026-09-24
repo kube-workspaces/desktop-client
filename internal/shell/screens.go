@@ -359,7 +359,8 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 }
 
 // drawSettingsScreen is where the client's own appearance is chosen: the font
-// style and the dark/light colours, both remembered between runs.
+// style and the colour scheme — a concrete one, or "follow the system" —
+// both remembered between runs.
 //
 // Every choice is applied and saved at the moment it is made, so the screen
 // doubles as a live preview and closing the window a second later cannot lose
@@ -399,17 +400,14 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 		Color: th.TextMuted, Scale: th.Small,
 	})
 	modeRow := body.Next(th.ControlHeight)
-	modeOpts := []styleOption{{id: idModeDark, label: i18n.Get("settings.dark")}, {id: idModeLight, label: i18n.Get("settings.light")}}
-	modeIdx := 0
-	if a.settings.Mode == ui.ModeLight {
-		modeIdx = 1
+	modeOpts := []styleOption{
+		{id: idModeSystem, label: i18n.Get("settings.system")},
+		{id: idModeDark, label: i18n.Get("settings.dark")},
+		{id: idModeLight, label: i18n.Get("settings.light")},
 	}
+	modeIdx := modeIndex(a.settings.Mode)
 	if picked := a.drawChoice(ctx, modeRow, modeIdx, modeOpts); picked != modeIdx {
-		mode := ui.ModeDark
-		if picked == 1 {
-			mode = ui.ModeLight
-		}
-		a.applySettings(Settings{Style: a.settings.Style, Mode: mode, UIScale: a.settings.UIScale})
+		a.applySettings(Settings{Style: a.settings.Style, Mode: modeFromIndex(picked), UIScale: a.settings.UIScale})
 		a.saveSettings()
 	}
 
@@ -499,6 +497,32 @@ func styleFromIndex(i int) ui.Style {
 		return ui.StyleRetro
 	default:
 		return ui.StyleClean
+	}
+}
+
+// modeIndex maps a mode to its position in the settings screen's row, and its
+// inverse modeFromIndex maps the row back. The row leads with "follow the
+// system" because it is the default; the two concrete schemes follow in the
+// historic order.
+func modeIndex(m ui.Mode) int {
+	switch m {
+	case ui.ModeDark:
+		return 1
+	case ui.ModeLight:
+		return 2
+	default:
+		return 0
+	}
+}
+
+func modeFromIndex(i int) ui.Mode {
+	switch i {
+	case 1:
+		return ui.ModeDark
+	case 2:
+		return ui.ModeLight
+	default:
+		return ui.ModeSystem
 	}
 }
 

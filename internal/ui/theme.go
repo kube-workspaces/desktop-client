@@ -61,12 +61,21 @@ func ParseStyle(s string) (Style, bool) {
 }
 
 // Mode selects the light or dark colour scheme.
+//
+// ModeSystem is not itself a colour scheme: it is the instruction to follow
+// the platform's. Whether a platform reports one, and what it is, is a backend
+// concern ([viewer.SystemThemeProvider]), and resolving the mode into a scheme
+// is the shell's — nothing below this file draws a "system" palette, because
+// there is no such thing. Falling through to dark in [palette] when the mode
+// reaches it unresolved is deliberate: it is the client's historic default,
+// and a platform with no opinion keeps the look it always had.
 type Mode int
 
 // The modes. ModeDark matches the palette the client launched with.
 const (
 	ModeDark Mode = iota
 	ModeLight
+	ModeSystem
 )
 
 // String implements fmt.Stringer and is also the name persisted in config.
@@ -76,6 +85,8 @@ func (m Mode) String() string {
 		return "dark"
 	case ModeLight:
 		return "light"
+	case ModeSystem:
+		return "system"
 	default:
 		return "dark"
 	}
@@ -89,6 +100,8 @@ func ParseMode(s string) (Mode, bool) {
 		return ModeDark, true
 	case "light":
 		return ModeLight, true
+	case "system":
+		return ModeSystem, true
 	default:
 		return ModeDark, false
 	}
@@ -188,8 +201,9 @@ func ThemeFor(style Style, mode Mode) *Theme {
 }
 
 // DefaultTheme returns the client's default look: the bubbly style in dark
-// mode. It is what an unconfigured client opens with, which is why
-// "bubbly, dark" is also the fallback for settings that name nothing.
+// mode. It is the placeholder used until settings apply, and the fallback for
+// settings that name nothing; a shell configured to follow the system
+// ([ModeSystem]) replaces it with the resolved scheme at startup.
 func DefaultTheme() *Theme { return ThemeFor(StyleBubbly, ModeDark) }
 
 // QuantizeUIScale maps a display content scale to one of the steps the theme
@@ -257,6 +271,10 @@ func scalePx(v int, factor float64) int {
 // palette returns the colours for a mode, with the retro metrics baked in so
 // that StyleRetro is exactly the original theme — a user who switches back
 // should get back the interface they had, pixel for pixel.
+//
+// ModeSystem resolves to dark here too, but only as a guard: mode resolution
+// is the shell's job, and this fallback is what a caller that forgets that
+// would draw for — the historic default, never a surprise palette.
 func palette(mode Mode) Theme {
 	if mode == ModeLight {
 		return lightPalette()

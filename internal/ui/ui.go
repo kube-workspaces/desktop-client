@@ -69,6 +69,8 @@ type (
 	EventQuit = viewer.EventQuit
 	// EventClipboard reports that the host clipboard may have changed.
 	EventClipboard = viewer.EventClipboard
+	// EventSystemTheme reports that the platform's colour scheme changed.
+	EventSystemTheme = viewer.EventSystemTheme
 
 	// Buttons is a pointer button mask; see [viewer.Buttons].
 	Buttons = viewer.Buttons

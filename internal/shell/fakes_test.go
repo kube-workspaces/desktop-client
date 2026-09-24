@@ -66,6 +66,12 @@ type fakeBackend struct {
 	audioFormat viewer.AudioFormat
 	audioPlayed [][]byte
 	audioErr    error
+
+	// systemTheme is the platform colour scheme the fake reports through
+	// SystemTheme. Zero is viewer.SystemThemeUnknown, the "platform has no
+	// opinion" state, which is what an unconfigured client should pretend
+	// every test machine is unless a test says otherwise.
+	systemTheme viewer.SystemTheme
 }
 
 func newFakeBackend(w, h int) *fakeBackend {
@@ -150,6 +156,14 @@ func (f *fakeBackend) CloseAudio() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.audioCloses++
+}
+
+// SystemTheme reports the platform scheme the test set, defaulting to unknown
+// (no opinion) so a client unconfigured to follow it resolves to dark.
+func (f *fakeBackend) SystemTheme() viewer.SystemTheme {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.systemTheme
 }
 
 // WaitEvents blocks until an event is queued, a wake arrives, or the timeout
@@ -291,6 +305,7 @@ func (f *fakeBackend) send(events ...viewer.Event) {
 
 var _ viewer.Backend = (*fakeBackend)(nil)
 var _ viewer.AudioSink = (*fakeBackend)(nil)
+var _ viewer.SystemThemeProvider = (*fakeBackend)(nil)
 
 // fakeAPI is an [API] that answers from fields instead of a network.
 type fakeAPI struct {

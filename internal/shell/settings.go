@@ -8,6 +8,7 @@ import (
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
 // Settings is the client's own appearance as the shell understands it: typed,
@@ -30,8 +31,13 @@ type Settings struct {
 // DefaultSettings is what a client with no recorded preferences uses. It is
 // also what every unknown value in a stored settings block falls back to, so a
 // config written by a future version never crashes a current one.
+//
+// The default mode is "follow the platform": an unconfigured client looks like
+// the desktop it is running on. A platform that reports no scheme — or a
+// backend that cannot say — resolves to dark, the look this client launched
+// with, so the default is only visibly different on a desktop that is light.
 func DefaultSettings() Settings {
-	return Settings{Style: ui.StyleBubbly, Mode: ui.ModeDark}
+	return Settings{Style: ui.StyleBubbly, Mode: ui.ModeSystem}
 }
 
 // uiScaleSteps are the pinned scales the settings screen offers, in row
@@ -89,10 +95,30 @@ func (a *App) interfaceScale() float64 {
 // read and the Options the screen functions read — and this keeps them the
 // same pointer, as [App.New] did when it built them.
 func (a *App) refreshTheme() {
-	th := ui.ThemeFor(a.settings.Style, a.settings.Mode).Scaled(a.interfaceScale())
+	th := ui.ThemeFor(a.settings.Style, a.resolveMode()).Scaled(a.interfaceScale())
 	a.opts.Theme = th
 	a.ctx.Theme = th
 	a.dirty = true
+}
+
+// resolveMode turns the stored preference into the concrete mode the theme is
+// built from. ModeSystem is an instruction, not a scheme: it names the
+// platform's preference, read from the backend's [viewer.SystemThemeProvider]
+// capability when there is one. Unknown — no capability, or a platform that
+// does not report — resolves to dark, the client's historic default.
+func (a *App) resolveMode() ui.Mode {
+	if a.settings.Mode != ui.ModeSystem {
+		return a.settings.Mode
+	}
+	if p, ok := a.be.(viewer.SystemThemeProvider); ok {
+		switch p.SystemTheme() {
+		case viewer.SystemThemeLight:
+			return ui.ModeLight
+		case viewer.SystemThemeDark:
+			return ui.ModeDark
+		}
+	}
+	return ui.ModeDark
 }
 
 // applySettings installs the appearance for the given settings and asks for a

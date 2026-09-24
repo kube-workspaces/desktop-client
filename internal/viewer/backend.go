@@ -362,6 +362,32 @@ type AudioFormat struct {
 	LittleEndian bool
 }
 
+// SystemTheme is the colour scheme the platform currently reports, as far as
+// the desktop environment will say. Unknown covers platforms that do not
+// expose one at all and environments that only ever report one value.
+type SystemTheme int
+
+// The system themes, in the order SDL reports them.
+const (
+	SystemThemeUnknown SystemTheme = iota
+	SystemThemeLight
+	SystemThemeDark
+)
+
+// SystemThemeProvider is an optional [Backend] capability: when a backend
+// implements it, the shell can follow the platform's light/dark preference
+// instead of asking the user to choose. A backend that does not implement it
+// simply never names a platform scheme, and the shell falls back to its own
+// default.
+//
+// Theme follows the same concurrency contract as the rest of [Backend]: every
+// call is made from the goroutine that owns the window, never alongside a call
+// from any other goroutine.
+type SystemThemeProvider interface {
+	// SystemTheme returns the platform's current colour scheme.
+	SystemTheme() SystemTheme
+}
+
 // AudioSink is an optional [Backend] capability: when a backend implements it,
 // the viewer enables guest audio and streams PCM through it.
 //
@@ -479,11 +505,18 @@ type EventFocus struct {
 // never send it, and the viewer polls regardless.
 type EventClipboard struct{}
 
-func (EventQuit) isViewerEvent()      {}
-func (EventKey) isViewerEvent()       {}
-func (EventText) isViewerEvent()      {}
-func (EventPointer) isViewerEvent()   {}
-func (EventWheel) isViewerEvent()     {}
-func (EventResize) isViewerEvent()    {}
-func (EventFocus) isViewerEvent()     {}
-func (EventClipboard) isViewerEvent() {}
+// EventSystemTheme reports that the platform reported a change to its colour
+// scheme. It is a change notification, not the value itself: a shell tracking
+// the theme asks [SystemThemeProvider.SystemTheme] when it acts on it, because
+// the payload would otherwise be stale by the frame it was drawn.
+type EventSystemTheme struct{}
+
+func (EventQuit) isViewerEvent()        {}
+func (EventKey) isViewerEvent()         {}
+func (EventText) isViewerEvent()        {}
+func (EventPointer) isViewerEvent()     {}
+func (EventWheel) isViewerEvent()       {}
+func (EventResize) isViewerEvent()      {}
+func (EventFocus) isViewerEvent()       {}
+func (EventClipboard) isViewerEvent()   {}
+func (EventSystemTheme) isViewerEvent() {}

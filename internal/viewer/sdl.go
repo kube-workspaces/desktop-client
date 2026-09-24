@@ -799,6 +799,22 @@ func sdlAudioFormat(f AudioFormat) (sdl.AudioFormat, error) {
 	return 0, fmt.Errorf("viewer: unsupported audio depth of %d bytes per sample", f.BytesPerSample)
 }
 
+// SystemTheme reports the platform's current colour scheme. SDL returns UNKNOWN
+// for platforms that do not offer one — a bare window manager, an environment
+// pinned to one mode, a headless test — and that is passed through rather than
+// guessed at: the shell's own default is dark, and it is better for a desktop
+// with no opinion to keep that than for this back end to invent one.
+func (b *SDLBackend) SystemTheme() SystemTheme {
+	switch sdl.GetSystemTheme() {
+	case sdl.SYSTEM_THEME_LIGHT:
+		return SystemThemeLight
+	case sdl.SYSTEM_THEME_DARK:
+		return SystemThemeDark
+	default:
+		return SystemThemeUnknown
+	}
+}
+
 // PollEvents drains the SDL event queue, translating each event into a
 // backend-neutral one. Events with no equivalent are dropped here rather than
 // leaking an SDL concept into the viewer.
@@ -969,6 +985,13 @@ func (b *SDLBackend) translate(dst []Event) []Event {
 
 	case sdl.EVENT_CLIPBOARD_UPDATE:
 		dst = append(dst, EventClipboard{})
+
+	case sdl.EVENT_SYSTEM_THEME_CHANGED:
+		// A global event: the platform's light/dark scheme changed, and any
+		// shell window that follows it has to re-resolve. The current value is
+		// read via [SDLBackend.SystemTheme] at that point, not carried here —
+		// by the time the shell acts on it the report would be stale anyway.
+		dst = append(dst, EventSystemTheme{})
 
 	case wakeEventType:
 		// A wake from another goroutine. Its only job was to end the wait it

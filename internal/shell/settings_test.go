@@ -11,20 +11,29 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
-func TestDefaultSettingsAreBubblyDark(t *testing.T) {
+func TestDefaultSettingsFollowTheSystemAndFallBackToDark(t *testing.T) {
 	r := newRig(nil, "")
 	r.start()
 
 	if r.app.settings != DefaultSettings() {
-		t.Fatalf("an unconfigured client used %+v, want bubbly/dark", r.app.settings)
+		t.Fatalf("an unconfigured client used %+v, want %+v", r.app.settings, DefaultSettings())
 	}
-	// The whole shell draws with the theme the settings name: the Context the
-	// widgets read and the Options the screens read must be the same look.
+	if r.app.settings.Mode != ui.ModeSystem {
+		t.Fatalf("an unconfigured client should follow the platform, not pin a scheme: %+v", r.app.settings)
+	}
+	// The test backend has no opinion (unknown scheme), so the default
+	// resolves to the look this client has always launched with. The style
+	// part of the default is bubbly, whatever the scheme does.
 	th := r.app.opts.Theme
 	if th.Body != 2 || th.Radius != 2 {
 		t.Fatalf("the default client is not bubbly (body=%d radius=%d)", th.Body, th.Radius)
+	}
+	darkBg := color.RGBA{R: 0x14, G: 0x16, B: 0x1a, A: 0xff}
+	if th.Background != darkBg {
+		t.Fatalf("an unknown platform scheme resolved to %v, want dark", th.Background)
 	}
 	if r.app.ctx.Theme != th {
 		t.Fatal("the Context and the Options disagree about the theme")
@@ -59,6 +68,82 @@ func TestUnknownSettingsFallBackToDefaults(t *testing.T) {
 
 	if r.app.settings != DefaultSettings() {
 		t.Fatalf("a settings block naming nothing produced %+v", r.app.settings)
+	}
+}
+
+func TestSystemModeResolvesThePlatformScheme(t *testing.T) {
+	lightBg := color.RGBA{R: 0xf6, G: 0xf7, B: 0xf9, A: 0xff}
+	darkBg := color.RGBA{R: 0x14, G: 0x16, B: 0x1a, A: 0xff}
+	for _, tc := range []struct {
+		name  string
+		theme viewer.SystemTheme
+		want  color.RGBA
+	}{
+		{"light", viewer.SystemThemeLight, lightBg},
+		{"dark", viewer.SystemThemeDark, darkBg},
+		{"unknown", viewer.SystemThemeUnknown, darkBg},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(nil, "")
+			r.be.systemTheme = tc.theme
+			r.start()
+
+			if got := r.app.opts.Theme.Background; got != tc.want {
+				t.Fatalf("platform scheme resolved to %v, want %v", got, tc.want)
+			}
+			// Following the platform must not touch the stored preference:
+			// the mode stays "system", ready to re-resolve next launch.
+			if r.app.settings.Mode != ui.ModeSystem {
+				t.Fatalf("resolving the platform changed the stored mode to %v", r.app.settings.Mode)
+			}
+		})
+	}
+}
+
+func TestPinnedModeOverridesThePlatform(t *testing.T) {
+	// Following the system is the default, not a user's choice to override:
+	// someone who explicitly picked light keeps light while the platform is
+	// dark, and the same on the other side.
+	r := newRig(nil, "")
+	r.store.settings = config.Settings{Style: "bubbly", Mode: "light"}
+	r.be.systemTheme = viewer.SystemThemeDark
+	r.start()
+
+	if r.app.settings.Mode != ui.ModeLight {
+		t.Fatalf("a stored light mode was not honoured: %+v", r.app.settings)
+	}
+	lightBg := color.RGBA{R: 0xf6, G: 0xf7, B: 0xf9, A: 0xff}
+	if got := r.app.opts.Theme.Background; got != lightBg {
+		t.Fatalf("an explicit light mode resolved to %v under a dark platform", got)
+	}
+}
+
+func TestSystemThemeChangeFollowsWhileRunning(t *testing.T) {
+	lightBg := color.RGBA{R: 0xf6, G: 0xf7, B: 0xf9, A: 0xff}
+	darkBg := color.RGBA{R: 0x14, G: 0x16, B: 0x1a, A: 0xff}
+
+	r := newRig(nil, "")
+	r.start()
+	if got := r.app.opts.Theme.Background; got != darkBg {
+		t.Fatalf("setup failed: an unknown scheme resolved to %v, want dark", got)
+	}
+
+	// The platform flips to light while the client is running. SDL would
+	// deliver the event and answer the re-query with the new value; the fake
+	// stands in for both.
+	r.be.systemTheme = viewer.SystemThemeLight
+	r.be.send(viewer.EventSystemTheme{})
+	r.settle()
+	if got := r.app.opts.Theme.Background; got != lightBg {
+		t.Fatalf("the running client did not follow the platform to light (background=%v)", got)
+	}
+
+	// And back to dark, the same way.
+	r.be.systemTheme = viewer.SystemThemeDark
+	r.be.send(viewer.EventSystemTheme{})
+	r.settle()
+	if got := r.app.opts.Theme.Background; got != darkBg {
+		t.Fatalf("the running client did not follow the platform back to dark (background=%v)", got)
 	}
 }
 
