@@ -520,22 +520,31 @@ jobs:
             > /tmp/changelog.md
           cat /tmp/changelog.md >> /tmp/release-notes.md
 
+          # Hand-authored capability text goes stale the moment a feature (or
+          # breaking) release lands, so only emit "What works"/"What does not"
+          # when nothing feature or breaking is in this range. Whether there is
+          # shows up in the Summary the generator just emitted above.
+          if ! grep -qE 'feature\(s\)|breaking' /tmp/changelog.md; then
+            {
+              echo "## What works"
+              echo
+              echo "Sign-in (browser OIDC via RFC 8252 loopback + PKCE, or local accounts),"
+              echo "workspace discovery, VM display sessions"
+              echo "(Raw/CopyRect/RRE/Hextile/Zlib/Tight/ZRLE with adaptive quality), guest audio"
+              echo "playback (QEMU audio extension, Opus over Tier 1), keyboard/mouse/scroll wheel,"
+              echo "bidirectional clipboard, guest display resize, automatic reconnect, interactive"
+              echo "Tier 1 sessions (in-guest Selkies agent, H.264/Opus) with fallback schemes, and"
+              echo "container/scratch workspaces opening in the embedded webview child."
+              echo
+              echo "## What does not"
+              echo
+              echo "- **One session at a time per VM.** The hypervisor display is single-session"
+              echo "  server-side; the client can open multiple windows for different VMs."
+              echo "- No HiDPI scaling, no text selection in input fields, ASCII-only text."
+            } >> /tmp/release-notes.md
+          fi
+
           {
-            echo "## What works"
-            echo
-            echo "Sign-in (browser OIDC via RFC 8252 loopback + PKCE, or local accounts),"
-            echo "workspace discovery, VM display sessions (Raw/CopyRect/RRE/Hextile/Zlib/Tight/ZRLE"
-            echo "with adaptive quality), guest audio playback (QEMU audio extension, Opus over Tier 1),"
-            echo "keyboard/mouse/scroll wheel, bidirectional clipboard, guest display resize,"
-            echo "automatic reconnect, interactive Tier 1 sessions (in-guest Selkies agent,"
-            echo "H.264/Opus) with fallback schemes, and container/scratch workspaces opening in the"
-            echo "embedded webview child."
-            echo
-            echo "## What does not"
-            echo
-            echo "- **One session at a time per VM.** The hypervisor display is single-session"
-            echo "  server-side; the client can open multiple windows for different VMs."
-            echo "- No HiDPI scaling, no text selection in input fields, ASCII-only text."
             echo
             echo "## Known caveats"
             echo
