@@ -3,11 +3,14 @@ package shell
 import (
 	"context"
 	"errors"
+	"image"
+	"image/color"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/update"
 )
 
@@ -111,4 +114,63 @@ func TestRestartUpdatePreservesHeldSessions(t *testing.T) {
 	if r.app.quit || r.app.updates.prepared == nil {
 		t.Fatal("failed handoff lost the stage or quit")
 	}
+}
+
+func TestUpdateUpToDateShowsGreenTick(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	u := &fakeUpdater{}
+	r.app.opts.Version = "v1.2.3" // equal to the fixture tag: nothing newer
+	r.app.opts.Updater = u
+	r.start()
+	r.settle()
+
+	if r.app.updates.result.Available || !r.app.updates.upToDate {
+		t.Fatalf("update state = available:%v upToDate:%v, want up to date",
+			r.app.updates.result.Available, r.app.updates.upToDate)
+	}
+	if r.app.updates.status != i18n.Get("updates.upToDate") {
+		t.Fatalf("status = %q, want %q", r.app.updates.status, i18n.Get("updates.upToDate"))
+	}
+
+	r.app.act(context.Background(), intent{kind: intentUpdates})
+	r.settle()
+	if r.app.m.State != StateUpdates {
+		t.Fatalf("updates screen did not open (state=%v)", r.app.m.State)
+	}
+	if !containsColor(r.app.img, r.app.opts.Theme.Success) {
+		t.Fatalf("no green tick drawn next to the up-to-date status")
+	}
+}
+
+func TestUpdateAvailableDrawsNoTick(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	u := &fakeUpdater{}
+	r.app.opts.Version = "v1.0.0"
+	r.app.opts.Updater = u
+	r.start()
+	r.settle()
+
+	if !r.app.updates.result.Available || r.app.updates.upToDate {
+		t.Fatalf("update state = available:%v upToDate:%v, want an update available",
+			r.app.updates.result.Available, r.app.updates.upToDate)
+	}
+
+	r.app.act(context.Background(), intent{kind: intentUpdates})
+	r.settle()
+	if containsColor(r.app.img, r.app.opts.Theme.Success) {
+		t.Fatal("green tick drawn while an update is still available")
+	}
+}
+
+// containsColor reports whether the drawable holds an exact match for col.
+func containsColor(img *image.RGBA, col color.RGBA) bool {
+	if img == nil {
+		return false
+	}
+	for i := 0; i+3 < len(img.Pix); i += 4 {
+		if img.Pix[i] == col.R && img.Pix[i+1] == col.G && img.Pix[i+2] == col.B && img.Pix[i+3] == col.A {
+			return true
+		}
+	}
+	return false
 }

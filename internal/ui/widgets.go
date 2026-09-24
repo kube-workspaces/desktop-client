@@ -1246,6 +1246,22 @@ func Dot(ctx *Context, r Rect, col color.RGBA) int {
 	return size + ctx.Theme.Gap/2
 }
 
+// CheckMark draws a tick centred in r, for a status line that reports a
+// confirmed or completed state. The tick is two strokes with the same geometry
+// as the checkbox's check — the font has no dingbats, and an "x" reads as
+// "clear this", the opposite of what the state means.
+func CheckMark(ctx *Context, r Rect, col color.RGBA) {
+	size := min(r.W, r.H)
+	if size <= 0 {
+		return
+	}
+	col = or(col, ctx.Theme.Success)
+	stroke := max(1, ctx.Theme.Body)
+	x0, y0 := r.X+(r.W-size)/2, r.Y+(r.H-size)/2
+	ctx.Canvas.Line(x0+size/4, y0+size/2, x0+size/2-stroke/2, y0+size-size/3, stroke, col)
+	ctx.Canvas.Line(x0+size/2-stroke/2, y0+size-size/3, x0+size-size/4, y0+size/4, stroke, col)
+}
+
 // BannerKind selects a banner's colour.
 type BannerKind int
 

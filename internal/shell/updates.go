@@ -24,6 +24,7 @@ type updateState struct {
 	resource            *update.Prepared
 	closed              bool
 	auto, started, busy bool
+	upToDate            bool
 	last                int64
 	status              string
 	result              update.Result
@@ -56,6 +57,7 @@ func (a *App) checkUpdate(ctx context.Context, manual bool) {
 	p := a.updatePolicy()
 	if p.Managed {
 		a.updates.status = i18n.Get("updates.managed")
+		a.updates.upToDate = false
 		return
 	}
 	// Only auto-check if current is a valid release; manual check always proceeds.
@@ -70,6 +72,7 @@ func (a *App) checkUpdate(ctx context.Context, manual bool) {
 	}
 	a.updates.busy = true
 	a.updates.status = i18n.Get("updates.checking")
+	a.updates.upToDate = false
 	a.updates.last = time.Now().Unix()
 	a.saveSettings()
 	a.background(func() func() {
@@ -83,6 +86,7 @@ func (a *App) checkUpdate(ctx context.Context, manual bool) {
 			a.updates.result = r
 			if !r.Available {
 				a.updates.status = i18n.Get("updates.upToDate")
+				a.updates.upToDate = true
 			} else {
 				a.updates.status = i18n.Sprintf("updates.latest", r.Latest)
 			}
@@ -98,6 +102,7 @@ func (a *App) downloadUpdate(ctx context.Context) {
 	a.updates.busy = true
 	a.updates.bytes.Store(0)
 	a.updates.status = i18n.Get("updates.downloading")
+	a.updates.upToDate = false
 	a.background(func() func() {
 		p, err := a.opts.Updater.Prepare(ctx, rel, a.updates.bytes.Store)
 		if ctx.Err() != nil && p != nil {
@@ -123,6 +128,7 @@ func (a *App) downloadUpdate(ctx context.Context) {
 			}
 			a.updates.prepared = p
 			a.updates.status = i18n.Get("updates.ready")
+			a.updates.upToDate = false
 		}
 	})
 }
@@ -133,6 +139,7 @@ func (a *App) restartUpdate() {
 	}
 	if len(a.sessions) != 0 || webProcesses.Load() != 0 || a.m.State == StateSession {
 		a.updates.status = i18n.Get("updates.sessions")
+		a.updates.upToDate = false
 		return
 	}
 	if err := a.opts.RestartUpdate(a.updates.prepared); err != nil {
@@ -168,7 +175,14 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 		last = time.Unix(a.updates.last, 0).Format(time.RFC3339)
 	}
 	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.checked", last), ui.LabelStyle{})
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*3), a.updates.status, ui.LabelStyle{Wrap: true})
+	statusRect := body.Next(ui.LineHeight(th.Body, th.Font) * 3)
+	if a.updates.upToDate && !a.updates.busy {
+		icon, rest := ui.CutLeft(statusRect, ui.TextHeight(th.Body, th.Font)+2*th.Body+th.Gap/2)
+		ui.CheckMark(ctx, icon, th.Success)
+		ui.Label(ctx, rest, a.updates.status, ui.LabelStyle{Wrap: true})
+	} else {
+		ui.Label(ctx, statusRect, a.updates.status, ui.LabelStyle{Wrap: true})
+	}
 	if a.updates.busy {
 		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.bytes", a.updates.bytes.Load()), ui.LabelStyle{})
 		asset, err := a.updates.result.Release.AssetFor(runtime.GOOS, runtime.GOARCH)
