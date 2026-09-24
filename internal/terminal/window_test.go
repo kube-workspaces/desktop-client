@@ -38,6 +38,8 @@ type fakeBackend struct {
 	uploads   int
 	lastDirty viewer.Rect
 	presents  int
+	lastOv    viewer.Overlay
+	ovUploads int
 }
 
 func newFakeBackend() *fakeBackend {
@@ -84,6 +86,9 @@ func (f *fakeBackend) Upload(r viewer.Rect, pix []byte, stride int) error {
 
 func (f *fakeBackend) SetOverlaySize(w, h int) error { return nil }
 func (f *fakeBackend) UploadOverlay(r viewer.Rect, pix []byte, stride int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ovUploads++
 	return nil
 }
 
@@ -91,6 +96,7 @@ func (f *fakeBackend) Present(frame viewer.Rect, ov viewer.Overlay) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.presents++
+	f.lastOv = ov
 	return nil
 }
 
@@ -166,6 +172,18 @@ func (f *fakeBackend) pixelAt(x, y int) color.RGBA {
 		return color.RGBA{}
 	}
 	return f.img.RGBAAt(x, y)
+}
+
+func (f *fakeBackend) lastOverlay() viewer.Overlay {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastOv
+}
+
+func (f *fakeBackend) overlayUploads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ovUploads
 }
 
 // ---------------------------------------------------------------------------
@@ -563,6 +581,47 @@ func TestFailedDialRetries(t *testing.T) {
 	waitUntil(t, 2*time.Second, func() bool {
 		return be.readTitle() == "linux workspace"
 	}, "title not restored after reconnect")
+	_ = done
+}
+
+func TestReconnectShowsStatusPlate(t *testing.T) {
+	be := newFakeBackend()
+	ds := &dialServer{}
+
+	first := true
+	dial := func(ctx context.Context, cols, rows uint16) (io.ReadWriteCloser, error) {
+		if first {
+			first = false
+			return nil, errors.New("network partition")
+		}
+		return ds.dial(ctx, cols, rows)
+	}
+	cancel, done := runSession(t, be, dial)
+	defer cancel()
+
+	// While the first dial is being retried the empty grid is dimmed under
+	// the in-window status plate, not left bare.
+	waitUntil(t, 2*time.Second, func() bool {
+		ov := be.lastOverlay()
+		return ov.Dim > 0 && !ov.Rect.Empty()
+	}, "no status plate while waiting for the first dial")
+	if be.overlayUploads() == 0 {
+		t.Fatal("status plate never uploaded")
+	}
+
+	// A successful reconnect clears the plate: the grid is live, and the
+	// window must not keep its dim over a healthy shell.
+	waitUntil(t, 2*time.Second, func() bool { return ds.callCount() == 1 }, "no successful redial")
+	waitUntil(t, 2*time.Second, func() bool {
+		return be.lastOverlay().Empty()
+	}, "status plate still up while connected")
+
+	// A transport drop brings the plate back; the next reconnect clears it.
+	ds.last().breakWire()
+	waitUntil(t, 2*time.Second, func() bool { return ds.callCount() == 2 }, "no redial after drop")
+	waitUntil(t, 2*time.Second, func() bool {
+		return be.lastOverlay().Empty()
+	}, "status plate did not clear after the second connect")
 	_ = done
 }
 

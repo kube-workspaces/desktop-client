@@ -364,12 +364,10 @@ type Viewer struct {
 	lastStatsAt time.Time
 	title       string
 
-	// overlayKey, ovW and ovH track the rasterised overlay so that it is
-	// rebuilt only when the text or the window size changes — a reconnect can
-	// last minutes and re-rasterising a glyph plate 500 times a second for it
-	// would be absurd.
-	overlayKey overlayKey
-	ovW, ovH   int
+	// statusLayer owns the rasterised status plate, rebuilt only when the
+	// text or the window size changes — a reconnect can last minutes and
+	// re-rasterising a glyph plate 500 times a second for it would be absurd.
+	statusLayer StatusLayer
 
 	presentDue time.Time
 	quit       bool
@@ -1651,42 +1649,11 @@ func (v *Viewer) uploadFrame(damage []rfb.Rect, full bool) error {
 // buildOverlay rasterises and uploads the status plate when it has changed,
 // and returns how this frame should be composited.
 func (v *Viewer) buildOverlay() (Overlay, error) {
-	lines := v.overlayLines()
-	if len(lines) == 0 {
-		// Forget the cached raster so that the next overlay is rebuilt for
-		// whatever the window size is by then.
-		v.overlayKey = overlayKey{}
-		return Overlay{}, nil
+	ov, err := v.statusLayer.Build(v.be, v.overlayLines(), v.winW, v.winH)
+	if err != nil {
+		return Overlay{}, fmt.Errorf("viewer: %w", err)
 	}
-
-	key := overlayKey{text: strings.Join(lines, "\n"), w: v.winW, h: v.winH}
-	if key != v.overlayKey {
-		img := renderOverlay(lines, v.winW, v.winH)
-		if img.w <= 0 || img.h <= 0 {
-			// A window too small for even one scaled glyph still gets the dim,
-			// so the state is visible if not readable.
-			return Overlay{Dim: overlayDim}, nil
-		}
-		if img.w != v.ovW || img.h != v.ovH {
-			if err := v.be.SetOverlaySize(img.w, img.h); err != nil {
-				return Overlay{}, fmt.Errorf("viewer: allocate overlay texture: %w", err)
-			}
-			v.ovW, v.ovH = img.w, img.h
-		}
-		if err := v.be.UploadOverlay(Rect{W: img.w, H: img.h}, img.pix, img.stride); err != nil {
-			return Overlay{}, fmt.Errorf("viewer: upload overlay: %w", err)
-		}
-		v.overlayKey = key
-	}
-	return Overlay{
-		Dim: overlayDim,
-		Rect: Rect{
-			X: (v.winW - v.ovW) / 2,
-			Y: (v.winH - v.ovH) / 2,
-			W: v.ovW,
-			H: v.ovH,
-		},
-	}, nil
+	return ov, nil
 }
 
 // overlayLines is the text the overlay should show right now, or nil for none.

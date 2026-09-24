@@ -83,6 +83,19 @@ type window struct {
 	ended    bool // the shell closed cleanly; the loop must return
 	attempts int
 	nextTry  time.Time
+
+	// lastErr is the most recent failure's text, shown under the status plate.
+	// It is written by tryConnect and onWireClosed, which may run on the pump
+	// goroutine, so it lives under mu.
+	lastErr string
+	// liveOnce records that the window has held a real session at least once,
+	// so the plate can tell "connecting" (the first dial) from "reconnecting"
+	// (it had a session and lost it). It is loop-goroutine state like the rest
+	// of the draw path, but it is set while holding mu for consistency.
+	liveOnce bool
+
+	// plate caches the rasterised status plate between presents.
+	plate viewer.StatusLayer
 }
 
 // run opens the window and drives the session until it ends. A nil return
@@ -182,6 +195,7 @@ func (w *window) tryConnect() {
 		}
 		w.mu.Lock()
 		w.attempts++
+		w.lastErr = err.Error()
 		delay := w.backoff.Backoff(w.attempts)
 		w.nextTry = time.Now().Add(delay)
 		w.mu.Unlock()
@@ -213,6 +227,7 @@ func (w *window) attach(conn io.ReadWriteCloser) {
 	w.conn = conn
 	w.rw = rw
 	w.failed = false
+	w.liveOnce = true
 	w.mu.Unlock()
 
 	w.sendResize()
@@ -270,6 +285,9 @@ func (w *window) onWireClosed(ended bool, err error) {
 	conn := w.conn
 	w.conn = nil
 	w.rw = nil
+	if err != nil {
+		w.lastErr = err.Error()
+	}
 	if ended {
 		w.ended = true
 	} else {
@@ -288,6 +306,22 @@ func (w *window) endedNow() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.ended
+}
+
+// statusNow is the connection state the in-window plate should show: nothing
+// while a session is live, "connecting" until the first session has ever been
+// established, and "reconnecting" after a drop. lastErr, when there is one,
+// sits under the headline.
+func (w *window) statusNow() (viewer.Status, string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.failed || w.ended {
+		return viewer.StatusLive, ""
+	}
+	if !w.liveOnce {
+		return viewer.StatusConnecting, w.lastErr
+	}
+	return viewer.StatusReconnecting, w.lastErr
 }
 
 // handleEvent translates one backend event into state or bytes.
@@ -407,7 +441,12 @@ func (w *window) present() {
 		}
 	}
 	fit := viewer.FitLetterbox(gw, gh, w.winW, w.winH)
-	if err := w.be.Present(fit, viewer.Overlay{}); err != nil {
+	status, detail := w.statusNow()
+	ov, err := w.plate.Build(w.be, viewer.StatusLines(status, detail), w.winW, w.winH)
+	if err != nil {
+		w.logf("terminal: status plate: %v", err)
+	}
+	if err := w.be.Present(fit, ov); err != nil {
 		w.logf("terminal: present: %v", err)
 	}
 }

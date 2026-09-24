@@ -3,7 +3,10 @@
 
 package viewer
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Status is what the viewer tells the user about its connection.
 //
@@ -76,6 +79,69 @@ func (s Status) Text() string {
 // inside the window, so the headline would become unreadable in order to show
 // the tail of a stack of wrapped errors nobody reads from a dialog.
 const maxDetailRunes = 56
+
+// StatusLines renders a status and its cause into the lines of an overlay
+// plate. It is the exported form of statusLines for callers outside the
+// package — the integrated terminal — that present their own surface and want
+// the same status plate the viewer draws. A live status has no lines.
+func StatusLines(s Status, detail string) []string {
+	return statusLines(s, detail)
+}
+
+// StatusLayer owns the rasterisation and upload of one surface's status
+// plate, cached so that the image is rebuilt only when the text or the window
+// size changes rather than on every frame of a reconnect that may last
+// minutes.
+//
+// The [Viewer] keeps a StatusLayer, and so does the integrated terminal,
+// because both draw a frozen or empty frame under the same plate: a shared
+// type keeps the two identical instead of letting the duplicate drift.
+type StatusLayer struct {
+	key      overlayKey
+	ovW, ovH int
+}
+
+// Build renders lines into the overlay texture of be for a winW by winH
+// surface and returns how the plate should be drawn this frame: the dim and
+// the centred rectangle.
+//
+// With no lines — a live status — it returns an empty [Overlay] and forgets
+// any cached raster, so that the next plate is rebuilt for whatever the
+// window size is by then. A surface too small for even one scaled glyph still
+// yields the dim, so the state is visible even when its text cannot fit.
+func (l *StatusLayer) Build(be Backend, lines []string, winW, winH int) (Overlay, error) {
+	if len(lines) == 0 {
+		l.key = overlayKey{}
+		return Overlay{}, nil
+	}
+
+	key := overlayKey{text: strings.Join(lines, "\n"), w: winW, h: winH}
+	if key != l.key {
+		img := renderOverlay(lines, winW, winH)
+		if img.w <= 0 || img.h <= 0 {
+			return Overlay{Dim: overlayDim}, nil
+		}
+		if img.w != l.ovW || img.h != l.ovH {
+			if err := be.SetOverlaySize(img.w, img.h); err != nil {
+				return Overlay{}, fmt.Errorf("allocate overlay texture: %w", err)
+			}
+			l.ovW, l.ovH = img.w, img.h
+		}
+		if err := be.UploadOverlay(Rect{W: img.w, H: img.h}, img.pix, img.stride); err != nil {
+			return Overlay{}, fmt.Errorf("upload overlay: %w", err)
+		}
+		l.key = key
+	}
+	return Overlay{
+		Dim: overlayDim,
+		Rect: Rect{
+			X: (winW - l.ovW) / 2,
+			Y: (winH - l.ovH) / 2,
+			W: l.ovW,
+			H: l.ovH,
+		},
+	}, nil
+}
 
 // statusLines renders a status and its cause into the lines of the overlay.
 func statusLines(s Status, detail string) []string {
