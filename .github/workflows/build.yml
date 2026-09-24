@@ -229,6 +229,15 @@ jobs:
             go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }}" \
             -o kube-workspaces-web ./cmd/kube-workspaces-web
 
+      # Without these the child's .exe would sit in Explorer under the blank
+      # default icon: the PE resources only exist in the checkout once go-winres
+      # has generated them, and the linker only picks up a .syso when GOOS=windows.
+      - name: Generate Windows resources for web child
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          go run github.com/tc-hib/go-winres@v0.3.3 make --in cmd/kube-workspaces-web/winres.json --out cmd/kube-workspaces-web/rsrc --arch=amd64 --product-version=git-tag --file-version=git-tag
+
       - name: Build web child (Windows)
         if: startsWith(matrix.os, 'windows')
         shell: pwsh

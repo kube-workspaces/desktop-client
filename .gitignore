@@ -51,3 +51,4 @@ desktop.ini
 
 # go-winres build output: the Windows .exe icon + version resources.
 cmd/kube-workspaces/*.syso
+cmd/kube-workspaces-web/*.syso

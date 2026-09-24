@@ -176,8 +176,8 @@ make build          # -> bin/kube-workspaces (shell + CLI, cgo-free)
 make icons          # regenerate the icon artwork from assets/icon.svg
 make build-all      # cross-build all six targets into dist/
 make build-web      # Linux embedded-webview child -> bin/kube-workspaces-web (needs webkit2gtk-4.1)
-make build-web-windows  # Windows amd64 web child into ./kw-web.exe (needs mingw-w64)
-make build-windows-cgo  # cgo Windows amd64 of the whole binary into ./kw-cgo.exe (needs mingw-w64)
+make build-web-windows  # Windows amd64 web child -> bin/kube-workspaces-web.exe (needs mingw-w64)
+make build-windows-cgo  # cgo Windows amd64 of the whole binary into bin/kube-workspaces.exe (needs mingw-w64)
 make test           # go test -race ./...
 make lint           # golangci-lint, skipped if not installed
 make help           # all targets
@@ -186,9 +186,11 @@ make help           # all targets
 `make build-all` produces the release archives: Linux tarballs with the plain
 binary, a **`Kube Workspaces.app` bundle** (icon, `Info.plist`, bundle layout)
 for macOS, and Windows zips whose `.exe` carries the app icon and version
-metadata in its PE resources. The archive layout matches assembly in CI: every
-platform (except Windows/arm64) gets its `kube-workspaces-web` child injected
-beside the shell; to replicate locally,
+metadata in its PE resources. The `kube-workspaces-web` child links the same
+icon/version resources when built for Windows, so it shows the cube in Explorer
+too. The archive layout matches assembly in CI: every platform (except
+Windows/arm64) gets its `kube-workspaces-web` child injected beside the shell;
+to replicate locally,
 `scripts/insert-web-child.sh dist/kube-workspaces-*.tar.gz <child>` (see the
 script header). `make icons` needs `inkscape` and ImageMagick's
 `convert` on the machine running it; `make build-all` runs `go-winres` (fetched

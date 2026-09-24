@@ -55,7 +55,7 @@ WINRES ?= go run github.com/tc-hib/go-winres@v0.3.3
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
-.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres clean build-all install-latest-windows-release
+.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres winres-web clean build-all install-latest-windows-release
 
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -100,19 +100,26 @@ build-web: ## Build the Linux embedded-webview child into bin/kube-workspaces-we
 	@echo "CGO_ENABLED=1 go build -trimpath -ldflags \"$(LDFLAGS)\" -o $(BIN_DIR)/kube-workspaces-web ./cmd/kube-workspaces-web"
 	CGO_ENABLED=1 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/kube-workspaces-web ./cmd/kube-workspaces-web
 
-build-web-windows: ## Cross-build the Windows amd64 web child into ./kw-web.exe
+build-web-windows: ## Cross-build the Windows amd64 web child into bin/kube-workspaces-web.exe
 	@# Needs the Mingw-w64 cross toolchain, like build-windows-cgo, because the
 	@# child compiles internal/web's webview_go C++ shim (EventToken.h injected
 	@# via CGO_CXXFLAGS; Go adds -mthreads, which native g++ rejects). Linked
 	@# GUI-subsystem so the shell spawning it never flashes a console window.
-	@# No winres resources: the child has no taskbar identity of its own.
+	@# The .exe also links the same icon/version PE resources as the shell (from
+	@# cmd/kube-workspaces-web/winres.json) so Explorer shows the Kube Workspaces
+	@# cube next to the child, not the blank default.
+	@mkdir -p $(BIN_DIR)
 	@command -v $(CGO_CC) >/dev/null 2>&1 || { echo "error: $(CGO_CC) not found (apt: gcc-mingw-w64-x86-64)" >&2; exit 1; }
 	@command -v $(CGO_CXX) >/dev/null 2>&1 || { echo "error: $(CGO_CXX) not found (apt: g++-mingw-w64-x86-64)" >&2; exit 1; }
+	$(WINRES) make --in cmd/kube-workspaces-web/winres.json --out cmd/kube-workspaces-web/rsrc --arch=amd64 --product-version=git-tag --file-version=git-tag
 	CC=$(CGO_CC) CXX=$(CGO_CXX) CGO_CXXFLAGS="-I$(abspath internal/web/mswebview2)" CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
-		go build -trimpath -ldflags "$(WINDOWS_LDFLAGS)" -o kw-web.exe ./cmd/kube-workspaces-web
+		go build -trimpath -ldflags "$(WINDOWS_LDFLAGS)" -o $(BIN_DIR)/kube-workspaces-web.exe ./cmd/kube-workspaces-web
 
 winres: ## Regenerate the Windows .syso resources (icon + version info) for cmd/kube-workspaces
 	$(WINRES) make --in winres.json --out cmd/kube-workspaces/rsrc --arch=amd64,arm64 --product-version=git-tag --file-version=git-tag
+
+winres-web: ## Regenerate the Windows .syso resources (icon + version info) for cmd/kube-workspaces-web
+	$(WINRES) make --in cmd/kube-workspaces-web/winres.json --out cmd/kube-workspaces-web/rsrc --arch=amd64 --product-version=git-tag --file-version=git-tag
 
 run: ## Run the client from source (make run ARGS="--help")
 	go run $(CMD) $(ARGS)

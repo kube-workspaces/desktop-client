@@ -198,7 +198,7 @@ make icons                      # regenerate icon artwork (needs inkscape + Imag
 make winres                     # regenerate the Windows .syso resources
 make build-all                  # cross-build all 6 targets into dist/ (shell only, cgo-free)
 make build-web                  # Linux embedded-webview child into bin/kube-workspaces-web (needs webkit2gtk-4.1)
-make build-web-windows          # Windows amd64 web child into kw-web.exe (needs mingw-w64)
+make build-web-windows          # Windows amd64 web child into bin/kube-workspaces-web.exe (needs mingw-w64)
 make help                       # list every target
 ```
 
@@ -312,15 +312,27 @@ must stay on a release built with go1.26 or newer.
   nesting level silently fails with "invalid icon definition", and a `.ico`
   with an even number of images tripped an assumption in older go-winres — the
   pinned v0.3.3 handles PNG-compressed icon entries fine.
-- **go-winres resolves relative paths against the working directory, and
-  `filepath.Join` strips a leading slash from an absolute path.** Absolute
-  paths in `winres.json` break; keep them relative and run `make winres` from
-  the repo root.
+- **Paths inside `winres.json` resolve against the file's own directory, not
+  the working directory** (the root `winres.json` hides this because its
+  directory is the repo root; the web child's
+  `cmd/kube-workspaces-web/winres.json` needs `"../../assets/icon.ico"`).
+  go-winres also runs `filepath.Join` on absolute paths, stripping a leading
+  slash, so absolute paths in `winres.json` break; keep them relative to each
+  file. The `--out` CLI arg is separate and is relative to the working
+  directory, so run `make winres`/`make winres-web` from the repo root.
 - **The `.syso` files are filtered by the Go linker on the filename suffix**
   (`rsrc_windows_amd64.syso` vs `rsrc_windows_arm64.syso`), so all of
   `cmd/kube-workspaces` can hold both at once. They are build output: they
   live in `cmd/kube-workspaces/` only because that is where the linker looks,
   and they are gitignored. A Linux build ignores them.
+- **The `kube-workspaces-web` child carries its own PE resources too.** Its
+  `cmd/kube-workspaces-web/winres.json` (same icon, web-child version strings)
+  must be run through go-winres before a Windows build, or the child's `.exe`
+  shows Explorer's blank default icon. It is `--arch=amd64` only because the
+  child ships for windows/amd64 alone (`/vnc`-style ARM64 webview toolchains
+  do not exist on the CI matrix). `make build-web-windows` and the CI
+  `web-child` matrix's "Generate Windows resources" step do this; `winres-web`
+  regenerates by hand.
 - **No manifest is emitted, on purpose.** go-winres only writes
   `RT_MANIFEST` if `winres.json` says so; leaving it out means the process has
   no declared DPI awareness, so SDL keeps sole control of it and adding the
@@ -467,7 +479,8 @@ time, since actions and pricing drift.
   targets on every push to `main` and uploads them as `shell-*` artifacts; the
   `web-child` matrix builds the webview child natively per OS (linux/amd64+arm64
   in a noble `ubuntu:24.04` container, darwin/amd64+arm64 on `macos-latest`,
-  windows/amd64 on `windows-latest` with MinGW); `assemble` injects each child
+  windows/amd64 on `windows-latest` with MinGW, generating the child's PE
+  resources there too so its `.exe` shows the icon); `assemble` injects each child
   beside its shell and uploads the final `kube-workspaces-*` archives with a
   regenerated `SHA256SUMS`. On a `v*` tag the `release` job injects the children
   into the tag archives and publishes them as a GitHub Release. The generated
