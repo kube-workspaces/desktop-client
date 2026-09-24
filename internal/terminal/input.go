@@ -4,6 +4,7 @@
 package terminal
 
 import (
+	"strconv"
 	"unicode"
 
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
@@ -146,143 +147,254 @@ func chordBytes(e viewer.EventKey) []byte {
 }
 
 // namedKeyBytes maps the non-text keys to the sequences xterm sends for them.
-// Ctrl modifies the navigation keys into the "modified" CSI forms
-// (ESC [ 1;5D and friends); Alt prefixes a second ESC.
+//
+// An unmodified key sends the sequence the shipped table has always sent. The
+// modifier-coded forms — what xterm emits for Shift/Ctrl and their
+// combinations on the keys that have a CSI encoding — follow the modifier
+// protocol (ESC [ 1;5D is Ctrl+Left, ESC [ 15;2~ is Shift+F5), so readline,
+// tmux and vim keep working when a program binds a shifted or Ctrl'd key.
+//
+// Alt alone is deliberately not a modifier code. It is Meta, and meta is the
+// two-key convention an ESC prefix expresses — the sequence default xterm has
+// always sent, and the one readline, vim and emacs all expect. Super never
+// participates: it is the OS's chord, not the shell's. AltGr is a third-level
+// shift that produces characters, so it is treated as neither.
 func namedKeyBytes(e viewer.EventKey) []byte {
-	ctrl := e.Mods.Has(keysym.ModControl) && !e.Mods.Has(keysym.ModAlt)
-	alt := e.Mods.Has(keysym.ModAlt) && !e.Mods.Has(keysym.ModControl)
-
-	var seq string
-	switch e.Key {
-	case keysym.KeyReturn, keysym.KeyKPEnter:
-		seq = "\r"
-
-	case keysym.KeyTab:
-		if e.Mods.Has(keysym.ModShift) {
-			seq = "\x1b[Z"
-		} else {
-			seq = "\t"
+	mods := e.Mods
+	// AltGr is a third-level shift: it produces characters (on Windows it
+	// often arrives as Ctrl+Alt plus the AltGr bit), so a key pressed with it
+	// is not a command at all and keeps its unmodified sequence.
+	if mods.Has(keysym.ModAltGr) {
+		seq, ok := plainNamedKey(e.Key, mods)
+		if !ok {
+			return nil
 		}
-
-	case keysym.KeyBackSpace:
-		seq = "\x7f"
-
-	case keysym.KeyEscape:
-		seq = "\x1b"
-
-	case keysym.KeyDelete:
-		seq = "\x1b[3~"
-	case keysym.KeyInsert:
-		seq = "\x1b[2~"
-
-	case keysym.KeyLeft:
-		seq = csiCtrl("D", ctrl)
-	case keysym.KeyRight:
-		seq = csiCtrl("C", ctrl)
-	case keysym.KeyUp:
-		seq = csiCtrl("A", ctrl)
-	case keysym.KeyDown:
-		seq = csiCtrl("B", ctrl)
-
-	case keysym.KeyHome:
-		if ctrl {
-			seq = "\x1b[1;5H"
-		} else {
-			seq = "\x1b[H"
-		}
-	case keysym.KeyEnd:
-		if ctrl {
-			seq = "\x1b[1;5F"
-		} else {
-			seq = "\x1b[F"
-		}
-	case keysym.KeyPageUp:
-		if ctrl {
-			seq = "\x1b[5;5~"
-		} else {
-			seq = "\x1b[5~"
-		}
-	case keysym.KeyPageDown:
-		if ctrl {
-			seq = "\x1b[6;5~"
-		} else {
-			seq = "\x1b[6~"
-		}
-
-	case keysym.KeyF1:
-		seq = "\x1bOP"
-	case keysym.KeyF2:
-		seq = "\x1bOQ"
-	case keysym.KeyF3:
-		seq = "\x1bOR"
-	case keysym.KeyF4:
-		seq = "\x1bOS"
-	case keysym.KeyF5:
-		seq = "\x1b[15~"
-	case keysym.KeyF6:
-		seq = "\x1b[17~"
-	case keysym.KeyF7:
-		seq = "\x1b[18~"
-	case keysym.KeyF8:
-		seq = "\x1b[19~"
-	case keysym.KeyF9:
-		seq = "\x1b[20~"
-	case keysym.KeyF10:
-		seq = "\x1b[21~"
-	case keysym.KeyF11:
-		seq = "\x1b[23~"
-	case keysym.KeyF12:
-		seq = "\x1b[24~"
-
-	case keysym.KeyKP1:
-		seq = "1"
-	case keysym.KeyKP2:
-		seq = "2"
-	case keysym.KeyKP3:
-		seq = "3"
-	case keysym.KeyKP4:
-		seq = "4"
-	case keysym.KeyKP5:
-		seq = "5"
-	case keysym.KeyKP6:
-		seq = "6"
-	case keysym.KeyKP7:
-		seq = "7"
-	case keysym.KeyKP8:
-		seq = "8"
-	case keysym.KeyKP9:
-		seq = "9"
-	case keysym.KeyKP0:
-		seq = "0"
-	case keysym.KeyKPSpace:
-		seq = " "
-	case keysym.KeyKPAdd:
-		seq = "+"
-	case keysym.KeyKPSubtract:
-		seq = "-"
-	case keysym.KeyKPMultiply:
-		seq = "*"
-	case keysym.KeyKPDivide:
-		seq = "/"
-	case keysym.KeyKPDecimal:
-		seq = "."
-
-	default:
-		return nil
+		return []byte(seq)
 	}
-	if alt {
-		return append([]byte{0x1b}, seq...)
+	if meta := mods.Has(keysym.ModAlt) && !mods.HasAny(keysym.ModControl|keysym.ModSuper); meta {
+		seq, ok := plainNamedKey(e.Key, mods)
+		if !ok {
+			return nil
+		}
+		return []byte("\x1b" + seq)
+	}
+	if code := xtermModCode(mods); code > 1 && modEncodable(e.Key) {
+		return []byte(modifiedNamedKey(e.Key, code))
+	}
+	seq, ok := plainNamedKey(e.Key, mods)
+	if !ok {
+		return nil
 	}
 	return []byte(seq)
 }
 
-// csiCtrl renders a plain or Ctrl-modified CSI final byte: ESC [ D when Ctrl
-// is not held, ESC [ 1;5D when it is.
-func csiCtrl(final string, ctrl bool) string {
-	if ctrl {
-		return "\x1b[1;5" + final
+// xtermModCode encodes Shift, Alt and Ctrl into the modifier number the
+// protocol carries after the semicolon: 1 with none, 2 Shift, 3 Alt, 4
+// Shift+Alt, 5 Ctrl, 6 Ctrl+Shift, 7 Ctrl+Alt, 8 Ctrl+Shift+Alt. The two
+// bits AltGr masks on anything (super, altgr, the lock keys) never add, and
+// Alt alone never reaches the encoded form — [namedKeyBytes] sends it as the
+// two-key ESC prefix instead.
+func xtermModCode(mods keysym.Modifiers) int {
+	code := 1
+	if mods.Has(keysym.ModShift) {
+		code += 1
 	}
-	return "\x1b[" + final
+	if mods.Has(keysym.ModAlt) {
+		code += 2
+	}
+	if mods.Has(keysym.ModControl) {
+		code += 4
+	}
+	return code
+}
+
+// modEncodable reports whether k has a standard encoded form in the modifier
+// protocol. Enter, Tab, Backspace and the keypad produce characters or have
+// no distinct modified sequence, so they stay on the plain table.
+func modEncodable(k keysym.Key) bool {
+	switch k {
+	case keysym.KeyLeft, keysym.KeyRight, keysym.KeyUp, keysym.KeyDown,
+		keysym.KeyHome, keysym.KeyEnd, keysym.KeyPageUp, keysym.KeyPageDown,
+		keysym.KeyInsert, keysym.KeyDelete,
+		keysym.KeyF1, keysym.KeyF2, keysym.KeyF3, keysym.KeyF4,
+		keysym.KeyF5, keysym.KeyF6, keysym.KeyF7, keysym.KeyF8,
+		keysym.KeyF9, keysym.KeyF10, keysym.KeyF11, keysym.KeyF12:
+		return true
+	}
+	return false
+}
+
+// plainNamedKey is the key's unmodified sequence: what xterm sends for it with
+// no modifier, or with a modifier the key has no encoded form for. Shifted Tab
+// is the one key whose modifier changes the plain form rather than the
+// encoded one: ESC [ Z is the "backwards tab" sequence, older than the
+// modifier protocol.
+func plainNamedKey(k keysym.Key, mods keysym.Modifiers) (string, bool) {
+	switch k {
+	case keysym.KeyReturn, keysym.KeyKPEnter:
+		return "\r", true
+
+	case keysym.KeyTab:
+		if mods.Has(keysym.ModShift) {
+			return "\x1b[Z", true
+		}
+		return "\t", true
+
+	case keysym.KeyBackSpace:
+		return "\x7f", true
+
+	case keysym.KeyEscape:
+		return "\x1b", true
+
+	case keysym.KeyDelete:
+		return "\x1b[3~", true
+	case keysym.KeyInsert:
+		return "\x1b[2~", true
+
+	case keysym.KeyLeft:
+		return "\x1b[D", true
+	case keysym.KeyRight:
+		return "\x1b[C", true
+	case keysym.KeyUp:
+		return "\x1b[A", true
+	case keysym.KeyDown:
+		return "\x1b[B", true
+
+	case keysym.KeyHome:
+		return "\x1b[H", true
+	case keysym.KeyEnd:
+		return "\x1b[F", true
+	case keysym.KeyPageUp:
+		return "\x1b[5~", true
+	case keysym.KeyPageDown:
+		return "\x1b[6~", true
+
+	case keysym.KeyF1:
+		return "\x1bOP", true
+	case keysym.KeyF2:
+		return "\x1bOQ", true
+	case keysym.KeyF3:
+		return "\x1bOR", true
+	case keysym.KeyF4:
+		return "\x1bOS", true
+	case keysym.KeyF5:
+		return "\x1b[15~", true
+	case keysym.KeyF6:
+		return "\x1b[17~", true
+	case keysym.KeyF7:
+		return "\x1b[18~", true
+	case keysym.KeyF8:
+		return "\x1b[19~", true
+	case keysym.KeyF9:
+		return "\x1b[20~", true
+	case keysym.KeyF10:
+		return "\x1b[21~", true
+	case keysym.KeyF11:
+		return "\x1b[23~", true
+	case keysym.KeyF12:
+		return "\x1b[24~", true
+
+	case keysym.KeyKP1:
+		return "1", true
+	case keysym.KeyKP2:
+		return "2", true
+	case keysym.KeyKP3:
+		return "3", true
+	case keysym.KeyKP4:
+		return "4", true
+	case keysym.KeyKP5:
+		return "5", true
+	case keysym.KeyKP6:
+		return "6", true
+	case keysym.KeyKP7:
+		return "7", true
+	case keysym.KeyKP8:
+		return "8", true
+	case keysym.KeyKP9:
+		return "9", true
+	case keysym.KeyKP0:
+		return "0", true
+	case keysym.KeyKPSpace:
+		return " ", true
+	case keysym.KeyKPAdd:
+		return "+", true
+	case keysym.KeyKPSubtract:
+		return "-", true
+	case keysym.KeyKPMultiply:
+		return "*", true
+	case keysym.KeyKPDivide:
+		return "/", true
+	case keysym.KeyKPDecimal:
+		return ".", true
+
+	default:
+		return "", false
+	}
+}
+
+// modifiedNamedKey is the modifier-protocol form of k: ESC [ 1;<code>X for
+// the cursor keys and F1-F4, ESC [ <num>;<code>~ for the keys whose plain
+// form is a numbered tilde sequence (F5-F12, PageUp/PageDown, Insert,
+// Delete).
+func modifiedNamedKey(k keysym.Key, code int) string {
+	num := 0
+	final := ""
+	switch k {
+	case keysym.KeyF1:
+		final = "P"
+	case keysym.KeyF2:
+		final = "Q"
+	case keysym.KeyF3:
+		final = "R"
+	case keysym.KeyF4:
+		final = "S"
+	case keysym.KeyF5:
+		num = 15
+	case keysym.KeyF6:
+		num = 17
+	case keysym.KeyF7:
+		num = 18
+	case keysym.KeyF8:
+		num = 19
+	case keysym.KeyF9:
+		num = 20
+	case keysym.KeyF10:
+		num = 21
+	case keysym.KeyF11:
+		num = 23
+	case keysym.KeyF12:
+		num = 24
+
+	case keysym.KeyLeft:
+		final = "D"
+	case keysym.KeyRight:
+		final = "C"
+	case keysym.KeyUp:
+		final = "A"
+	case keysym.KeyDown:
+		final = "B"
+
+	case keysym.KeyHome:
+		final = "H"
+	case keysym.KeyEnd:
+		final = "F"
+	case keysym.KeyPageUp:
+		num = 5
+	case keysym.KeyPageDown:
+		num = 6
+
+	case keysym.KeyInsert:
+		num = 2
+	case keysym.KeyDelete:
+		num = 3
+
+	default:
+		return ""
+	}
+	if num != 0 {
+		return "\x1b[" + strconv.Itoa(num) + ";" + strconv.Itoa(code) + "~"
+	}
+	return "\x1b[1;" + strconv.Itoa(code) + final
 }
 
 func lowerRune(r rune) rune {

@@ -154,6 +154,65 @@ func TestMetaNamedKey(t *testing.T) {
 	if got := mustBytes(t, in, key(keysym.KeyLeft, 0, keysym.ModAlt)); string(got) != "\x1b\x1b[D" {
 		t.Fatalf("Alt+Left = %q", got)
 	}
+	if got := mustBytes(t, in, key(keysym.KeyF1, 0, keysym.ModAlt)); string(got) != "\x1b\x1bOP" {
+		t.Fatalf("Alt+F1 = %q", got)
+	}
+}
+
+func TestModifiedNamedKeys(t *testing.T) {
+	in := newInput()
+	cases := []struct {
+		name string
+		k    keysym.Key
+		mods keysym.Modifiers
+		want string
+	}{
+		{"shift-left", keysym.KeyLeft, keysym.ModShift, "\x1b[1;2D"},
+		{"shift-right", keysym.KeyRight, keysym.ModShift, "\x1b[1;2C"},
+		{"shift-up", keysym.KeyUp, keysym.ModShift, "\x1b[1;2A"},
+		{"shift-down", keysym.KeyDown, keysym.ModShift, "\x1b[1;2B"},
+		{"shift-home", keysym.KeyHome, keysym.ModShift, "\x1b[1;2H"},
+		{"shift-end", keysym.KeyEnd, keysym.ModShift, "\x1b[1;2F"},
+		{"shift-page-up", keysym.KeyPageUp, keysym.ModShift, "\x1b[5;2~"},
+		{"shift-page-down", keysym.KeyPageDown, keysym.ModShift, "\x1b[6;2~"},
+		{"shift-insert", keysym.KeyInsert, keysym.ModShift, "\x1b[2;2~"},
+		{"shift-delete", keysym.KeyDelete, keysym.ModShift, "\x1b[3;2~"},
+		{"ctrl-shift-left", keysym.KeyLeft, keysym.ModControl | keysym.ModShift, "\x1b[1;6D"},
+		{"ctrl-alt-left", keysym.KeyLeft, keysym.ModControl | keysym.ModAlt, "\x1b[1;7D"},
+		{"shift-f1", keysym.KeyF1, keysym.ModShift, "\x1b[1;2P"},
+		{"shift-f4", keysym.KeyF4, keysym.ModShift, "\x1b[1;2S"},
+		{"ctrl-f5", keysym.KeyF5, keysym.ModControl, "\x1b[15;5~"},
+		{"ctrl-shift-f11", keysym.KeyF11, keysym.ModControl | keysym.ModShift, "\x1b[23;6~"},
+		{"ctrl-alt-f12", keysym.KeyF12, keysym.ModControl | keysym.ModAlt, "\x1b[24;7~"},
+	}
+	for _, tc := range cases {
+		if got := mustBytes(t, in, key(tc.k, 0, tc.mods)); string(got) != tc.want {
+			t.Fatalf("%s = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestAltGrStillTypes(t *testing.T) {
+	// AltGr is a third-level shift that produces characters: it must never be
+	// turned into a meta prefix or a modifier code, because doing so would eat
+	// the very characters it exists to type.
+	in := newInput()
+	evs := []viewer.Event{
+		key(keysym.KeyUnknown, '@', keysym.ModAltGr),
+		key(keysym.KeyUnknown, '@', keysym.ModAltGr|keysym.ModAlt),
+		key(keysym.KeyUnknown, 'ß', keysym.ModAltGr|keysym.ModShift),
+	}
+	for _, e := range evs {
+		if got := mustBytes(t, in, e); got != nil {
+			t.Fatalf("%+v produced bytes %q, want none", e, got)
+		}
+	}
+	// A navigation key pressed with AltGr stays unmodified: the AltGr/Ctrl
+	// bits arrive together on Windows, and Ctrl+Alt+Left must not read as a
+	// modified command sequence the shell has no idea it asked for.
+	if got := mustBytes(t, in, key(keysym.KeyLeft, 0, keysym.ModAltGr|keysym.ModControl|keysym.ModAlt)); string(got) != "\x1b[D" {
+		t.Fatalf("AltGr+Ctrl+Alt+Left = %q, want the plain arrow", got)
+	}
 }
 
 func TestModifierPressProducesNothing(t *testing.T) {
