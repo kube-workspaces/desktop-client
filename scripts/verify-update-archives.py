@@ -7,7 +7,7 @@ import tarfile
 import zipfile
 
 
-def verify(directory, version, shell_only=False):
+def verify(directory, version, shell_only=False, require_msi=False):
     sums = {}
     for line in (directory / "SHA256SUMS").read_text().splitlines():
         digest, name = line.split(maxsplit=1)
@@ -46,7 +46,22 @@ def verify(directory, version, shell_only=False):
             if not shell_only and (os_name, arch) != ("windows", "arm64"):
                 assert f"{binary_dir}/kube-workspaces-web{exe}" in members, name
             print(f"{name}: update contract OK")
-    assert set(sums) == expected, "checksum inventory differs from six-target contract"
+    # The unsigned Windows MSIs ship alongside the zips (same release, SHA
+    # covered) but are NOT part of the updater contract: the in-app updater
+    # consumes only the six archives above. Any extra checksum entry must be
+    # an expected Windows MSI whose hash verifies.
+    extra = set(sums) - expected
+    installers = {f"kube-workspaces-{version}-windows-{arch}.msi" for arch in ("amd64", "arm64")}
+    assert extra <= installers, f"unexpected checksum entries: {extra - installers}"
+    if require_msi:
+        assert extra == installers, "both Windows MSIs are required"
+    for name in sorted(extra):
+        assert name.endswith(".msi"), f"unexpected checksum entry: {name}"
+        with (directory / name).open("rb") as f:
+            assert hashlib.file_digest(f, "sha256").hexdigest() == sums[name], name
+        print(f"{name}: checksum OK (msi, outside update contract)")
+    actual = {p.name for p in directory.iterdir() if p.name.endswith((".tar.gz", ".zip", ".msi"))}
+    assert set(sums) == actual, "checksum inventory differs from artifacts"
 
 
 if __name__ == "__main__":
@@ -54,5 +69,6 @@ if __name__ == "__main__":
     parser.add_argument("directory", type=Path)
     parser.add_argument("version")
     parser.add_argument("--shell-only", action="store_true")
+    parser.add_argument("--require-msi", action="store_true")
     args = parser.parse_args()
-    verify(args.directory, args.version, args.shell_only)
+    verify(args.directory, args.version, args.shell_only, args.require_msi)

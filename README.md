@@ -105,6 +105,51 @@ webview: the `web` subcommand then reports the browser engine is unavailable.
 Fine for development, but the assembled archives are the complete ones and what
 you should distribute.
 
+## Installing on Windows
+
+Releases ship Windows zips (amd64 + arm64) plus an **unsigned** MSI for
+install hygiene (Start Menu shortcut, Add/Remove Programs entry, clean
+upgrade/uninstall). The MSI warns exactly like the zip — it is not a trust
+fix; Authenticode signing stays budget-blocked (see `AGENTS.md` → *Deferred:
+code signing and notarisation*).
+
+Blessed manual location: `%LocalAppData%\Programs\Kube Workspaces`
+(`C:\Users\<you>\AppData\Local\Programs\Kube Workspaces`) — writable without
+UAC so the built-in updater works unelevated. `C:\Program Files\Kube Workspaces`
+is reserved for the future per-machine signed installer.
+
+```powershell
+Expand-Archive kube-workspaces-<version>-windows-amd64.zip -DestinationPath "$env:TEMP\kw-install" -Force
+New-Item -ItemType Directory -Force "$env:LocalAppData\Programs\Kube Workspaces" | Out-Null
+Copy-Item "$env:TEMP\kw-install\kube-workspaces-windows-amd64\*" "$env:LocalAppData\Programs\Kube Workspaces" -Force
+Get-ChildItem "$env:LocalAppData\Programs\Kube Workspaces\*.exe" | Unblock-File
+```
+
+Keep `kube-workspaces.exe` and `kube-workspaces-web.exe` (plus any future
+`avcodec-59.dll`, `avutil-57.dll`, `opus.dll`) together in one folder — the
+shell finds its web child by sibling path and codec DLLs load from the app
+directory only. Never split them; keep DLL architecture matched to the `.exe`.
+Missing Tier 1 libraries fall back to Tier 0 instead of failing.
+
+First run: SmartScreen warns `Unknown publisher` → `More info` →
+`Run anyway`. Container workspaces need the **WebView2 Runtime** (preinstalled
+on Windows 11, else the Evergreen bootstrapper). windows/arm64 is shell-only:
+VM sessions work, container web UIs fall back to the system browser. Moving
+the install dir is safe — tokens live in Credential Manager, profiles in
+`%AppData%\kube-workspaces\`. Close all instances before
+`kube-workspaces update`; a Program Files install reports
+`install directory needs elevated permissions` instead of updating unelevated.
+The zip makes no registry claims. Per-machine MSI (explicit flag; the default
+stays per-user even for administrators):
+`msiexec /i kube-workspaces-<version>-windows-<arch>.msi ALLUSERS=1 INSTALLDIR="C:\Program Files\Kube Workspaces"`
+(elevated). Full detail lives on the
+[desktop client docs page](https://github.com/kube-workspaces/deploy/blob/main/docs/desktop-client.md).
+
+Every **Build** workflow run also provides `msi-windows-amd64` and
+`msi-windows-arm64` artifacts, plus `SHA256SUMS` covering all six archives
+and both installers. Release tags publish those installers alongside the zips.
+See [Windows packaging](packaging/windows/README.md) for local builds and CI checks.
+
 Two runtime requirements apply regardless of which archive you pick, and neither
 is bundled:
 

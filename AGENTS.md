@@ -348,6 +348,26 @@ must stay on a release built with go1.26 or newer.
   `internal/viewer/icon.png` embed that `sdl.go`'s `setWindowIcon` hands to
   `SDL_SetWindowIcon` (title bar). The .icns drives the macOS Dock icon via the
   bundle; everywhere else SDL owns the icon.
+- **The unsigned MSI is WiX 5.0.2 (`packaging/windows/`), per-user by default.**
+  `Scope="perUser"` omits `ALLUSERS`; `verify-msi.ps1` verifies this in the
+  built database using read-only Windows Installer COM access. Do not mutate
+  Property rows after building. The earlier IDT pin workaround was removed:
+  a fresh WiX build already has the correct scope. Per-machine stays an
+  explicit `ALLUSERS=1 INSTALLDIR=…` command-line override. Registry keypaths
+  use HKMU so they follow the chosen install context.
+  `kube-workspaces.wxs` is the static skeleton (per-user `INSTALLDIR` under
+  `%LocalAppData%\Programs`, Start Menu shortcut, MajorUpgrade); `build-msi.ps1`
+  harvests the staged tag-archive payload into a generated `Files.wxs`
+  fragment (shell required, web child + Tier 1 codec DLLs optional — arm64 is
+  shell-only) and runs `wix build`. The shell's File Id is the fixed contract
+  `ShellExe` the shortcut targets. The **UpgradeCode is stable forever** —
+  changing it orphans installs from the upgrade path. `ProductVersion` is
+  sanitized to numeric X.Y.Z (exact tags map, dev builds become 0.0.0).
+  `scripts/verify-update-archives.py --require-msi` requires six updater
+  archives plus the two correctly named MSIs and verifies every checksum.
+  MSIs are outside the binary updater contract. Blessed manual install dir is the same per-user path;
+  `scripts/install-windows-release.ps1` defaults to it (`-PerMachine` for
+  Program Files).
 
 ### Deferred: code signing and notarisation (blocked on budget, not engineering)
 
@@ -484,8 +504,18 @@ time, since actions and pricing drift.
   windows/amd64 on `windows-latest` with MinGW, generating the child's PE
   resources there too so its `.exe` shows the icon); `assemble` injects each child
   beside its shell and uploads the final `kube-workspaces-*` archives with a
-  regenerated `SHA256SUMS`. On a `v*` tag the `release` job injects the children
-  into the tag archives and publishes them as a GitHub Release. The generated
+  regenerated archive checksums. The `msi` job (windows-latest, WiX 5.0.2 via
+  `packaging/windows/`) builds the **unsigned** per-arch Windows MSIs from the
+  assembled archives on every push — per-user default
+  (`%LocalAppData%\Programs\Kube Workspaces`, authored with `Scope="perUser"`;
+  per-machine is an explicit `ALLUSERS=1 INSTALLDIR=…` flag) — and uploads
+  them as `msi-windows-*`. MSI tables/payloads are checked for both arches;
+  amd64 additionally runs install/upgrade/downgrade/uninstall and machine-scope
+  lifecycle tests on the disposable runner. `checksums` verifies all eight
+  distribution files and uploads final `SHA256SUMS` on every run. On a `v*`
+  tag, `release` downloads these same assembled archives and MSIs, recomputes `SHA256SUMS`
+  over tarballs+zips+MSIs (checksums always follow MSI creation/signing), and
+  publishes everything as a GitHub Release. The generated
   release notes state the binaries are unsigned. The version is resolved from
   `git describe`, so a release build reports the tag rather than a bare sha.
   When signing is funded, `sign-macos`/`sign-windows` jobs slot in between

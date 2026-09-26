@@ -1,0 +1,100 @@
+<!-- Kube Workspaces unsigned Windows MSI (WiX v4/v5, `wix build`).
+//
+// What this is: a per-user installer for install hygiene (Add/Remove entry,
+// Start Menu shortcut, clean upgrade/uninstall). It is explicitly NOT a trust
+// fix: the MSI is built unsigned and SmartScreen warns the same as the zip.
+// Signed MSI stays budget-blocked (tracking/future/code-signing-and-notarisation.md;
+// when funded, sign the .exes AND the .msi with SHA-256 + RFC3161 timestamp
+// and recompute SHA256SUMS after signing).
+//
+// Layout contract (load-bearing, mirrors the zip + updater):
+//   - kube-workspaces.exe and kube-workspaces-web.exe (+ future Tier 1 codec
+//     DLLs) install BESIDE each other in INSTALLDIR. The shell finds its web
+//     child by sibling path (internal/shell/actions.go webChildPath) and the
+//     updater swaps the same sibling layout (internal/update/apply.go
+//     LayoutForExe); codec DLLs load from the app dir only
+//     (internal/media/load_windows.go LOAD_LIBRARY_SEARCH_DEFAULT_DIRS).
+//   - Default INSTALLDIR is %LocalAppData%\Programs\Kube Workspaces: writable
+//     without UAC so the built-in updater works unelevated. Per-machine is a
+//     flag only: msiexec /i <msi> ALLUSERS=1 INSTALLDIR="C:\Program Files\Kube Workspaces"
+//     (elevated). C:\Program Files stays reserved for the future signed
+//     per-machine installer.
+//   - The install NEVER touches %AppData%\kube-workspaces (profiles) or the
+//     Credential Manager (tokens): upgrade/uninstall preserves user data by
+//     construction. No other registry claims.
+//   - windows/arm64 ships shell-only (no webview toolchain on CI); the web
+//     child file is simply absent there and container web UIs fall back to
+//     the system browser.
+//
+// Payload harvesting: build-msi.ps1 generates Files.wxs (ComponentGroup
+// PayloadFiles) from the staged tag-archive contents, so amd64 (shell + web
+// child) and arm64 (shell-only) plus any future codec DLLs share this one
+// skeleton. Contract with the generator: the shell exe's File Id is ShellExe
+// (the Start Menu shortcut targets [#ShellExe]).
+//
+// UpgradeCode below is stable FOREVER: changing it orphans installed products
+// from the MajorUpgrade path. ProductCode is auto (* per build); MajorUpgrade
+// handles install / upgrade / uninstall. ProductVersion comes from
+// -d ProductVersion= (sanitized X.Y.Z by build-msi.ps1; MSI has no semver).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Kube Workspaces"
+           Language="1033"
+           Version="$(var.ProductVersion)"
+           Manufacturer="Kube Workspaces"
+           UpgradeCode="7a877129-11b3-4532-a7f8-1356f06496a5"
+           Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Kube Workspaces is already installed." />
+    <Media Id="1" Cabinet="kube-workspaces.cab" EmbedCab="yes" />
+
+    <!-- Scope=perUser omits ALLUSERS, the Windows Installer per-user default.
+         Do not add an empty Property-table row or mutate the built database.
+         Per-machine stays an explicit flag:
+         msiexec /i <msi> ALLUSERS=1 INSTALLDIR="C:\Program Files\Kube Workspaces"
+         (elevated; command line overrides the default). -->
+
+    <!-- IconPath arrives via -d IconPath= (absolute); kept out of the file so
+         the build works from any working directory. -->
+    <Icon Id="AppIcon.ico" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+
+    <!-- Per-user default location. INSTALLDIR stays a public property so a
+         per-machine install can override it on the msiexec command line. -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLDIR" Name="Kube Workspaces" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Kube Workspaces" />
+    </StandardDirectory>
+
+    <!-- Start Menu shortcut (non-advertised): needs a registry keypath because
+         the shortcut itself cannot be one. RemoveFolder drops the menu dir
+         on uninstall. -->
+    <Component Id="StartMenuShortcut"
+               Directory="ApplicationProgramsFolder"
+               Bitness="always64"
+               Guid="*">
+      <Shortcut Id="StartMenuShortcut"
+                Name="Kube Workspaces"
+                Description="Kube Workspaces desktop client"
+                Target="[#ShellExe]"
+                WorkingDirectory="INSTALLDIR"
+                Icon="AppIcon.ico" />
+      <RegistryValue Root="HKMU"
+                     Key="Software\Kube Workspaces"
+                     Name="StartMenuShortcut"
+                     Value="1"
+                     Type="integer"
+                     KeyPath="yes" />
+      <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
+    </Component>
+
+    <Feature Id="ProductFeature" Title="Kube Workspaces" Level="1">
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentGroupRef Id="PayloadFiles" />
+    </Feature>
+  </Package>
+</Wix>
