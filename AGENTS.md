@@ -354,12 +354,16 @@ must stay on a release built with go1.26 or newer.
   Property rows after building. The earlier IDT pin workaround was removed:
   a fresh WiX build already has the correct scope. Per-machine stays an
   explicit `ALLUSERS=1 INSTALLDIR=…` command-line override. Registry keypaths
-  use HKMU so they follow the chosen install context.
+  use HKMU so they follow the chosen install context. Determine installed
+  scope using Windows Installer `ProductInfo(AssignmentType)` (0=user,
+  1=machine), not the ARP registry hive: even a per-user installation may
+  have an HKLM uninstall entry. That incorrect inference caused the original
+  pin workaround investigation.
   `kube-workspaces.wxs` is the static skeleton (per-user `INSTALLDIR` under
   `%LocalAppData%\Programs`, Start Menu shortcut, MajorUpgrade); `build-msi.ps1`
   harvests the staged tag-archive payload into a generated `Files.wxs`
-  fragment (shell required, web child + Tier 1 codec DLLs optional — arm64 is
-  shell-only) and runs `wix build`. The shell's File Id is the fixed contract
+  fragment (shell required, web child required on amd64, codec DLLs optional;
+  arm64 is shell-only) and runs `wix build`. The shell's File Id is the fixed contract
   `ShellExe` the shortcut targets. The **UpgradeCode is stable forever** —
   changing it orphans installs from the upgrade path. `ProductVersion` is
   sanitized to numeric X.Y.Z (exact tags map, dev builds become 0.0.0).

@@ -9,10 +9,19 @@ $work = Join-Path $env:RUNNER_TEMP "msi-lifecycle"
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $install = Join-Path $env:LOCALAPPDATA "Programs\Kube Workspaces"
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) "Kube Workspaces\Kube Workspaces.lnk"
-$uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
-$machineKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
-function Get-Registration([string]$Root) {
-  @(Get-ItemProperty "$Root\*" -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -eq "Kube Workspaces" })
+$installer = New-Object -ComObject WindowsInstaller.Installer
+function Get-Registration([ValidateSet('user', 'machine')][string]$Scope) {
+  # ARP registry hive is not the MSI installation context. In particular,
+  # Windows Installer can register a per-user product under HKLM. Ask MSI.
+  $products = $installer.GetType().InvokeMember('RelatedProducts', 'GetProperty', $null, $installer,
+    @('{7A877129-11B3-4532-A7F8-1356F06496A5}'))
+  foreach ($product in $products) {
+    $assignment = $installer.GetType().InvokeMember('ProductInfo', 'GetProperty', $null, $installer, @($product, 'AssignmentType'))
+    if (($Scope -eq 'user' -and $assignment -eq '0') -or ($Scope -eq 'machine' -and $assignment -eq '1')) {
+      $version = $installer.GetType().InvokeMember('ProductInfo', 'GetProperty', $null, $installer, @($product, 'VersionString'))
+      [pscustomobject]@{ ProductCode = $product; DisplayVersion = $version }
+    }
+  }
 }
 function Invoke-Msi([string]$Arguments, [string]$Log, [int]$Expected = 0) {
   $p = Start-Process msiexec.exe -ArgumentList "$Arguments /qn /norestart /l*v `"$work\$Log.log`"" -Wait -PassThru
@@ -25,7 +34,7 @@ function Assert-Payload([string]$Directory) {
     if ((Get-FileHash $source.FullName).Hash -ne (Get-FileHash $dest).Hash) { throw "Installed payload mismatch: $dest" }
   }
 }
-if ((Test-Path $install) -or (Get-Registration $uninstallKey) -or (Get-Registration $machineKey)) {
+if ((Test-Path $install) -or (Get-Registration user) -or (Get-Registration machine)) {
   throw "Runner already contains Kube Workspaces; refusing to overwrite it."
 }
 $first = Join-Path $work "first.msi"
@@ -42,19 +51,19 @@ try {
   if (-not (Test-Path $shortcut)) { throw "Start Menu shortcut missing." }
   $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
   if ($link.TargetPath -ne (Join-Path $install 'kube-workspaces.exe')) { throw "Incorrect shortcut target." }
-  $registered = @(Get-Registration $uninstallKey)
-  if ($registered.Count -ne 1 -or $registered[0].DisplayVersion -ne '0.0.1' -or (Get-Registration $machineKey)) {
+  $registered = @(Get-Registration user)
+  if ($registered.Count -ne 1 -or $registered[0].DisplayVersion -ne '0.0.1' -or (Get-Registration machine)) {
     throw "Default install is not registered exclusively per-user."
   }
   $run = Start-Process (Join-Path $install 'kube-workspaces.exe') -ArgumentList 'version' -Wait -PassThru
   if ($run.ExitCode -ne 0) { throw "Installed shell failed to launch." }
   Invoke-Msi "/i `"$second`"" "upgrade"
   Assert-Payload $install
-  $registered = @(Get-Registration $uninstallKey)
+  $registered = @(Get-Registration user)
   if ($registered.Count -ne 1 -or $registered[0].DisplayVersion -ne '0.0.2') { throw "Major upgrade left wrong registration." }
   Invoke-Msi "/i `"$first`"" "downgrade" 1603
   Invoke-Msi "/x `"$second`"" "uninstall"
-  if ((Test-Path (Join-Path $install 'kube-workspaces.exe')) -or (Test-Path $shortcut) -or (Get-Registration $uninstallKey)) {
+  if ((Test-Path (Join-Path $install 'kube-workspaces.exe')) -or (Test-Path $shortcut) -or (Get-Registration user)) {
     throw "Uninstall left installed files, shortcut or registration."
   }
   if ((Get-Content $sentinel -Raw).Trim() -ne 'preserve me') { throw "Uninstall changed profile data." }
@@ -62,9 +71,9 @@ try {
   $machineInstall = Join-Path $env:ProgramFiles 'Kube Workspaces'
   Invoke-Msi "/i `"$second`" ALLUSERS=1 INSTALLDIR=`"$machineInstall`"" "machine-install"
   Assert-Payload $machineInstall
-  if (@(Get-Registration $machineKey).Count -ne 1) { throw "Machine registration missing." }
+  if (@(Get-Registration machine).Count -ne 1) { throw "Machine registration missing." }
   Invoke-Msi "/x `"$second`" ALLUSERS=1" "machine-uninstall"
-  if ((Get-Registration $machineKey) -or (Test-Path (Join-Path $machineInstall 'kube-workspaces.exe'))) { throw "Machine uninstall incomplete." }
+  if ((Get-Registration machine) -or (Test-Path (Join-Path $machineInstall 'kube-workspaces.exe'))) { throw "Machine uninstall incomplete." }
   Write-Host "MSI lifecycle passed: per-user install, payload, shortcut, launch, upgrade, downgrade rejection, uninstall, data preservation, per-machine override."
 } finally {
   Remove-Item $sentinel -ErrorAction SilentlyContinue
