@@ -22,7 +22,7 @@ function Read-Rows([string]$Query, [int]$Columns) {
     Invoke-Com $view "Execute" @() | Out-Null
     while ($record = Invoke-Com $view "Fetch" @()) {
       try {
-        $values = for ($i = 1; $i -le $Columns; $i++) { Get-Com $record "StringData" @($i) }
+        $values = @(for ($i = 1; $i -le $Columns; $i++) { Get-Com $record "StringData" @($i) })
         ,$values
       } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) }
     }
@@ -38,7 +38,9 @@ try {
   $db = Invoke-Com $installer "OpenDatabase" @((Resolve-Path $Path).Path, 0)
   $properties = @{}
   Read-Rows 'SELECT `Property`, `Value` FROM `Property`' 2 | ForEach-Object { $properties[$_[0]] = $_[1] }
-  if ($properties.ContainsKey("ALLUSERS")) { throw "Per-user MSI must omit ALLUSERS." }
+  if ($properties.ALLUSERS -ne '2' -or $properties.MSIINSTALLPERUSER -ne '1') {
+    throw "Dual-scope MSI must default to per-user (ALLUSERS=2, MSIINSTALLPERUSER=1)."
+  }
   if ($properties.ProductVersion -ne $Version) { throw "Incorrect ProductVersion: $($properties.ProductVersion)" }
   if ($properties.UpgradeCode -ne "{7A877129-11B3-4532-A7F8-1356F06496A5}") { throw "UpgradeCode changed." }
   $summary = Get-Com $db "SummaryInformation" @(0)
@@ -57,6 +59,17 @@ try {
   if ($Arch -eq "amd64" -and $names -notcontains "kube-workspaces-web.exe") { throw "Web child missing from MSI." }
   $staged = @(Get-ChildItem $StagingDir -File | Where-Object { $_.Extension -in @('.exe', '.dll') } | ForEach-Object { $_.Name })
   if (Compare-Object $staged $names) { throw "MSI payload differs from archive." }
+  $dialogs = @(Read-Rows 'SELECT `Dialog` FROM `Dialog`' 1 | ForEach-Object { $_[0] })
+  foreach ($required in @('WelcomeDlg', 'ScopeDlg', 'VerifyReadyDlg', 'ProgressDlg', 'ExitDialog')) {
+    if ($dialogs -notcontains $required) { throw "Missing installer dialog: $required" }
+  }
+  $events = @(Read-Rows 'SELECT `Event`, `Argument`, `Condition`, `Ordering` FROM `ControlEvent` WHERE `Dialog_` = ''ExitDialog'' AND `Control_` = ''Finish''' 4)
+  $launch = @($events | Where-Object { $_[0] -eq 'DoAction' -and $_[1] -eq 'LaunchKubeWorkspaces' })
+  if ($launch.Count -ne 1 -or $launch[0][2] -notmatch 'WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed') {
+    throw 'Finish must launch only when the checkbox is selected on a new install.'
+  }
+  $sequence = @(Read-Rows 'SELECT `Action` FROM `InstallExecuteSequence`' 1 | ForEach-Object { $_[0] })
+  if ($sequence -contains 'LaunchKubeWorkspaces') { throw 'Launch must remain UI-only.' }
   Write-Host "Verified MSI: $template, version $Version, per-user default, $($names.Count) payload files."
 } finally {
   foreach ($object in @($summary, $db, $installer)) {

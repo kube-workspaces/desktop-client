@@ -10,6 +10,19 @@ publishes the same files to the GitHub Release; no release rebuild occurs.
 
 Use Windows, .NET SDK 8 and WiX **5.0.2**:
 
+The build script also installs/caches `WixToolset.UI.wixext/5.0.2` for the
+standard setup dialogs.
+
+The wizard uses Kube Workspaces artwork instead of WiX's stock disc graphic:
+`dialog.bmp` (493x312) for welcome/completion pages and `banner.bmp` (493x58)
+for the top banner, including the scope-selection page. These 24-bit bitmaps
+are generated from `assets/icon.png` and kept with the installer sources;
+normal builds do not need graphics tools. To regenerate on Windows:
+
+```powershell
+./packaging/windows/generate-ui-artwork.ps1
+```
+
 ```powershell
 dotnet tool install --global wix --version 5.0.2
 Expand-Archive kube-workspaces-v0.1.8-windows-amd64.zip -DestinationPath stage
@@ -27,15 +40,22 @@ increase for major upgrades; uninstall before switching architecture or scope.
 
 ## Install
 
-Double-click the MSI or run `msiexec /i <file.msi>`. By default it installs for
-the current user under `%LocalAppData%\Programs\Kube Workspaces`, including a
-Start Menu shortcut and an Add/Remove Programs entry. Profiles in `%AppData%`
-and Credential Manager tokens are preserved on uninstall.
+Double-click the MSI or run `msiexec /i <file.msi>`. The setup wizard asks:
 
-An elevated per-machine install is explicit:
+* **Just me** (default): `%LocalAppData%\Programs\Kube Workspaces`, no elevation.
+* **All users on this computer**: `C:\Program Files\Kube Workspaces`, with
+  administrator permission requested by Windows Installer as needed.
+
+The Start Menu shortcut follows the selected scope. After successful setup,
+the standard completion page offers **Open Kube Workspaces now** (checked by
+default). Clear it to finish without launching. The launch action runs only
+from the interactive Finish button, not during silent install, repair or removal.
+Profiles in `%AppData%` and Credential Manager tokens survive uninstall.
+
+For silent per-machine installation, run this from an elevated terminal:
 
 ```powershell
-msiexec /i <file.msi> ALLUSERS=1 INSTALLDIR="C:\Program Files\Kube Workspaces"
+msiexec /i <file.msi> /qn ALLUSERS=1
 ```
 
 Installers are unsigned. WebView2 is an external runtime prerequisite for the
@@ -49,8 +69,9 @@ when Windows Installer version tracking is required.
 ## Verification
 
 `build-msi.ps1` runs WiX validation and `verify-msi.ps1` against the actual MSI:
-architecture, ProductVersion, stable UpgradeCode, per-user default, required
-executables and payload inventory/sizes. It never patches the resulting MSI.
+architecture, ProductVersion, stable UpgradeCode, dual-scope per-user default,
+required executables, payload inventory/sizes, setup dialogs and the guarded
+UI-only launch event. It never patches the resulting MSI.
 
 On disposable amd64 CI runners, `test-msi.ps1` additionally builds two test
 versions and exercises default install, installed hashes, shortcut, shell

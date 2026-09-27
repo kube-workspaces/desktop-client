@@ -115,8 +115,9 @@ code signing and notarisation*).
 
 Blessed manual location: `%LocalAppData%\Programs\Kube Workspaces`
 (`C:\Users\<you>\AppData\Local\Programs\Kube Workspaces`) — writable without
-UAC so the built-in updater works unelevated. `C:\Program Files\Kube Workspaces`
-is reserved for the future per-machine signed installer.
+UAC so the built-in updater works unelevated. The installer's **All users**
+choice uses `C:\Program Files\Kube Workspaces` and requires administrator
+permission for installation and later updates.
 
 ```powershell
 Expand-Archive kube-workspaces-<version>-windows-amd64.zip -DestinationPath "$env:TEMP\kw-install" -Force
@@ -139,10 +140,12 @@ the install dir is safe — tokens live in Credential Manager, profiles in
 `%AppData%\kube-workspaces\`. Close all instances before
 `kube-workspaces update`; a Program Files install reports
 `install directory needs elevated permissions` instead of updating unelevated.
-The zip makes no registry claims. Per-machine MSI (explicit flag; the default
-stays per-user even for administrators):
-`msiexec /i kube-workspaces-<version>-windows-<arch>.msi ALLUSERS=1 INSTALLDIR="C:\Program Files\Kube Workspaces"`
-(elevated). Full detail lives on the
+The zip makes no registry claims. The MSI wizard offers **Just me** (default)
+or **All users on this computer** (Program Files, administrator permission
+required). The completion page has an **Open Kube Workspaces now** checkbox.
+Silent per-machine installation uses
+`msiexec /i kube-workspaces-<version>-windows-<arch>.msi /qn ALLUSERS=1`
+from an elevated terminal. Full detail lives on the
 [desktop client docs page](https://github.com/kube-workspaces/deploy/blob/main/docs/desktop-client.md).
 
 Every **Build** workflow run also provides `msi-windows-amd64` and

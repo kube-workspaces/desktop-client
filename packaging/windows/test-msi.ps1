@@ -69,11 +69,14 @@ try {
   if ((Get-Content $sentinel -Raw).Trim() -ne 'preserve me') { throw "Uninstall changed profile data." }
   # Hosted runners are administrators: exercise the explicit machine override.
   $machineInstall = Join-Path $env:ProgramFiles 'Kube Workspaces'
-  Invoke-Msi "/i `"$second`" ALLUSERS=1 INSTALLDIR=`"$machineInstall`"" "machine-install"
+  Invoke-Msi "/i `"$second`" ALLUSERS=1" "machine-install"
   Assert-Payload $machineInstall
   if (@(Get-Registration machine).Count -ne 1) { throw "Machine registration missing." }
+  $machineShortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Kube Workspaces\Kube Workspaces.lnk'
+  if (-not (Test-Path $machineShortcut)) { throw "Shared Start Menu shortcut missing." }
   Invoke-Msi "/x `"$second`" ALLUSERS=1" "machine-uninstall"
   if ((Get-Registration machine) -or (Test-Path (Join-Path $machineInstall 'kube-workspaces.exe'))) { throw "Machine uninstall incomplete." }
+  if (Test-Path $machineShortcut) { throw "Machine uninstall left its shared shortcut." }
   Write-Host "MSI lifecycle passed: per-user install, payload, shortcut, launch, upgrade, downgrade rejection, uninstall, data preservation, per-machine override."
 } finally {
   Remove-Item $sentinel -ErrorAction SilentlyContinue

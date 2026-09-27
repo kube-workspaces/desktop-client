@@ -1,0 +1,86 @@
+<!-- Standard WiX welcome/progress/confirmation/maintenance dialogs with a
+     small scope-selection page. Keep both choices visible to standard users:
+     Windows Installer can ask for administrator credentials for all-users. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.ArtworkDir)\dialog.bmp" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.ArtworkDir)\banner.bmp" />
+    <Property Id="KW_INSTALL_SCOPE" Value="user" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open Kube Workspaces now" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <!-- This is a UI-only immediate action: launch as the initiating user,
+         not as the elevated Windows Installer service. Never runs under /qn. -->
+    <CustomAction Id="LaunchKubeWorkspaces" FileRef="ShellExe" ExeCommand=""
+                  Execute="immediate" Impersonate="yes" Return="asyncNoWait" />
+
+    <UI Id="KubeWorkspacesUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <Property Id="ARPNOMODIFY" Value="1" />
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="ScopeDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ScopeDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3" Condition="Installed AND PATCH" />
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchKubeWorkspaces" Order="1"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT REMOVE ~= &quot;ALL&quot;" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <Dialog Id="ScopeDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44"
+                 TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="Title" Type="Text" X="15" Y="15" Width="300" Height="25" Transparent="yes"
+                 Text="{\WixUI_Font_Title}Who should Kube Workspaces be installed for?" />
+        <Control Id="TopLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Scope" Type="RadioButtonGroup" X="25" Y="65" Width="320" Height="105" Property="KW_INSTALL_SCOPE">
+          <RadioButtonGroup Property="KW_INSTALL_SCOPE">
+            <RadioButton Value="user" X="0" Y="0" Width="315" Height="18" Text="Just me (recommended)" />
+            <RadioButton Value="machine" X="0" Y="65" Width="315" Height="18" Text="All users on this computer" />
+          </RadioButtonGroup>
+        </Control>
+        <Control Id="UserDescription" Type="Text" X="42" Y="86" Width="305" Height="35"
+                 Text="Installs in your local Programs folder. No administrator permission needed. Updates can run without elevation." />
+        <Control Id="MachineDescription" Type="Text" X="42" Y="151" Width="305" Height="40"
+                 Text="Installs in Program Files for everyone. Administrator permission is required to install and update." />
+        <Control Id="SwitchScopeNote" Type="Text" X="25" Y="203" Width="320" Height="25"
+                 Text="To change the scope of an existing installation, uninstall it first. Your profiles are preserved." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="&amp;Back">
+          <Publish Event="NewDialog" Value="WelcomeDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="&amp;Next">
+          <Publish Property="ALLUSERS" Value="{}" Order="1" Condition="KW_INSTALL_SCOPE = &quot;user&quot;" />
+          <Publish Property="MSIINSTALLPERUSER" Value="1" Order="2" Condition="KW_INSTALL_SCOPE = &quot;user&quot;" />
+          <Publish Property="INSTALLDIR" Value="[LocalAppDataFolder]Programs\Kube Workspaces" Order="3" Condition="KW_INSTALL_SCOPE = &quot;user&quot;" />
+          <Publish Property="ALLUSERS" Value="1" Order="4" Condition="KW_INSTALL_SCOPE = &quot;machine&quot;" />
+          <Publish Property="MSIINSTALLPERUSER" Value="{}" Order="5" Condition="KW_INSTALL_SCOPE = &quot;machine&quot;" />
+          <Publish Property="INSTALLDIR" Value="[KW_MACHINE_PROGRAMS]\Kube Workspaces" Order="6" Condition="KW_INSTALL_SCOPE = &quot;machine&quot;" />
+          <Publish Property="ApplicationProgramsFolder" Value="[AppDataFolder]Microsoft\Windows\Start Menu\Programs\Kube Workspaces" Order="7" Condition="KW_INSTALL_SCOPE = &quot;user&quot;" />
+          <Publish Property="ApplicationProgramsFolder" Value="[CommonAppDataFolder]Microsoft\Windows\Start Menu\Programs\Kube Workspaces" Order="8" Condition="KW_INSTALL_SCOPE = &quot;machine&quot;" />
+          <Publish Event="SetTargetPath" Value="INSTALLDIR" Order="9" />
+          <Publish Event="SetTargetPath" Value="ApplicationProgramsFolder" Order="10" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="11" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+    </UI>
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
+</Wix>

@@ -163,14 +163,20 @@ try {
     exit 1
   }
   & wix --version | Write-Host
+  # Pin the standard Windows Installer dialogs alongside the compiler. The
+  # extension cache is per-user; repeated builds reuse the downloaded package.
+  & wix extension add --global WixToolset.UI.wixext/5.0.2 | Write-Host
+  if ($LASTEXITCODE -ne 0) { throw "WiX UI extension installation failed ($LASTEXITCODE)." }
 
   $outDir = Split-Path $OutFile -Parent
   if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
 
-  & wix build $skeleton $fragment `
+  & wix build $skeleton $fragment (Join-Path $WxsDir "installer-ui.wxs") `
+    -ext WixToolset.UI.wixext/5.0.2 `
     -arch $wixArch `
     -d ProductVersion=$productVersion `
     -d IconPath="$iconPath" `
+    -d ArtworkDir="$((Resolve-Path $WxsDir).Path)" `
     -o $OutFile
   if ($LASTEXITCODE -ne 0) {
     Write-Error "wix build failed (exit $LASTEXITCODE)."

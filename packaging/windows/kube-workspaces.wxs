@@ -16,9 +16,8 @@
 //     (internal/media/load_windows.go LOAD_LIBRARY_SEARCH_DEFAULT_DIRS).
 //   - Default INSTALLDIR is %LocalAppData%\Programs\Kube Workspaces: writable
 //     without UAC so the built-in updater works unelevated. Per-machine is a
-//     flag only: msiexec /i <msi> ALLUSERS=1 INSTALLDIR="C:\Program Files\Kube Workspaces"
-//     (elevated). C:\Program Files stays reserved for the future signed
-//     per-machine installer.
+//     wizard choice: All users installs to Program Files and requests elevation.
+//     Silent installs use ALLUSERS=1 for the same machine-wide default path.
 //   - The install NEVER touches %AppData%\kube-workspaces (profiles) or the
 //     Credential Manager (tokens): upgrade/uninstall preserves user data by
 //     construction. No other registry claims.
@@ -43,15 +42,28 @@
            Version="$(var.ProductVersion)"
            Manufacturer="Kube Workspaces"
            UpgradeCode="7a877129-11b3-4532-a7f8-1356f06496a5"
-           Scope="perUser">
+           Scope="perUserOrMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer version of Kube Workspaces is already installed." />
     <Media Id="1" Cabinet="kube-workspaces.cab" EmbedCab="yes" />
 
-    <!-- Scope=perUser omits ALLUSERS, the Windows Installer per-user default.
-         Do not add an empty Property-table row or mutate the built database.
-         Per-machine stays an explicit flag:
-         msiexec /i <msi> ALLUSERS=1 INSTALLDIR="C:\Program Files\Kube Workspaces"
-         (elevated; command line overrides the default). -->
+    <!-- Dual-purpose package: ALLUSERS=2 / MSIINSTALLPERUSER=1 defaults to
+         per-user, but permits elevation when the wizard selects all users.
+         Both sequences need the path default so /qn works without the UI. -->
+    <!-- MSI redirects ProgramFiles64Folder for dual-purpose per-user installs.
+         Read the real machine directory before allowing the user to switch. -->
+    <Property Id="KW_MACHINE_PROGRAMS" Secure="yes">
+      <RegistrySearch Id="MachinePrograms" Root="HKLM"
+                      Key="SOFTWARE\Microsoft\Windows\CurrentVersion"
+                      Name="ProgramFilesDir" Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="INSTALLDIR" Value="[KW_MACHINE_PROGRAMS]\Kube Workspaces"
+                 Before="CostFinalize" Sequence="both"
+                 Condition="NOT INSTALLDIR AND (ALLUSERS = 1 OR (ALLUSERS = 2 AND NOT MSIINSTALLPERUSER))" />
+    <SetProperty Id="ApplicationProgramsFolder" Value="[CommonAppDataFolder]Microsoft\Windows\Start Menu\Programs\Kube Workspaces"
+                 Before="CostFinalize" Sequence="both"
+                 Condition="ALLUSERS = 1 OR (ALLUSERS = 2 AND NOT MSIINSTALLPERUSER)" />
+    <Property Id="INSTALLDIR" Secure="yes" />
+    <UIRef Id="KubeWorkspacesUI" />
 
     <!-- IconPath arrives via -d IconPath= (absolute); kept out of the file so
          the build works from any working directory. -->

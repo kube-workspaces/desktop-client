@@ -349,11 +349,18 @@ must stay on a release built with go1.26 or newer.
   `SDL_SetWindowIcon` (title bar). The .icns drives the macOS Dock icon via the
   bundle; everywhere else SDL owns the icon.
 - **The unsigned MSI is WiX 5.0.2 (`packaging/windows/`), per-user by default.**
-  `Scope="perUser"` omits `ALLUSERS`; `verify-msi.ps1` verifies this in the
-  built database using read-only Windows Installer COM access. Do not mutate
-  Property rows after building. The earlier IDT pin workaround was removed:
-  a fresh WiX build already has the correct scope. Per-machine stays an
-  explicit `ALLUSERS=1 INSTALLDIR=…` command-line override. Registry keypaths
+  `Scope="perUserOrMachine"` authors `ALLUSERS=2` / `MSIINSTALLPERUSER=1`.
+  `installer-ui.wxs` uses the pinned WiX UI extension for standard dialogs,
+  with an explicit Just me / All users scope page and an optional launch on
+  successful Finish. `WixUIDialogBmp` / `WixUIBannerBmp` replace stock WiX
+  artwork with branded BMPs; regenerate via `generate-ui-artwork.ps1` from
+  `assets/icon.png` (Windows System.Drawing; no build-time graphics dependency).
+  Silent installs stay per-user; `ALLUSERS=1` selects the
+  real Program Files path. `ProgramFiles64Folder` can be redirected to the
+  user's Programs directory by MSI: use the 64-bit ProgramFilesDir registry
+  search for the machine path, and explicitly set the shared shortcut path.
+  `verify-msi.ps1` verifies the built database read-only. Do not mutate
+  Property rows after building. Registry keypaths
   use HKMU so they follow the chosen install context. Determine installed
   scope using Windows Installer `ProductInfo(AssignmentType)` (0=user,
   1=machine), not the ARP registry hive: even a per-user installation may
@@ -511,8 +518,8 @@ time, since actions and pricing drift.
   regenerated archive checksums. The `msi` job (windows-latest, WiX 5.0.2 via
   `packaging/windows/`) builds the **unsigned** per-arch Windows MSIs from the
   assembled archives on every push — per-user default
-  (`%LocalAppData%\Programs\Kube Workspaces`, authored with `Scope="perUser"`;
-  per-machine is an explicit `ALLUSERS=1 INSTALLDIR=…` flag) — and uploads
+  (`%LocalAppData%\Programs\Kube Workspaces`, dual-scope wizard defaults to
+  Just me; per-machine is All users or the silent `ALLUSERS=1` flag) — and uploads
   them as `msi-windows-*`. MSI tables/payloads are checked for both arches;
   amd64 additionally runs install/upgrade/downgrade/uninstall and machine-scope
   lifecycle tests on the disposable runner. `checksums` verifies all eight
