@@ -28,7 +28,7 @@ var english = map[string]string{
 	"updates.sessions":       "Close all sessions (including parked sessions and web windows) before restarting.",
 	"updates.autoOn":         "Automatic checks: On",
 	"updates.autoOff":        "Automatic checks: Off",
-	"updates.check":          "Check now / Retry",
+	"updates.check":          "Check for updates",
 	"updates.download":       "Download update",
 	"updates.restart":        "Restart to update",
 	"app.name":               "Kube Workspaces",
