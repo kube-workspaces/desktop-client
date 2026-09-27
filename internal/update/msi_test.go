@@ -124,8 +124,14 @@ func TestMsiArgs(t *testing.T) {
 
 func TestApplyMSIExitCodes(t *testing.T) {
 	dir := t.TempDir()
-	// The installed shell proves itself by reporting the tag.
-	put(t, filepath.Join(dir, ShellBinary+".exe"), "#!/bin/sh\necho v1.2.3\n")
+	// Version verification is injected: executing a fixture binary is not
+	// portable (a shell script is not runnable as .exe on Windows).
+	verify := func(binary, tag string) error {
+		if binary != filepath.Join(dir, ShellBinary+".exe") || tag != "v1.2.3" {
+			return errors.New("wrong proof target")
+		}
+		return nil
+	}
 	old := execMsiexec
 	defer func() { execMsiexec = old }()
 	for _, tc := range []struct {
@@ -147,7 +153,7 @@ func TestApplyMSIExitCodes(t *testing.T) {
 			}
 			return &msiExitError{Code: tc.code}
 		}
-		err := applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: t.TempDir()})
+		err := applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: t.TempDir()}, verify)
 		if tc.wantErr == "" && err != nil {
 			t.Fatalf("code %d: %v", tc.code, err)
 		}
@@ -156,8 +162,13 @@ func TestApplyMSIExitCodes(t *testing.T) {
 		}
 	}
 	execMsiexec = func([]string) error { return errors.New("no msiexec here") }
-	if err := applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: t.TempDir()}); err == nil {
+	if err := applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: t.TempDir()}, verify); err == nil {
 		t.Fatal("accepted a launch failure")
+	}
+	verifyFail := func(string, string) error { return errors.New("staged binary reports \"v0.0.0\"") }
+	execMsiexec = func([]string) error { return nil }
+	if err := applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: t.TempDir()}, verifyFail); err == nil {
+		t.Fatal("accepted a failed version proof")
 	}
 }
 

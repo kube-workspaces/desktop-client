@@ -172,7 +172,7 @@ func RunHelper(job string) error {
 // The client relaunches only when args are present.
 func runMSIHelper(h handoff) error {
 	pkg := &MSIPackage{Path: h.MSI.Path, Tag: h.MSI.Tag, Dir: h.MSI.Dir, MachineScope: h.MSI.Machine, Work: h.MSI.Work}
-	err := applyMSI(pkg)
+	err := applyMSI(pkg, nil)
 	if err != nil {
 		_ = os.WriteFile(filepath.Join(h.MSI.Dir, ".update-error"), []byte(err.Error()), 0o600)
 		return err

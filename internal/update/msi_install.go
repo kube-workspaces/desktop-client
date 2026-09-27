@@ -169,8 +169,9 @@ var execMsiexec = func(args []string) error {
 
 // applyMSI runs the staged installer and proves the result: the installed
 // shell must report the release tag afterwards, the same self-check the
-// archive flow applies before and after its swap (see [Apply]).
-func applyMSI(pkg *MSIPackage) error {
+// archive flow applies before and after its swap (see [Apply]). A nil verify
+// means [VerifyVersion].
+func applyMSI(pkg *MSIPackage, verify func(binary, wantTag string) error) error {
 	log := filepath.Join(pkg.Work, "msi-update.log")
 	err := execMsiexec(msiArgs(pkg.Path, pkg.Dir, pkg.MachineScope, log))
 	var xe *msiExitError
@@ -189,8 +190,11 @@ func applyMSI(pkg *MSIPackage) error {
 	if err != nil {
 		return err
 	}
+	if verify == nil {
+		verify = VerifyVersion
+	}
 	shell := filepath.Join(pkg.Dir, ShellBinary+".exe")
-	if err := VerifyVersion(shell, pkg.Tag); err != nil {
+	if err := verify(shell, pkg.Tag); err != nil {
 		return fmt.Errorf("update: installed build failed its version check: %w", err)
 	}
 	return nil
