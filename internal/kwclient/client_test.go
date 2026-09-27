@@ -94,14 +94,26 @@ func TestDefaultUserAgentAndAuthHeaders(t *testing.T) {
 	if ck.Value != "tok.sig" {
 		t.Errorf("cookie value = %q, want %q", ck.Value, "tok.sig")
 	}
-	if ua := got.Header.Get("User-Agent"); ua != defaultUserAgent {
-		t.Errorf("User-Agent = %q, want %q", ua, defaultUserAgent)
+	if ua := got.Header.Get("User-Agent"); ua != defaultUserAgent() {
+		t.Errorf("User-Agent = %q, want %q", ua, defaultUserAgent())
 	}
 	if cc := got.Header.Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
 	if acc := got.Header.Get("Accept"); acc != "application/json" {
 		t.Errorf("Accept = %q, want application/json", acc)
+	}
+}
+
+func TestVersionFallbackIsHonest(t *testing.T) {
+	// Version is build metadata, not a hardcoded string: it must never be
+	// empty, and the default User-Agent must carry it.
+	if Version == "" {
+		t.Fatal("Version is empty")
+	}
+	const prefix = "kube-workspaces-desktop/"
+	if ua := defaultUserAgent(); len(ua) <= len(prefix) || ua[:len(prefix)] != prefix {
+		t.Fatalf("default User-Agent = %q, want a versioned %q token", ua, prefix)
 	}
 }
 

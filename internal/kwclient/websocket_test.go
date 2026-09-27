@@ -66,8 +66,8 @@ func TestDialVNC(t *testing.T) {
 	if ck, err := seen.Cookie(SessionCookieName); err != nil || ck.Value != "tok.sig" {
 		t.Errorf("kw-session cookie = %v (err %v), want tok.sig", ck, err)
 	}
-	if got := seen.Header.Get("User-Agent"); got != defaultUserAgent {
-		t.Errorf("User-Agent = %q, want %q", got, defaultUserAgent)
+	if got := seen.Header.Get("User-Agent"); got != defaultUserAgent() {
+		t.Errorf("User-Agent = %q, want %q", got, defaultUserAgent())
 	}
 
 	offered := seen.Header.Get("Sec-WebSocket-Protocol")

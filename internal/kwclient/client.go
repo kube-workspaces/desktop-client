@@ -13,13 +13,29 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 )
 
 // Version is the client version reported in the default User-Agent.
-const Version = "0.2.0"
+//
+// It is read from the build metadata rather than hardcoded, so it can never
+// go stale: module-aware builds report their version, everything else
+// reports "dev". Callers that know their release version (the binaries stamp
+// it at build time) should keep passing it explicitly with [WithUserAgent]
+// instead of relying on this fallback.
+var Version = buildVersion()
+
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return v
+		}
+	}
+	return "dev"
+}
 
 const (
 	// SessionCookieName is the cookie the API sets on login and accepts on
@@ -35,8 +51,11 @@ const (
 const (
 	defaultTimeout          = 30 * time.Second
 	defaultHandshakeTimeout = 30 * time.Second
-	defaultUserAgent        = "kube-workspaces-desktop/" + Version
 )
+
+// defaultUserAgent is the User-Agent for clients built without
+// [WithUserAgent].
+func defaultUserAgent() string { return "kube-workspaces-desktop/" + Version }
 
 // Client talks to a kube-workspaces API server.
 //
@@ -124,7 +143,7 @@ func WithHandshakeTimeout(d time.Duration) Option {
 // appended by the client. A trailing slash is accepted and trimmed.
 func New(baseURL string, opts ...Option) (*Client, error) {
 	cfg := config{
-		userAgent:        defaultUserAgent,
+		userAgent:        defaultUserAgent(),
 		timeout:          defaultTimeout,
 		handshakeTimeout: defaultHandshakeTimeout,
 	}
