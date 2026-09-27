@@ -132,6 +132,14 @@ type Tier1Sink struct {
 	// apply them, so diagnostics can tell congestion from loss.
 	droppedClipboard uint64
 
+	cursorMu       sync.Mutex
+	guestCursor    *CursorShape
+	hasGuestCursor bool
+	// droppedCursors counts shapes overwritten before the render loop could
+	// apply them. Cursor shapes arrive in bursts (theme and scale changes
+	// re-send them); only the latest matters, so overwriting is normal.
+	droppedCursors uint64
+
 	// wake nudges the render loop that may be parked in a blocking event
 	// wait. It is set once the backend is open and is nil-safe.
 	wake func()
@@ -160,6 +168,9 @@ func (s *Tier1Sink) Reconnecting() {
 	s.clipMu.Lock()
 	s.guestClip, s.hasGuestClip = "", false
 	s.clipMu.Unlock()
+	s.cursorMu.Lock()
+	s.guestCursor, s.hasGuestCursor = nil, false
+	s.cursorMu.Unlock()
 	s.reconnecting.Store(true)
 	s.epoch.Add(1)
 	s.wakeUp()
@@ -192,6 +203,32 @@ func (s *Tier1Sink) takeClipboard() (string, bool) {
 	text, has := s.guestClip, s.hasGuestClip
 	s.guestClip, s.hasGuestClip = "", false
 	return text, has
+}
+
+// GuestCursor queues a decoded server cursor shape (guest-to-host). A nil
+// shape hides the cursor. The render loop drains it on the window thread,
+// the only thread allowed to touch the backend, and installs it with
+// [Backend.SetCursor] — the same path the RFB viewer's Cursor
+// pseudo-encoding takes.
+func (s *Tier1Sink) GuestCursor(shape *CursorShape) {
+	s.cursorMu.Lock()
+	if s.hasGuestCursor {
+		s.droppedCursors++
+	}
+	s.guestCursor, s.hasGuestCursor = shape, true
+	s.cursorMu.Unlock()
+	s.wakeUp()
+}
+
+// takeCursor drains the latest guest cursor shape, or (nil, false) if there
+// is none. A drained nil shape with has=true hides the cursor; (nil, false)
+// means no push arrived. It is called from the render loop only.
+func (s *Tier1Sink) takeCursor() (*CursorShape, bool) {
+	s.cursorMu.Lock()
+	defer s.cursorMu.Unlock()
+	shape, has := s.guestCursor, s.hasGuestCursor
+	s.guestCursor, s.hasGuestCursor = nil, false
+	return shape, has
 }
 
 func (s *Tier1Sink) wakeUp() {
@@ -260,6 +297,7 @@ func RunTier1(ctx context.Context, be Backend, inp Tier1Input,
 		if d.w.quit {
 			continue
 		}
+		d.w.syncCursor()
 
 		if err := d.w.step(time.Now()); err != nil {
 			return d.finish(err)
@@ -396,6 +434,7 @@ func (d *Tier1Detached) Step(now time.Time, events []Event) error {
 		_ = d.finish(nil)
 		return nil
 	}
+	d.w.syncCursor()
 	if err := d.w.step(now); err != nil {
 		return d.finish(err)
 	}
@@ -455,6 +494,19 @@ func (w *tier1Window) syncGrab() {
 	w.grabbed = want
 	if err := w.be.SetKeyboardGrab(want); err != nil {
 		w.opts.logf("keyboard grab: %v", err)
+	}
+}
+
+// syncCursor installs a guest cursor shape the producer queued since the
+// last pass. A backend that cannot install it keeps its current cursor: a
+// wrong cursor is cosmetic, never a reason to end a session.
+func (w *tier1Window) syncCursor() {
+	shape, has := w.sink.takeCursor()
+	if !has {
+		return
+	}
+	if err := w.be.SetCursor(shape); err != nil {
+		w.opts.logf("guest cursor: %v", err)
 	}
 }
 

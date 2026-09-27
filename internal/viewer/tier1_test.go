@@ -110,6 +110,42 @@ func TestTier1GrabsKeyboardInFullscreen(t *testing.T) {
 	}
 }
 
+// TestTier1WindowInstallsGuestCursor: a queued producer shape reaches the
+// backend with its pixels, a hide hides, an empty queue asks for nothing,
+// and a reconnect drops a shape that never made it to the window.
+func TestTier1WindowInstallsGuestCursor(t *testing.T) {
+	be := newFakeBackend(1280, 800)
+	sink := &Tier1Sink{}
+	w := &tier1Window{be: be, sink: sink, inp: &recordInput{}}
+
+	pix := []byte{0x00, 0xff, 0x00, 0xff}
+	sink.GuestCursor(&CursorShape{Pix: pix, W: 1, H: 1})
+	w.syncCursor()
+	got := be.lastCursor()
+	if got == nil || got.W != 1 || got.H != 1 || len(got.Pix) != 4 || got.Pix[1] != 0xff {
+		t.Fatalf("installed cursor = %+v, want the 1x1 green shape", got)
+	}
+
+	sink.GuestCursor(&CursorShape{})
+	w.syncCursor()
+	if got := be.lastCursor(); got == nil || !got.Hidden() {
+		t.Fatalf("cursor = %+v after a hide, want hidden", got)
+	}
+
+	n := len(be.cursors)
+	w.syncCursor()
+	if len(be.cursors) != n {
+		t.Fatal("empty queue installed a cursor")
+	}
+
+	sink.GuestCursor(&CursorShape{Pix: pix, W: 1, H: 1})
+	sink.Reconnecting()
+	w.syncCursor()
+	if len(be.cursors) != n {
+		t.Fatal("reconnect did not drop the pending shape")
+	}
+}
+
 // --- helpers ----------------------------------------------------------------
 
 func waitForBool(t *testing.T, d time.Duration, fn func() bool) {

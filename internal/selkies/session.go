@@ -253,7 +253,7 @@ func (s *Session) run(ctx context.Context) error {
 	defer timer.Stop()
 	ackTick := time.NewTicker(keyHeartbeatInterval)
 	defer ackTick.Stop()
-	var gotMode, haveVideo, haveDecodedVideo, cursorVisible bool
+	var gotMode, haveVideo, haveDecodedVideo bool
 	var frameID uint16
 	var frameAt time.Time
 	cadence := idleCadence{active: s.cfg.framerate(), applied: s.cfg.framerate()}
@@ -345,14 +345,10 @@ func (s *Session) run(ctx context.Context) error {
 			if !s.cfg.DisableIdleCadence {
 				cadence.frame(frame, time.Now())
 			}
-			if !cursorVisible {
-				cursorVisible = true
-				// The client does not render a cursor of its own yet, so keep
-				// the guest's native one visible as soon as paint starts.
-				if err := s.ctrl.SetCursorVisible(true); err != nil {
-					return fmt.Errorf("selkies: cursor-visible write: %w", err)
-				}
-			}
+			// Guest cursor visibility is owned one layer up: the session
+			// package converges it from decoded cursor shapes (visible until
+			// the first shape proves the window renders its own, hidden
+			// after), so this layer sends nothing and cannot fight it.
 			return nil
 
 		default:

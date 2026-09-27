@@ -274,19 +274,29 @@ func TestSessionHandshakeAndFirstFrame(t *testing.T) {
 		t.Fatal("EventSettings not delivered")
 	}
 
-	// After the first frame the link carries an ACK and the restored native
-	// cursor (p,1), in either order; the read helper skips non-matching
-	// messages, so wait for both explicitly.
-	seenAck, seenCursor := false, false
+	// After the first frame the link carries an ACK. Cursor visibility is
+	// owned one layer up (the session package converges it from decoded
+	// shapes), so this layer must stay silent on it: wait for the ACK,
+	// then assert no p, verb follows.
 	ackDeadline := time.After(2 * time.Second)
-	for !seenAck || !seenCursor {
+	seenAck := false
+	for !seenAck {
 		select {
 		case msg := <-p.fromClient:
+			if strings.HasPrefix(msg, "p,") {
+				t.Fatalf("session layer sent cursor visibility %q; visibility belongs to the session package", msg)
+			}
 			seenAck = seenAck || strings.HasPrefix(msg, "CLIENT_FRAME_ACK 1 ")
-			seenCursor = seenCursor || msg == "p,1"
 		case <-ackDeadline:
-			t.Fatalf("read: timeout waiting for ACK=%v cursor-restored=%v", seenAck, seenCursor)
+			t.Fatal("read: timeout waiting for ACK")
 		}
+	}
+	select {
+	case msg := <-p.fromClient:
+		if strings.HasPrefix(msg, "p,") {
+			t.Fatalf("session layer sent cursor visibility %q after the ACK", msg)
+		}
+	case <-time.After(200 * time.Millisecond):
 	}
 
 	// The Control adapter stays live during Run.

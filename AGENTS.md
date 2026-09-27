@@ -39,7 +39,10 @@ Implemented and working:
   overlay texture with the status plate — the first resident of the future
   session tool palette), keyboard grab following fullscreen+focus
   (`Backend.SetKeyboardGrab`, released on focus loss/shutdown; Wayland may
-  refuse, Win/Ctrl+Esc always escape on Windows).
+  refuse, Win/Ctrl+Esc always escape on Windows). Tier 1 renders the
+  agent's cursor the same way (PNG shapes through `Tier1Sink` into the
+  shared `SetCursor` path, guest hidden once the first shape proves the
+  window draws its own).
 - **Icons and packaging.** One master SVG (`assets/icon.svg`) drives the whole
   platform icon set: `make icons` rasterises it with Inkscape to
   `assets/icon.png`, ImageMagick embeds a multi-size 32-bit `.ico`, and

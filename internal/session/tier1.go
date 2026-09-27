@@ -4,10 +4,14 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"image"
+	"image/draw"
+	"image/png"
 	"io"
 	"math/rand/v2"
 	"time"
@@ -278,6 +282,15 @@ func runTier1Generations(ctx context.Context, conn *websocket.Conn, input *tier1
 	var recoveryDeadline time.Time
 	attempts, generation := 0, 0
 	var lastErr error
+	// cursorShapes counts decoded cursor shapes this generation, and
+	// cursorGuestVisible is the guest-cursor visibility last requested.
+	// Together they converge the guest cursor exactly once per state
+	// change: visible until the first decoded shape proves the window
+	// renders its own, hidden after — whichever of first-video and
+	// first-shape arrives first. Both reset per generation; the installed
+	// window shape is left alone (frozen, like the frame).
+	cursorShapes := 0
+	cursorGuestVisible := true
 	for {
 		active := false
 		if conn != nil {
@@ -287,6 +300,19 @@ func runTier1Generations(ctx context.Context, conn *websocket.Conn, input *tier1
 				return fmt.Errorf("tier 1: reconnect requires fresh injected decoders")
 			}
 			var sess *selkies.Session
+			// syncCursorVisible asks the guest to show its cursor until a
+			// decoded shape proves the window renders its own, then hides
+			// it — sending only on change, so steady state is silent.
+			syncCursorVisible := func() {
+				want := cursorShapes == 0
+				if want == cursorGuestVisible {
+					return
+				}
+				cursorGuestVisible = want
+				if err := sess.Control().SetCursorVisible(want); err != nil {
+					cfg.logf("Tier 1 cursor visibility: %v", err)
+				}
+			}
 			sess = selkies.NewSession(conn, selkies.SessionConfig{
 				Audio: cfg.Audio, NumLockOn: cfg.NumLockOn,
 				StartupTimeout: max(time.Nanosecond, time.Until(deadline)),
@@ -307,6 +333,7 @@ func runTier1Generations(ctx context.Context, conn *websocket.Conn, input *tier1
 						input.attach(sess.Control(), conn.Close)
 						active = true
 						cfg.logf("Tier 1 active (generation %d)", generation+1)
+						syncCursorVisible()
 					}
 					sink.Video(frame)
 				},
@@ -316,8 +343,20 @@ func runTier1Generations(ctx context.Context, conn *websocket.Conn, input *tier1
 					}
 				},
 				Control: func(evt selkies.ControlEvent) {
-					if evt.Kind == selkies.EventClipboard && !evt.Clipboard.Binary {
-						sink.GuestClipboard(evt.Clipboard.Text)
+					switch evt.Kind {
+					case selkies.EventClipboard:
+						if !evt.Clipboard.Binary {
+							sink.GuestClipboard(evt.Clipboard.Text)
+						}
+					case selkies.EventCursor:
+						shape, err := decodeCursorShape(evt.Cursor)
+						if err != nil {
+							cfg.logf("Tier 1 cursor shape: %v", err)
+							return
+						}
+						cursorShapes++
+						sink.GuestCursor(shape)
+						syncCursorVisible()
 					}
 				},
 			})
@@ -325,6 +364,10 @@ func runTier1Generations(ctx context.Context, conn *websocket.Conn, input *tier1
 			_ = conn.Close() // unblock any failed input write before detaching
 			input.attach(nil, nil)
 			generation++
+			// The next generation renegotiates visibility from scratch;
+			// the installed window shape stays frozen meanwhile.
+			cursorShapes = 0
+			cursorGuestVisible = true
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -362,6 +405,34 @@ func runTier1Generations(ctx context.Context, conn *websocket.Conn, input *tier1
 		conn, lastErr = dial(dialCtx)
 		cancel()
 	}
+}
+
+// decodeCursorShape renders an agent cursor shape into window pixels. A
+// hidden shape (handle 0 or empty) decodes to a pixel-less shape, which the
+// window hides; anything the PNG decoder rejects is an error, never a
+// half-installed cursor.
+func decodeCursorShape(shape selkies.CursorShape) (*viewer.CursorShape, error) {
+	out := &viewer.CursorShape{HotX: shape.HotX, HotY: shape.HotY}
+	if !shape.Visible() {
+		return out, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(shape.Data)
+	if err != nil {
+		return nil, fmt.Errorf("tier 1: cursor image: %w", err)
+	}
+	img, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("tier 1: cursor image: %w", err)
+	}
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("tier 1: cursor image is %dx%d", w, h)
+	}
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(rgba, rgba.Bounds(), img, bounds.Min, draw.Src)
+	out.Pix, out.W, out.H = rgba.Pix, w, h
+	return out, nil
 }
 
 // noFallbackDial reports whether a dial failure must not be routed around by a

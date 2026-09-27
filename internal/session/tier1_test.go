@@ -4,11 +4,14 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,6 +46,123 @@ func TestMapTier1Result(t *testing.T) {
 	}
 	if err := MapTier1Result(ctx, boom); err != boom {
 		t.Fatalf("recoverable = %v, want it passed through", err)
+	}
+}
+
+// cursorPNG builds a w-by-h test cursor image and returns its base64 PNG,
+// the wire form the agent sends.
+func cursorPNG(t *testing.T, w, h int) string {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	img.SetNRGBA(0, 0, color.NRGBA{R: 0xff, A: 0xff})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func TestDecodeCursorShape(t *testing.T) {
+	shape, err := decodeCursorShape(selkies.CursorShape{
+		Data: cursorPNG(t, 2, 1), Width: 2, Height: 1, HotX: 1, HotY: 0, Handle: 7,
+	})
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if shape.W != 2 || shape.H != 1 || shape.HotX != 1 || shape.HotY != 0 {
+		t.Fatalf("shape = %+v, want 2x1 at hotspot 1,0", shape)
+	}
+	if len(shape.Pix) != 2*1*4 {
+		t.Fatalf("pixels = %d bytes, want 8", len(shape.Pix))
+	}
+	// The red marker survives the NRGBA round trip opaque.
+	if shape.Pix[0] != 0xff || shape.Pix[3] != 0xff {
+		t.Fatalf("pixel 0 = %v, want opaque red", shape.Pix[:4])
+	}
+
+	// A hide (handle 0) decodes to a pixel-less shape, not an error.
+	hidden, err := decodeCursorShape(selkies.CursorShape{})
+	if err != nil {
+		t.Fatalf("hide: %v", err)
+	}
+	if !hidden.Hidden() {
+		t.Fatalf("hide decoded to %+v, want hidden", hidden)
+	}
+
+	// Garbage is an error, never a half-installed cursor.
+	if _, err := decodeCursorShape(selkies.CursorShape{Data: "!!!", Handle: 1}); err == nil {
+		t.Fatal("garbage cursor decoded without error")
+	}
+	if _, err := decodeCursorShape(selkies.CursorShape{Data: base64.StdEncoding.EncodeToString([]byte("nope")), Handle: 1}); err == nil {
+		t.Fatal("non-PNG cursor decoded without error")
+	}
+}
+
+// TestRunTier1LocalCursorHidesGuest drives the full path: the agent's
+// cursor shape decodes into the window and the client hides the guest
+// cursor exactly once. Before any shape arrives the client stays silent —
+// the guest keeps its own cursor and nothing fights over it.
+func TestRunTier1LocalCursorHidesGuest(t *testing.T) {
+	p, url := startSelkiesPeer(t)
+	client := tier1Client(t, url)
+	be := &fakeTier1Backend{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunTier1(ctx, client, "demo", "vm-a", "", be, baseTier1(func(c *Tier1Config) {
+			c.StartupTimeout = 5 * time.Second
+		}))
+	}()
+
+	var srv *websocket.Conn
+	select {
+	case srv = <-p.conns:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent never upgraded")
+		return
+	}
+	if err := writeText(srv, "MODE websockets"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.waitText("SETTINGS,", 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shape-less startup stays silent: no visibility verb either way.
+	quiet := time.After(200 * time.Millisecond)
+quiet:
+	for {
+		select {
+		case msg := <-p.fromClient:
+			if strings.HasPrefix(msg, "p,") {
+				t.Fatalf("client sent %q before any cursor shape", msg)
+			}
+		case <-quiet:
+			break quiet
+		}
+	}
+
+	// The agent's shape installs in the window and hides the guest cursor.
+	png := cursorPNG(t, 2, 1)
+	shapeJSON := `{"curdata":"` + png + `","width":2,"height":1,"hotx":1,"hoty":0,"handle":7}`
+	if err := writeText(srv, "cursor,"+shapeJSON); err != nil {
+		t.Fatal(err)
+	}
+	if msg, err := p.waitText("p,0", 3*time.Second); err != nil {
+		t.Fatalf("guest cursor not hidden: %v", err)
+	} else if msg != "p,0" {
+		t.Fatalf("visibility verb = %q, want p,0", msg)
+	}
+	got := be.lastCursor(t)
+	if got.W != 2 || got.H != 1 || got.HotX != 1 {
+		t.Fatalf("installed cursor = %+v, want the 2x1 shape at hotspot 1,0", got)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("cancelled session returned %v", err)
 	}
 }
 
@@ -140,8 +260,9 @@ func tier1Client(t *testing.T, base string) *kwclient.Client {
 // PollEvents — the render loop therefore spins and surfaces a dead produce
 // worker at once.
 type fakeTier1Backend struct {
-	mu     sync.Mutex
-	events []viewer.Event
+	mu      sync.Mutex
+	events  []viewer.Event
+	cursors []*viewer.CursorShape
 }
 
 func (f *fakeTier1Backend) Open(viewer.WindowOptions) error { return nil }
@@ -161,13 +282,46 @@ func (f *fakeTier1Backend) SetFullscreen(bool) error                  { return n
 func (f *fakeTier1Backend) Fullscreen() bool                          { return false }
 func (f *fakeTier1Backend) Raise() error                              { return nil }
 func (f *fakeTier1Backend) WindowID() uint32                          { return 0 }
-func (f *fakeTier1Backend) SetCursor(*viewer.CursorShape) error       { return nil }
-func (f *fakeTier1Backend) SetKeyboardGrab(bool) error                { return nil }
-func (f *fakeTier1Backend) Size() (int, int)                          { return 1280, 800 }
-func (f *fakeTier1Backend) ScaleFactor() float64                      { return 1 }
-func (f *fakeTier1Backend) Clipboard() (string, error)                { return "", nil }
-func (f *fakeTier1Backend) SetClipboard(string) error                 { return nil }
-func (f *fakeTier1Backend) Wake()                                     {}
+func (f *fakeTier1Backend) SetCursor(shape *viewer.CursorShape) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if shape == nil {
+		f.cursors = append(f.cursors, nil)
+		return nil
+	}
+	clone := *shape
+	clone.Pix = append([]byte(nil), shape.Pix...)
+	f.cursors = append(f.cursors, &clone)
+	return nil
+}
+func (f *fakeTier1Backend) SetKeyboardGrab(bool) error { return nil }
+
+// lastCursor returns the most recently installed guest shape, or nil when
+// the system cursor was restored. It blocks until one arrives.
+func (f *fakeTier1Backend) lastCursor(t *testing.T) *viewer.CursorShape {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		f.mu.Lock()
+		n := len(f.cursors)
+		var got *viewer.CursorShape
+		if n > 0 {
+			got = f.cursors[n-1]
+		}
+		f.mu.Unlock()
+		if n > 0 {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("no guest cursor installed")
+	return nil
+}
+func (f *fakeTier1Backend) Size() (int, int)           { return 1280, 800 }
+func (f *fakeTier1Backend) ScaleFactor() float64       { return 1 }
+func (f *fakeTier1Backend) Clipboard() (string, error) { return "", nil }
+func (f *fakeTier1Backend) SetClipboard(string) error  { return nil }
+func (f *fakeTier1Backend) Wake()                      {}
 func (f *fakeTier1Backend) WaitEvents(dst []viewer.Event, timeout time.Duration) []viewer.Event {
 	return dst
 }
