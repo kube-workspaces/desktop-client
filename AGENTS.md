@@ -32,7 +32,9 @@ Implemented and working:
   Raw, cursor, ExtendedDesktopSize, LED state.
 - SDL3 session viewer: window, streaming texture upload, damage-tracked
   presentation, full keyboard/pointer/wheel input, bidirectional clipboard,
-  guest resize, fullscreen, status overlays.
+  guest resize, fullscreen, status overlays, local guest cursor (Cursor
+  pseudo-encoding shapes via `Backend.SetCursor`, hotspot intact, hidden
+  when the guest hides its own, system cursor restored on reconnect).
 - **Icons and packaging.** One master SVG (`assets/icon.svg`) drives the whole
   platform icon set: `make icons` rasterises it with Inkscape to
   `assets/icon.png`, ImageMagick embeds a multi-size 32-bit `.ico`, and

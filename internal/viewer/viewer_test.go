@@ -52,6 +52,7 @@ type fakeBackend struct {
 	presents    []Rect
 	overlays    []Overlay
 	titles      []string
+	cursors     []*CursorShape
 	presentCals int
 
 	clipboard    string
@@ -235,6 +236,34 @@ func (f *fakeBackend) SetTitle(title string) error {
 	defer f.mu.Unlock()
 	f.titles = append(f.titles, title)
 	return nil
+}
+
+// SetCursor records the guest pointer shape the viewer installed: nil for
+// the restored system cursor, a pixel-less shape for hidden, else a copy
+// of the shape (the viewer must not retain the wire buffer, and neither
+// does this fake).
+func (f *fakeBackend) SetCursor(shape *CursorShape) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if shape == nil {
+		f.cursors = append(f.cursors, nil)
+		return nil
+	}
+	clone := *shape
+	clone.Pix = append([]byte(nil), shape.Pix...)
+	f.cursors = append(f.cursors, &clone)
+	return nil
+}
+
+// lastCursor returns the most recently installed shape, or nil when the
+// system cursor was restored.
+func (f *fakeBackend) lastCursor() *CursorShape {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.cursors) == 0 {
+		return nil
+	}
+	return f.cursors[len(f.cursors)-1]
 }
 
 func (f *fakeBackend) SetFullscreen(on bool) error {
@@ -1420,6 +1449,83 @@ func TestViewerWindowCloseEndsSession(t *testing.T) {
 	h.step(t)
 	if !h.v.quit {
 		t.Fatal("EventWindowClose did not end the session")
+	}
+}
+
+// TestViewerInstallsGuestCursor drives the Cursor pseudo-encoding callback
+// the way the RFB read loop would and asserts the shape reaches the window:
+// same pixels, same size, same hotspot.
+func TestViewerInstallsGuestCursor(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+
+	pix := []byte{
+		0xff, 0x00, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff,
+		0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	}
+	h.cfg.OnCursor(pix, 2, 2, 0, 0)
+	// The wire buffer is the connection's to reuse: scribbling it after the
+	// call must not change what the window installs.
+	for i := range pix {
+		pix[i] = 0x00
+	}
+	h.step(t)
+
+	got := h.be.lastCursor()
+	if got == nil {
+		t.Fatal("no cursor installed after a Cursor pseudo-encoding")
+	}
+	if got.W != 2 || got.H != 2 || got.HotX != 0 || got.HotY != 0 {
+		t.Fatalf("cursor = %+v, want 2x2 at hotspot 0,0", got)
+	}
+	want := []byte{
+		0xff, 0x00, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff,
+		0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	}
+	if len(got.Pix) != len(want) {
+		t.Fatalf("cursor pixels = %d bytes, want %d", len(got.Pix), len(want))
+	}
+	for i := range want {
+		if got.Pix[i] != want[i] {
+			t.Fatalf("cursor pixel %d = %02x, want %02x", i, got.Pix[i], want[i])
+		}
+	}
+}
+
+// TestViewerHidesCursorWhenGuestHides: a zero-sized cursor shape means the
+// guest hid its pointer, and the local cursor hides with it.
+func TestViewerHidesCursorWhenGuestHides(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+
+	h.cfg.OnCursor(nil, 0, 0, 5, 5)
+	h.step(t)
+
+	got := h.be.lastCursor()
+	if got == nil || !got.Hidden() {
+		t.Fatalf("cursor = %+v, want a hidden shape", got)
+	}
+}
+
+// TestViewerRestoresSystemCursorOnAttach: a new connection has a shape the
+// window has not seen, so attaching goes back to the system cursor until
+// the server sends the current one.
+func TestViewerRestoresSystemCursorOnAttach(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+
+	h.cfg.OnCursor([]byte{0xff, 0x00, 0x00, 0xff}, 1, 1, 0, 0)
+	h.step(t)
+	if got := h.be.lastCursor(); got == nil || got.Hidden() {
+		t.Fatalf("cursor = %+v, want the installed shape", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.advance(time.Second)
+	h.v.attach(h.conn, ctx, h.now)
+	if got := h.be.lastCursor(); got != nil {
+		t.Fatalf("cursor = %+v after attach, want the restored system cursor", got)
 	}
 }
 

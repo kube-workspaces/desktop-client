@@ -331,6 +331,13 @@ type Backend interface {
 	// SetTitle updates the window title.
 	SetTitle(title string) error
 
+	// SetCursor installs the guest's pointer shape, decoded from the RFB
+	// Cursor pseudo-encoding. A nil shape restores the system cursor
+	// (unknown shape, e.g. a fresh connection); a shape with no pixels
+	// hides the cursor (the guest hid its own). Pix is W*H*4 RGBA bytes
+	// and must not be retained after the call returns.
+	SetCursor(shape *CursorShape) error
+
 	// Raise moves the window to the front and gives it keyboard focus. It
 	// is what the sessions switcher uses to focus an already-open window
 	// instead of opening a second one on the same transport. A backend
@@ -357,6 +364,26 @@ type Backend interface {
 	// SetClipboard replaces the host clipboard's text.
 	SetClipboard(text string) error
 }
+
+// CursorShape is one guest pointer shape: W*H RGBA pixels plus the hotspot
+// — the pixel within the shape that clicks. It is the backend-neutral twin
+// of what the RFB Cursor pseudo-encoding carries, so a backend never sees
+// the wire protocol.
+type CursorShape struct {
+	// Pix holds W*H*4 RGBA bytes, row-major. Empty means the guest hid its
+	// pointer and the cursor hides with it.
+	Pix []byte
+	// W and H are the shape size in pixels.
+	W, H int
+	// HotX and HotY are the hotspot coordinates inside the shape.
+	HotX, HotY int
+}
+
+// Hidden reports whether s hides the cursor rather than drawing one: a
+// non-nil shape with no pixels, which is what a guest that hid its own
+// pointer decodes to. A nil shape is the visible system cursor, not a
+// hidden one.
+func (s *CursorShape) Hidden() bool { return s != nil && len(s.Pix) == 0 }
 
 // AudioFormat describes PCM data as the guest produces it. It is the
 // backend-neutral twin of the rfb package's format struct: a backend must not

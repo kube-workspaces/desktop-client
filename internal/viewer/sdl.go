@@ -138,6 +138,12 @@ type SDLBackend struct {
 	// forever.
 	pressed map[sdl.Scancode]EventKey
 
+	// cursor is the guest pointer shape installed by SetCursor, or nil for
+	// the system cursor. It is destroyed before the next shape replaces
+	// it and with the window, so a guest that animates its cursor does
+	// not leak one SDL cursor per frame.
+	cursor *sdl.Cursor
+
 	event sdl.Event
 
 	// wakeMu guards wakeOK, which is the only state [SDLBackend.Wake] may
@@ -385,6 +391,10 @@ func (b *SDLBackend) Close() {
 
 	b.CloseAudio()
 
+	if b.cursor != nil {
+		b.cursor.Destroy()
+		b.cursor = nil
+	}
 	if b.overlay != nil {
 		b.overlay.Destroy()
 		b.overlay = nil
@@ -700,6 +710,71 @@ func (b *SDLBackend) StopTextInput() error {
 	if err := b.window.StopTextInput(); err != nil {
 		return fmt.Errorf("sdl stop text input: %w", err)
 	}
+	return nil
+}
+
+// SetCursor installs the guest's pointer shape, decoded from the RFB Cursor
+// pseudo-encoding. A nil shape restores the system cursor; a pixel-less
+// shape hides it. The previous custom cursor is destroyed first, so an
+// animated guest cursor cannot leak one SDL cursor per frame.
+//
+// The pixels move by memcpy: PIXELFORMAT_RGBA32 is byte-order R,G,B,A on
+// every architecture this repo builds, which is exactly the layout the RFB
+// decoder produces, so — like the framebuffer texture — there is no
+// conversion pass.
+func (b *SDLBackend) SetCursor(shape *CursorShape) error {
+	if b.window == nil {
+		return fmt.Errorf("viewer: SDL backend is not open")
+	}
+	if b.cursor != nil {
+		b.cursor.Destroy()
+		b.cursor = nil
+	}
+	switch {
+	case shape == nil:
+		def, err := sdl.GetDefaultCursor()
+		if err != nil {
+			return fmt.Errorf("sdl default cursor: %w", err)
+		}
+		if err := sdl.SetCursor(def); err != nil {
+			return fmt.Errorf("sdl set cursor: %w", err)
+		}
+		if err := sdl.ShowCursor(); err != nil {
+			return fmt.Errorf("sdl show cursor: %w", err)
+		}
+		return nil
+	case shape.Hidden():
+		if err := sdl.HideCursor(); err != nil {
+			return fmt.Errorf("sdl hide cursor: %w", err)
+		}
+		return nil
+	}
+	if shape.W <= 0 || shape.H <= 0 || len(shape.Pix) != shape.W*shape.H*4 {
+		return fmt.Errorf("viewer: cursor shape is %dx%d with %d pixels", shape.W, shape.H, len(shape.Pix))
+	}
+	surface, err := sdl.CreateSurface(shape.W, shape.H, sdl.PIXELFORMAT_RGBA32)
+	if err != nil {
+		return fmt.Errorf("sdl create cursor surface: %w", err)
+	}
+	defer surface.Destroy()
+	copy(surface.Pixels(), shape.Pix)
+	// A hotspot outside the shape is a corrupt encoding, not a crash: pin
+	// it to the nearest edge, the way pointer positions are clamped.
+	hotX := clamp(shape.HotX, 0, shape.W-1)
+	hotY := clamp(shape.HotY, 0, shape.H-1)
+	cursor, err := surface.CreateColorCursor(int32(hotX), int32(hotY))
+	if err != nil {
+		return fmt.Errorf("sdl create cursor: %w", err)
+	}
+	if err := sdl.SetCursor(cursor); err != nil {
+		cursor.Destroy()
+		return fmt.Errorf("sdl set cursor: %w", err)
+	}
+	if err := sdl.ShowCursor(); err != nil {
+		cursor.Destroy()
+		return fmt.Errorf("sdl show cursor: %w", err)
+	}
+	b.cursor = cursor
 	return nil
 }
 

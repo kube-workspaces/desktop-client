@@ -253,6 +253,14 @@ type Viewer struct {
 		cutText      string
 		hasCutText   bool
 
+		// cursor is the guest pointer shape waiting to be installed on the
+		// window, and hasCursor whether one is waiting at all. A nil shape
+		// with hasCursor set restores the system cursor; a pixel-less shape
+		// hides it. Shapes arrive on the RFB read loop's goroutine and are
+		// installed by the render loop, which owns the backend.
+		cursor    *CursorShape
+		hasCursor bool
+
 		// status and detail drive the overlay. They are in the inbox because
 		// the session supervisor sets them from its own goroutine.
 		status Status
@@ -494,6 +502,24 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 		v.inbox.Lock()
 		v.inbox.cutText = text
 		v.inbox.hasCutText = true
+		v.inbox.Unlock()
+		v.wake()
+	}
+
+	prevCursor := base.OnCursor
+	cfg.OnCursor = func(image []byte, w, h, hotX, hotY int) {
+		if prevCursor != nil {
+			prevCursor(image, w, h, hotX, hotY)
+		}
+		// The connection hands the callback a fresh buffer per shape but
+		// asks the callback not to retain it, so the pixels are copied
+		// before they go in the inbox.
+		shape := &CursorShape{W: w, H: h, HotX: hotX, HotY: hotY}
+		if len(image) > 0 {
+			shape.Pix = append([]byte(nil), image...)
+		}
+		v.inbox.Lock()
+		v.inbox.cursor, v.inbox.hasCursor = shape, true
 		v.inbox.Unlock()
 		v.wake()
 	}
@@ -902,6 +928,7 @@ func (v *Viewer) step(now time.Time) error {
 // share everything but the queue ownership.
 func (v *Viewer) stepExternal(now time.Time, events []Event) error {
 	v.syncConn(now)
+	v.syncCursor()
 
 	for _, ev := range events {
 		if err := v.handleEvent(now, ev); err != nil {
@@ -999,10 +1026,17 @@ func (v *Viewer) attach(conn transport.Conn, connCtx context.Context, now time.T
 	v.inbox.gotUpdate = false
 	v.inbox.resized = false
 	v.inbox.hasCutText, v.inbox.cutText = false, ""
+	v.inbox.hasCursor, v.inbox.cursor = false, nil
 	v.inbox.audio = nil
 	v.inbox.fullRepaint = true
 	v.inbox.needsPresent = true
 	v.inbox.Unlock()
+
+	// A new connection has a shape the window has not seen: back to the
+	// system cursor until the server sends the current one.
+	if err := v.be.SetCursor(nil); err != nil {
+		v.logf("restore system cursor: %v", err)
+	}
 
 	// Audio, like everything else, belongs to one connection: capture the
 	// format it negotiated and let the enable step below open the device once
@@ -1583,6 +1617,24 @@ func (v *Viewer) syncAudio() {
 		return
 	}
 	v.audioSink.PlayPCM(audio)
+}
+
+// syncCursor installs a guest pointer shape the connection delivered since
+// the last pass. It runs every iteration of the render loop, so the cursor
+// tracks the guest without waiting for the next frame. A backend that
+// cannot install the shape keeps its current cursor: a wrong cursor is a
+// cosmetic miss, never a reason to end a session.
+func (v *Viewer) syncCursor() {
+	v.inbox.Lock()
+	shape, has := v.inbox.cursor, v.inbox.hasCursor
+	v.inbox.cursor, v.inbox.hasCursor = nil, false
+	v.inbox.Unlock()
+	if !has {
+		return
+	}
+	if err := v.be.SetCursor(shape); err != nil {
+		v.logf("set guest cursor: %v", err)
+	}
 }
 
 func (v *Viewer) syncClipboard(now time.Time) error {

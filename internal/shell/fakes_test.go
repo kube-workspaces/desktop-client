@@ -127,6 +127,7 @@ func (f *fakeBackend) UploadOverlay(viewer.Rect, []byte, int) error { return nil
 func (f *fakeBackend) Present(viewer.Rect, viewer.Overlay) error    { f.count(); return nil }
 func (f *fakeBackend) SetSize(w, h int) error                       { f.resize(w, h); return nil }
 func (f *fakeBackend) SetTitle(title string) error                  { f.setTitle(title); return nil }
+func (f *fakeBackend) SetCursor(*viewer.CursorShape) error          { return nil }
 func (f *fakeBackend) SetFullscreen(on bool) error                  { f.setFullscreen(on); return nil }
 func (f *fakeBackend) SetClipboard(text string) error               { f.setClipboard(text); return nil }
 func (f *fakeBackend) Clipboard() (string, error)                   { return f.getClipboard(), nil }

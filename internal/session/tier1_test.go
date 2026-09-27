@@ -161,6 +161,7 @@ func (f *fakeTier1Backend) SetFullscreen(bool) error                  { return n
 func (f *fakeTier1Backend) Fullscreen() bool                          { return false }
 func (f *fakeTier1Backend) Raise() error                              { return nil }
 func (f *fakeTier1Backend) WindowID() uint32                          { return 0 }
+func (f *fakeTier1Backend) SetCursor(*viewer.CursorShape) error       { return nil }
 func (f *fakeTier1Backend) Size() (int, int)                          { return 1280, 800 }
 func (f *fakeTier1Backend) ScaleFactor() float64                      { return 1 }
 func (f *fakeTier1Backend) Clipboard() (string, error)                { return "", nil }
