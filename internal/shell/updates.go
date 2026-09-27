@@ -238,8 +238,14 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.checked", last), ui.LabelStyle{})
 	statusRect := body.Next(ui.LineHeight(th.Body, th.Font) * 3)
 	if a.updates.upToDate && !a.updates.busy {
-		icon, rest := ui.CutLeft(statusRect, ui.TextHeight(th.Body, th.Font)+2*th.Body+th.Gap/2)
-		ui.CheckMark(ctx, icon, th.Success)
+		size := ui.TextHeight(th.Body, th.Font) + 2*th.Body
+		icon, rest := ui.CutLeft(statusRect, size+th.Gap/2)
+		lineH := ui.LineHeight(th.Body, th.Font)
+		dy := (lineH - size) / 2
+		if dy < 0 {
+			dy = 0
+		}
+		ui.CheckMark(ctx, ui.Rect{X: icon.X, Y: icon.Y + dy, W: size, H: size}, th.Success)
 		ui.Label(ctx, rest, a.updates.status, ui.LabelStyle{Wrap: true})
 	} else {
 		ui.Label(ctx, statusRect, a.updates.status, ui.LabelStyle{Wrap: true})
