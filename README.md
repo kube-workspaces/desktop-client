@@ -11,7 +11,7 @@ connect.
 > ## Warning: not code-signed
 >
 > The binaries for all six platforms (**linux × amd64/arm64**, macOS × amd64/arm64,
-> windows × amd64/arm64) published on the [releases page](https://github.com/kube-workspaces/desktop-client/releases)
+> windows × amd64/arm64) and the two Windows MSIs published on the [releases page](https://github.com/kube-workspaces/desktop-client/releases)
 > are **not code-signed or notarised**. This is a deliberate choice: signing and
 > notarisation require paid products and budget, not engineering effort. The plan
 > to add this when funded lives in `AGENTS.md` under *Deferred: code signing and
@@ -44,6 +44,13 @@ is applied, including on Windows. Failed installed-version checks restore the
 previous files. Profiles, credentials, system libraries, and workspace state
 are outside the install transaction.
 
+Windows installs owned by the MSI update through the installer instead of the
+binary swap: the client detects its Add/Remove Programs registration, downloads
+the release's `.msi` under the same `SHA256SUMS` trust, and runs it unattended
+(same scope, same directory) after the client quits. Manual zip installs keep
+the in-place swap described above; per-machine MSI updates surface
+`ErrNeedsElevation` like Program Files manual installs.
+
 Archive installs must be writable. For a protected location such as Windows
 Program Files, close all instances and run the CLI update with the required
 permissions, or install the release manually. On macOS, move the app out of a
@@ -56,8 +63,8 @@ work. A `no-auto-update` file in the client configuration directory disables
 both manual and automatic update network calls for managed installs.
 
 Downloads are checked against the release's `SHA256SUMS` over HTTPS. This is
-checksum integrity, not publisher-signature verification. The six-target
-release archive contract is checked in CI. The first release containing this
+checksum integrity, not publisher-signature verification. The release
+distribution contract — six archives plus both Windows MSIs — is checked in CI. The first release containing this
 updater must be installed manually; older clients cannot discover this feature
 by themselves.
 
@@ -85,6 +92,7 @@ isolated out of the shell so the cgo-free main program never links it.
 | `kube-workspaces` (`kube-workspaces.exe` on Windows) | Every archive | The whole client: graphical shell, session viewer and all CLI subcommands (`login`, `list`, `connect`, `probe`, `screenshot`, …). VM workspace sessions are fully supported — Tier 0 (RFB, works on any image) and Tier 1 (H.264/Opus) where the system libraries allow — with adaptive quality, clipboard and audio. The embedded webview is *not* inside this binary. |
 | `kube-workspaces-web` (`kube-workspaces-web.exe` on Windows) | Every archive **except** windows/arm64 | The per-OS browser engine (WebKitGTK / WebKit / WebView2) as a separate cgo child. It opens **container/scratch** workspace web UIs in a native window. Lives beside the shell (inside `Kube Workspaces.app` on macOS) so the shell finds it at run time. |
 | `Kube Workspaces.app` | macOS archives only | The macOS application bundle: `kube-workspaces` (and its web child) wrapped with the icon and `Info.plist` so macOS treats it as an app. Drag it into Applications. |
+| `kube-workspaces-<version>-windows-<arch>.msi` | Windows only (amd64 + arm64, alongside the zips) | The unsigned Windows installer: same payload as the zip (amd64 ships shell + web child; arm64 is shell-only), plus Start Menu shortcut, Add/Remove Programs entry and clean upgrade/uninstall. Per-user by default; per-machine with `ALLUSERS=1`. Not a trust fix — SmartScreen warns exactly like the zip. |
 
 ### Which download has all the features?
 
@@ -107,11 +115,12 @@ you should distribute.
 
 ## Installing on Windows
 
-Releases ship Windows zips (amd64 + arm64) plus an **unsigned** MSI for
-install hygiene (Start Menu shortcut, Add/Remove Programs entry, clean
-upgrade/uninstall). The MSI warns exactly like the zip — it is not a trust
+Releases ship Windows zips (amd64 + arm64) plus **unsigned** MSIs for both
+architectures for install hygiene (Start Menu shortcut, Add/Remove Programs entry, clean
+upgrade/uninstall). The MSIs warn exactly like the zips — they are not a trust
 fix; Authenticode signing stays budget-blocked (see `AGENTS.md` → *Deferred:
-code signing and notarisation*).
+code signing and notarisation*). The amd64 MSI carries shell + web child; the
+arm64 MSI is shell-only, matching its zip.
 
 Blessed manual location: `%LocalAppData%\Programs\Kube Workspaces`
 (`C:\Users\<you>\AppData\Local\Programs\Kube Workspaces`) — writable without
@@ -150,7 +159,7 @@ from an elevated terminal. Full detail lives on the
 
 Every **Build** workflow run also provides `msi-windows-amd64` and
 `msi-windows-arm64` artifacts, plus `SHA256SUMS` covering all six archives
-and both installers. Release tags publish those installers alongside the zips.
+and both MSIs. Release tags publish those installers alongside the zips.
 See [Windows packaging](packaging/windows/README.md) for local builds and CI checks.
 
 Two runtime requirements apply regardless of which archive you pick, and neither
@@ -231,7 +240,7 @@ make lint           # golangci-lint, skipped if not installed
 make help           # all targets
 ```
 
-`make build-all` produces the release archives: Linux tarballs with the plain
+`make build-all` produces the shell-only release archives: Linux tarballs with the plain
 binary, a **`Kube Workspaces.app` bundle** (icon, `Info.plist`, bundle layout)
 for macOS, and Windows zips whose `.exe` carries the app icon and version
 metadata in its PE resources. The `kube-workspaces-web` child links the same
@@ -243,7 +252,10 @@ to replicate locally,
 script header). `make icons` needs `inkscape` and ImageMagick's
 `convert` on the machine running it; `make build-all` runs `go-winres` (fetched
 automatically) to build the Windows resources. The generated artwork is
-committed, so plain `make build`/`build-all` need none of those tools.
+committed, so plain `make build`/`build-all` need none of those tools. The
+Windows MSIs are not built by `make` at all: CI builds them from the assembled
+archives with WiX 5.0.2 (`packaging/windows/build-msi.ps1`) — see
+[Windows packaging](packaging/windows/README.md) for the local equivalent.
 
 ## Building from source
 
@@ -309,6 +321,8 @@ profile     List, select and remove instance profiles
 whoami      Show the authenticated identity
 list        List workspaces
 connect     Open a graphical session to a VM workspace
+web         Open a container workspace in the embedded webview (or browser fallback)
+update      Check for and install client releases
 probe       Probe a VM workspace's display capabilities and bandwidth
 screenshot  Capture a VM workspace's display to a PNG file
 version     Print the client version
