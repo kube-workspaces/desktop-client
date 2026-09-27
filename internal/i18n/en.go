@@ -24,6 +24,7 @@ var english = map[string]string{
 	"updates.downloading":    "Downloading and verifying release...",
 	"updates.bytes":          "Downloaded: %d bytes",
 	"updates.ready":          "Verified update ready to install.",
+	"updates.msiReady":       "Verified Windows Installer update ready to install.",
 	"updates.sessions":       "Close all sessions (including parked sessions and web windows) before restarting.",
 	"updates.autoOn":         "Automatic checks: On",
 	"updates.autoOff":        "Automatic checks: Off",

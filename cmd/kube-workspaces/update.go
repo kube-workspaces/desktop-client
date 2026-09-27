@@ -46,6 +46,42 @@ func runUpdate(ctx context.Context, args []string) error {
 	if *check || !r.Available {
 		return nil
 	}
+	// MSI-managed installs update through the installer, not the binary
+	// swap: the new .msi keeps Add/Remove Programs honest and preserves a
+	// customized install directory. Manual installs keep the old flow.
+	if msi, err := in.DetectMSI(); err != nil {
+		return err
+	} else if msi != nil {
+		scope := "per-user"
+		if msi.MachineScope {
+			scope = "per-machine (needs elevation)"
+		}
+		fmt.Printf("Windows Installer (%s) installation in %s\n", scope, msi.Dir)
+		if !*yes {
+			fmt.Print("Close other client windows before updating. Install update? [y/N] ")
+			line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+			if err != nil {
+				return err
+			}
+			if strings.ToLower(strings.TrimSpace(line)) != "y" {
+				return nil
+			}
+		}
+		pkg, err := in.PrepareMSI(ctx, r.Release, nil)
+		if err != nil {
+			return err
+		}
+		defer pkg.Close()
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if err := update.StartMSIHelper(pkg, exe, nil); err != nil {
+			return err
+		}
+		fmt.Println("Update downloaded. It installs after this process exits; launch Kube Workspaces afterwards to confirm it.")
+		return nil
+	}
 	if !*yes {
 		fmt.Print("Close other client windows before updating. Install update? [y/N] ")
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')

@@ -407,7 +407,25 @@ jobs:
       - name: Resolve version
         id: version
         shell: pwsh
-        run: echo "version=$(git describe --tags --always --dirty)" >> "$env:GITHUB_OUTPUT"
+        # On a release tag the MSI metadata (file name, ProductVersion) must
+        # come from the tag itself, never from a describe string that could
+        # drift. Dev builds keep git describe (sanitized to 0.0.0 by the
+        # build script).
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $v = $env:GITHUB_REF_NAME
+          } else {
+            $v = (git describe --tags --always --dirty)
+          }
+          echo "version=$v" >> "$env:GITHUB_OUTPUT"
+
+      - name: Guard release version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          if ('${{ steps.version.outputs.version }}' -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "MSI release version must be an exact tag, got '${{ steps.version.outputs.version }}'"
+          }
 
       - name: Download assembled Windows archive
         uses: actions/download-artifact@v5

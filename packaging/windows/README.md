@@ -61,10 +61,20 @@ msiexec /i <file.msi> /qn ALLUSERS=1
 Installers are unsigned. WebView2 is an external runtime prerequisite for the
 amd64 web child; the MSI does not download runtimes or codec DLLs.
 
-The built-in updater replaces binary files using zip releases, not MSI
-transactions: Add/Remove Programs continues to show the last MSI-installed
-version, and MSI repair can restore that package's binaries. Use newer MSIs
-when Windows Installer version tracking is required.
+The built-in updater replaces binary files using zip releases, so Add/Remove Programs
+still reports the last MSI-installed version. MSI repair can restore that
+package's binaries. Install a newer MSI when Windows Installer version tracking
+is required; uninstall before changing installation scope or architecture.
+
+MSI-managed installs update through the installer automatically: the client
+detects its Add/Remove Programs registration (via the recorded install
+location), downloads the release's `.msi`, and runs it unattended after
+quitting — same scope, same directory, Add/Remove Programs version updated.
+Manual zip installs keep the in-place binary swap. Per-machine MSI updates
+need an elevated client, like Program Files manual installs. MSIs that
+predate the recorded location fall back to a best-effort match on the
+canonical directories; custom-directory installs from those builds should
+reinstall the current MSI once.
 
 ## Verification
 

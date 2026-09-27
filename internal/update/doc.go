@@ -20,6 +20,15 @@
 // plan's §7) without restructuring the install flow. Until then the trust
 // anchor is TLS to github.com plus the checksum file.
 //
+// Windows installs owned by the MSI update through the installer, not the
+// binary swap: [DetectMsiInstall] matches the running binary against the
+// Add/Remove Programs registration (ARPINSTALLLOCATION, authored by the WiX
+// package), [Installer.PrepareMSI] downloads and verifies the release's
+// .msi, and a detached helper runs it unattended after the client quits —
+// preserving the install directory and the Add/Remove Programs version.
+// Manual installs keep the in-place swap above; other platforms never take
+// the MSI path.
+//
 // The package is pure Go, with no UI imports — the same
 // testability rule as internal/rfb and internal/kwclient. Platform specifics
 // live behind OS-specific files (using the existing x/sys dependency for

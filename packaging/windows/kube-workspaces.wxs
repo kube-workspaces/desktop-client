@@ -69,6 +69,10 @@
          the build works from any working directory. -->
     <Icon Id="AppIcon.ico" SourceFile="$(var.IconPath)" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <!-- Recorded install location: Add/Remove Programs shows it, and the
+         in-app updater matches the running binary against it to decide
+         between an installer update and the manual binary swap. -->
+    <Property Id="ARPINSTALLLOCATION" Value="[INSTALLDIR]" />
 
     <!-- Per-user default location. INSTALLDIR stays a public property so a
          per-machine install can override it on the msiexec command line. -->

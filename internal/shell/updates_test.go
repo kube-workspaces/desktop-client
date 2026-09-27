@@ -27,6 +27,54 @@ func (*fakeUpdater) Prepare(context.Context, *update.Release, func(int64)) (*upd
 	return nil, errors.New("fixture download failed")
 }
 
+// fakeMSIUpdater is an MSI-capable updater: downloads resolve to a staged
+// installer package instead of an archive stage.
+type fakeMSIUpdater struct {
+	fakeUpdater
+	pkg *update.MSIPackage
+	err error
+	dir string
+}
+
+func (u *fakeMSIUpdater) DetectMSI() (*update.MsiInstall, error) {
+	return &update.MsiInstall{Dir: u.dir}, nil
+}
+
+func (u *fakeMSIUpdater) PrepareMSI(context.Context, *update.Release, func(int64)) (*update.MSIPackage, error) {
+	return u.pkg, u.err
+}
+
+func TestMSIDownloadAndRestart(t *testing.T) {
+	r := newRig(nil, "")
+	u := &fakeMSIUpdater{pkg: &update.MSIPackage{Tag: "v1.2.3", Dir: t.TempDir()}}
+	u.dir = u.pkg.Dir
+	r.app.opts.Version = "v1.0.0"
+	r.app.opts.Updater = u
+	r.start()
+	r.app.checkUpdate(context.Background(), true)
+	r.settle()
+	if !r.app.updates.result.Available {
+		t.Fatal("check did not report an available update")
+	}
+	r.app.downloadUpdate(context.Background())
+	r.settle()
+	if r.app.updates.msi == nil {
+		t.Fatalf("no MSI package staged (status=%q)", r.app.updates.status)
+	}
+	if r.app.updates.status != i18n.Get("updates.msiReady") {
+		t.Fatalf("status = %q", r.app.updates.status)
+	}
+	if r.app.updates.prepared != nil {
+		t.Fatal("archive stage should stay empty on the MSI flow")
+	}
+	restarted := false
+	r.app.opts.RestartMSI = func(*update.MSIPackage) error { restarted = true; return nil }
+	r.app.restartUpdate()
+	if !restarted || !r.app.quit || r.app.updates.msi != nil {
+		t.Fatal("MSI restart did not hand off and quit")
+	}
+}
+
 func TestUpdateCadenceAndPreferencesSurviveAppearanceSaves(t *testing.T) {
 	r := newRig(savedProfile(), "token")
 	u := &fakeUpdater{}

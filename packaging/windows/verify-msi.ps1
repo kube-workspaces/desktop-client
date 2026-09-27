@@ -43,6 +43,7 @@ try {
   }
   if ($properties.ProductVersion -ne $Version) { throw "Incorrect ProductVersion: $($properties.ProductVersion)" }
   if ($properties.UpgradeCode -ne "{7A877129-11B3-4532-A7F8-1356F06496A5}") { throw "UpgradeCode changed." }
+  if ($properties.ARPINSTALLLOCATION -ne "[INSTALLDIR]") { throw "ARPINSTALLLOCATION must record the install directory for updater detection." }
   $summary = Get-Com $db "SummaryInformation" @(0)
   $template = Get-Com $summary "Property" @(7)
   $expected = @{ amd64 = "x64"; arm64 = "Arm64" }[$Arch]

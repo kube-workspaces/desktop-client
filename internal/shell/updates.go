@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ type UpdateService interface {
 type updateState struct {
 	resourceMu          sync.Mutex
 	resource            *update.Prepared
+	msiResource         *update.MSIPackage
 	closed              bool
 	auto, started, busy bool
 	upToDate            bool
@@ -29,6 +31,7 @@ type updateState struct {
 	status              string
 	result              update.Result
 	prepared            *update.Prepared
+	msi                 *update.MSIPackage
 	bytes               atomic.Int64
 }
 
@@ -51,7 +54,7 @@ func (a *App) updatePolicy() update.Policy {
 }
 
 func (a *App) checkUpdate(ctx context.Context, manual bool) {
-	if a.opts.Updater == nil || a.updates.busy || a.updates.prepared != nil {
+	if a.opts.Updater == nil || a.updates.busy || a.updates.prepared != nil || a.updates.msi != nil {
 		return
 	}
 	p := a.updatePolicy()
@@ -95,7 +98,7 @@ func (a *App) checkUpdate(ctx context.Context, manual bool) {
 }
 
 func (a *App) downloadUpdate(ctx context.Context) {
-	if a.opts.Updater == nil || a.updates.busy || !a.updates.result.Available || a.updates.prepared != nil || a.updatePolicy().Managed {
+	if a.opts.Updater == nil || a.updates.busy || !a.updates.result.Available || a.updates.prepared != nil || a.updates.msi != nil || a.updatePolicy().Managed {
 		return
 	}
 	rel := a.updates.result.Release
@@ -104,6 +107,36 @@ func (a *App) downloadUpdate(ctx context.Context) {
 	a.updates.status = i18n.Get("updates.downloading")
 	a.updates.upToDate = false
 	a.background(func() func() {
+		// MSI-managed installs download the .msi, not the archive: the
+		// installer keeps Add/Remove Programs honest. Manual installs
+		// (or updaters without the MSI capability, including test fakes)
+		// keep the archive flow below.
+		if msi, ok := a.opts.Updater.(update.MSIInstaller); ok {
+			if pkg, err := msi.PrepareMSI(ctx, rel, a.updates.bytes.Store); err == nil {
+				a.updates.resourceMu.Lock()
+				if a.updates.closed {
+					pkg.Close()
+					a.updates.resourceMu.Unlock()
+					return nil
+				}
+				a.updates.msiResource = pkg
+				a.updates.resourceMu.Unlock()
+				return func() {
+					a.updates.busy = false
+					a.updates.msi = pkg
+					a.updates.status = i18n.Get("updates.msiReady")
+					a.updates.upToDate = false
+				}
+			} else if !errors.Is(err, update.ErrNotMSI) {
+				if ctx.Err() == nil {
+					return func() {
+						a.updates.busy = false
+						a.updates.status = i18n.Sprintf("updates.failed", err)
+					}
+				}
+				return nil
+			}
+		}
 		p, err := a.opts.Updater.Prepare(ctx, rel, a.updates.bytes.Store)
 		if ctx.Err() != nil && p != nil {
 			p.Close()
@@ -134,7 +167,31 @@ func (a *App) downloadUpdate(ctx context.Context) {
 }
 
 func (a *App) restartUpdate() {
-	if a.updates.prepared == nil || a.opts.RestartUpdate == nil || a.updatePolicy().Managed {
+	if a.updatePolicy().Managed {
+		return
+	}
+	if a.updates.msi != nil {
+		if a.opts.RestartMSI == nil {
+			a.updates.status = i18n.Sprintf("updates.failed", "installer restart unavailable")
+			return
+		}
+		if len(a.sessions) != 0 || webProcesses.Load() != 0 || a.m.State == StateSession {
+			a.updates.status = i18n.Get("updates.sessions")
+			a.updates.upToDate = false
+			return
+		}
+		if err := a.opts.RestartMSI(a.updates.msi); err != nil {
+			a.updates.status = i18n.Sprintf("updates.failed", err)
+			return
+		}
+		a.updates.msi = nil // ownership transferred to the helper
+		a.updates.resourceMu.Lock()
+		a.updates.msiResource = nil
+		a.updates.resourceMu.Unlock()
+		a.quit = true
+		return
+	}
+	if a.updates.prepared == nil || a.opts.RestartUpdate == nil {
 		return
 	}
 	if len(a.sessions) != 0 || webProcesses.Load() != 0 || a.m.State == StateSession {
@@ -160,6 +217,10 @@ func (a *App) stopUpdates() {
 	if a.updates.resource != nil {
 		a.updates.resource.Close()
 		a.updates.resource = nil
+	}
+	if a.updates.msiResource != nil {
+		a.updates.msiResource.Close()
+		a.updates.msiResource = nil
 	}
 }
 
@@ -207,9 +268,9 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 		disabled bool
 	}{
 		{"update-auto", i18n.Get(label), intentToggleUpdate, managed},
-		{"update-check", i18n.Get("updates.check"), intentCheckUpdate, managed || a.updates.busy || a.updates.prepared != nil},
-		{"update-download", i18n.Get("updates.download"), intentDownloadUpdate, managed || a.updates.busy || !a.updates.result.Available || a.updates.prepared != nil},
-		{"update-restart", i18n.Get("updates.restart"), intentRestartUpdate, managed || a.updates.prepared == nil || len(a.sessions) != 0 || webProcesses.Load() != 0},
+		{"update-check", i18n.Get("updates.check"), intentCheckUpdate, managed || a.updates.busy || a.updates.prepared != nil || a.updates.msi != nil},
+		{"update-download", i18n.Get("updates.download"), intentDownloadUpdate, managed || a.updates.busy || !a.updates.result.Available || a.updates.prepared != nil || a.updates.msi != nil},
+		{"update-restart", i18n.Get("updates.restart"), intentRestartUpdate, managed || (a.updates.prepared == nil && a.updates.msi == nil) || len(a.sessions) != 0 || webProcesses.Load() != 0},
 		{"update-back", i18n.Get("settings.done"), intentOpenSettings, false},
 	} {
 		button := ui.Button{ID: ui.FocusID(b.id), Text: b.text, Disabled: b.disabled}

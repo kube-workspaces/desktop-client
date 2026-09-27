@@ -142,6 +142,13 @@ func runShell(ctx context.Context, args []string) error {
 			}
 			return update.StartHelper(p, exe, append([]string{"shell"}, args...))
 		},
+		RestartMSI: func(p *update.MSIPackage) error {
+			exe, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			return update.StartMSIHelper(p, exe, append([]string{"shell"}, args...))
+		},
 		Backend: backend,
 		// The factory returns the API client and the connector together, so
 		// that the connector can close over the concrete *kwclient.Client the

@@ -499,6 +499,19 @@ time, since actions and pricing drift.
   naming, and updater version comparison must agree. A first updater-capable
   release needs a manual installation to bootstrap older clients.
 - Updates are staged before applying; the GUI helper waits for process exit.
+  Windows MSI installs update through the installer instead of the binary
+  swap: the updater matches the running binary against the Add/Remove
+  Programs registration (ARPINSTALLLOCATION, authored by the WiX package)
+  and downloads the release's .msi under the same SHA256SUMS trust; a
+  detached helper runs it unattended (`/qn`, current scope, current
+  INSTALLDIR) after the client quits, then proves the installed build
+  reports the release tag. Manual Windows installs keep the in-place swap;
+  per-machine MSI updates surface `ErrNeedsElevation` like Program Files
+  manual installs. `MSIAssetName` pins the
+  `kube-workspaces-<tag>-windows-<arch>.msi` asset contract beside
+  `AssetName`; the msi CI job resolves the version from the release tag on
+  tag pushes so MSI file names and ProductVersion always carry the release
+  version.
   Held sessions and tracked web children block restart. `.prev` files survive
   until first-frame confirmation; interrupted transactions have explicit
   `update --recover`. Tests cover corrupt downloads, archive traversal,

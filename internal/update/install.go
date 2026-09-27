@@ -34,6 +34,9 @@ type Installer struct {
 	// ExePath is the running binary whose install is updated. Empty means
 	// os.Executable().
 	ExePath string
+	// MSIDetect overrides MSI ownership detection (tests); nil means the
+	// platform default ([DetectMsiInstall]).
+	MSIDetect func(exe string) (*MsiInstall, error)
 }
 
 func (in *Installer) verifier() Verifier {

@@ -87,7 +87,11 @@ type Options struct {
 	Updater       UpdateService
 	UpdatePolicy  func() (managed, envDisabled bool)
 	RestartUpdate func(*update.Prepared) error
-	FirstFrame    func() string
+	// RestartMSI restarts into an installer update (MSI-managed Windows
+	// installs). Nil means installer updates cannot restart: the shell keeps
+	// the verified package and reports the failure, like [RestartUpdate].
+	RestartMSI func(*update.MSIPackage) error
+	FirstFrame func() string
 	// Backend is the window. The shell opens and closes it, and lends it to
 	// the session viewer in between.
 	Backend viewer.Backend
