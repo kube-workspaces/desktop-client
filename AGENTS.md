@@ -501,7 +501,10 @@ time, since actions and pricing drift.
 - Updates are staged before applying; the GUI helper waits for process exit.
   Windows MSI installs update through the installer instead of the binary
   swap: the updater matches the running binary against the Add/Remove
-  Programs registration (ARPINSTALLLOCATION, authored by the WiX package)
+  Programs registration (ARPINSTALLLOCATION, authored by the WiX package
+  as a post-CostFinalize SetProperty — a Property-table value reaches the
+  uninstall key literally, `[INSTALLDIR]` unexpanded, which is how v0.5.0
+  and v0.5.1 blinded updater detection and forced one manual reinstall)
   and downloads the release's .msi under the same SHA256SUMS trust; a
   detached helper runs it unattended (`/qn`, current scope, current
   INSTALLDIR) after the client quits, then proves the installed build

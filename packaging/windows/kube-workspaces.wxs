@@ -71,8 +71,15 @@
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
     <!-- Recorded install location: Add/Remove Programs shows it, and the
          in-app updater matches the running binary against it to decide
-         between an installer update and the manual binary swap. -->
-    <Property Id="ARPINSTALLLOCATION" Value="[INSTALLDIR]" />
+         between an installer update and the manual binary swap.
+         This MUST be a SetProperty after CostFinalize, never a
+         Property-table row: ARP values from the Property table reach the
+         uninstall key literally, so Value="[INSTALLDIR]" there registered
+         the text "[INSTALLDIR]" (shipped in v0.5.0/v0.5.1) and blinded the
+         updater. Assigned here, the formatted value resolves to the real
+         directory before RegisterProduct writes it. -->
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLDIR]"
+                 After="CostFinalize" Sequence="both" />
 
     <!-- Per-user default location. INSTALLDIR stays a public property so a
          per-machine install can override it on the msiexec command line. -->

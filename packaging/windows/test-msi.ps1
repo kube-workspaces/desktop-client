@@ -55,12 +55,16 @@ try {
   if ($registered.Count -ne 1 -or $registered[0].DisplayVersion -ne '0.0.1' -or (Get-Registration machine)) {
     throw "Default install is not registered exclusively per-user."
   }
+  $location = $installer.GetType().InvokeMember('ProductInfo', 'GetProperty', $null, $installer, @($registered[0].ProductCode, 'InstallLocation'))
+  if ($location -ne $install) { throw "InstallLocation is '$location', want the resolved install dir '$install'." }
   $run = Start-Process (Join-Path $install 'kube-workspaces.exe') -ArgumentList 'version' -Wait -PassThru
   if ($run.ExitCode -ne 0) { throw "Installed shell failed to launch." }
   Invoke-Msi "/i `"$second`"" "upgrade"
   Assert-Payload $install
   $registered = @(Get-Registration user)
   if ($registered.Count -ne 1 -or $registered[0].DisplayVersion -ne '0.0.2') { throw "Major upgrade left wrong registration." }
+  $location = $installer.GetType().InvokeMember('ProductInfo', 'GetProperty', $null, $installer, @($registered[0].ProductCode, 'InstallLocation'))
+  if ($location -ne $install) { throw "InstallLocation after upgrade is '$location', want '$install'." }
   Invoke-Msi "/i `"$first`"" "downgrade" 1603
   Invoke-Msi "/x `"$second`"" "uninstall"
   if ((Test-Path (Join-Path $install 'kube-workspaces.exe')) -or (Test-Path $shortcut) -or (Get-Registration user)) {
@@ -72,6 +76,9 @@ try {
   Invoke-Msi "/i `"$second`" ALLUSERS=1" "machine-install"
   Assert-Payload $machineInstall
   if (@(Get-Registration machine).Count -ne 1) { throw "Machine registration missing." }
+  $machineCode = @(Get-Registration machine)[0].ProductCode
+  $machineLoc = $installer.GetType().InvokeMember('ProductInfo', 'GetProperty', $null, $installer, @($machineCode, 'InstallLocation'))
+  if ($machineLoc -ne $machineInstall) { throw "Machine InstallLocation is '$machineLoc', want '$machineInstall'." }
   $machineShortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Kube Workspaces\Kube Workspaces.lnk'
   if (-not (Test-Path $machineShortcut)) { throw "Shared Start Menu shortcut missing." }
   Invoke-Msi "/x `"$second`" ALLUSERS=1" "machine-uninstall"

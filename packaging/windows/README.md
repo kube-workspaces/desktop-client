@@ -74,7 +74,12 @@ Manual zip installs keep the in-place binary swap. Per-machine MSI updates
 need an elevated client, like Program Files manual installs. MSIs that
 predate the recorded location fall back to a best-effort match on the
 canonical directories; custom-directory installs from those builds should
-reinstall the current MSI once.
+reinstall the current MSI once. Note v0.5.0/v0.5.1 fall in this bucket for a
+different reason: they authored the location as a Property-table row, which
+Windows Installer writes to the uninstall key literally (`[INSTALLDIR]`
+unexpanded), so the updater cannot match them. Those installs need one manual
+install of a fixed MSI (v0.5.2+), which records the resolved path; the v0.5.1
+MSI does not heal them since it carries the same authoring.
 
 ## Verification
 
