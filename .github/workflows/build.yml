@@ -99,42 +99,42 @@ jobs:
       # are these plus the injected web child. Keeping the two stages separate
       # means a webview toolchain regression unblocks the shell release.
       - name: Upload linux/amd64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: shell-linux-amd64
           path: dist/*-linux-amd64.tar.gz
           if-no-files-found: error
 
       - name: Upload linux/arm64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: shell-linux-arm64
           path: dist/*-linux-arm64.tar.gz
           if-no-files-found: error
 
       - name: Upload darwin/amd64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: shell-darwin-amd64
           path: dist/*-darwin-amd64.tar.gz
           if-no-files-found: error
 
       - name: Upload darwin/arm64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: shell-darwin-arm64
           path: dist/*-darwin-arm64.tar.gz
           if-no-files-found: error
 
       - name: Upload windows/amd64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: shell-windows-amd64
           path: dist/*-windows-amd64.zip
           if-no-files-found: error
 
       - name: Upload windows/arm64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: shell-windows-arm64
           path: dist/*-windows-arm64.zip
@@ -255,7 +255,7 @@ jobs:
             -o kube-workspaces-web.exe ./cmd/kube-workspaces-web
 
       - name: Upload web child
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: web-child-${{ matrix.platform }}
           path: kube-workspaces-web*
@@ -278,14 +278,14 @@ jobs:
         run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
 
       - name: Download shell archives
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: shell-*
           path: shell
           github-token: ${{ github.token }}
 
       - name: Download web children
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: web-child-*
           path: web
@@ -319,49 +319,49 @@ jobs:
         run: python3 scripts/verify-update-archives.py final '${{ steps.version.outputs.version }}'
 
       - name: Upload linux/amd64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: kube-workspaces-linux-amd64
           path: final/kube-workspaces-*-linux-amd64.tar.gz
           if-no-files-found: error
 
       - name: Upload linux/arm64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: kube-workspaces-linux-arm64
           path: final/kube-workspaces-*-linux-arm64.tar.gz
           if-no-files-found: error
 
       - name: Upload darwin/amd64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: kube-workspaces-darwin-amd64
           path: final/kube-workspaces-*-darwin-amd64.tar.gz
           if-no-files-found: error
 
       - name: Upload darwin/arm64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: kube-workspaces-darwin-arm64
           path: final/kube-workspaces-*-darwin-arm64.tar.gz
           if-no-files-found: error
 
       - name: Upload windows/amd64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: kube-workspaces-windows-amd64
           path: final/kube-workspaces-*-windows-amd64.zip
           if-no-files-found: error
 
       - name: Upload windows/arm64
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: kube-workspaces-windows-arm64
           path: final/kube-workspaces-*-windows-arm64.zip
           if-no-files-found: error
 
       - name: Upload checksums
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: archive-SHA256SUMS
           path: final/SHA256SUMS
@@ -428,14 +428,14 @@ jobs:
           }
 
       - name: Download assembled Windows archive
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.artifact }}
           path: archive
           github-token: ${{ github.token }}
 
       - name: Setup .NET for WiX
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 
@@ -466,14 +466,14 @@ jobs:
 
       - name: Upload installer logs
         if: always() && matrix.arch == 'amd64'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: msi-test-logs
           path: ${{ runner.temp }}/msi-lifecycle/*.log
           if-no-files-found: ignore
 
       - name: Upload MSI
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: msi-windows-${{ matrix.arch }}
           path: out/*.msi
@@ -487,12 +487,12 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: kube-workspaces-*
           path: dist
           merge-multiple: true
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: msi-windows-*
           path: dist
@@ -508,7 +508,7 @@ jobs:
             echo 'Unsigned; per-user installation by default. ARM64 is shell-only.'
             echo 'The SHA256SUMS artifact covers all six archives and both MSIs.'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: SHA256SUMS
           path: dist/SHA256SUMS
@@ -531,7 +531,7 @@ jobs:
 
       # Publish the exact archives verified by assemble and consumed by MSI.
       - name: Download assembled archives
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: kube-workspaces-*
           path: dist
@@ -543,7 +543,7 @@ jobs:
       # dist/, same rule as future signing: signing/MSI creation changes
       # bytes, so checksums computed before are wrong.
       - name: Download unsigned MSIs
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: msi-windows-*
           path: msi
