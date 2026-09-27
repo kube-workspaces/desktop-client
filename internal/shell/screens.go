@@ -308,11 +308,23 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 	content.Y += th.Gap
 	content.H -= th.Gap
 
-	// Toolbar: filter on the left, refresh on the right.
+	// Toolbar: filter on the left, sessions and refresh on the right. The
+	// sessions switcher is global, so it lives up here next to refresh
+	// rather than down in the selection-contextual footer; it appears only
+	// while at least one session is held.
 	toolbar, content := ui.CutTop(content, th.ControlHeight)
 	refresh := ui.Button{ID: idRefresh, Text: i18n.Get("workspaces.refresh"), Variant: ui.ButtonSecondary}
-	refreshRect, filterRect := ui.CutRight(toolbar, refresh.Width(ctx))
-	filterRect, spinnerRect := ui.CutLeft(filterRect, min(360, filterRect.W-th.Gap))
+	refreshRect, rest := ui.CutRight(toolbar, refresh.Width(ctx))
+	if len(a.m.Sessions) > 0 {
+		sessions := ui.Button{ID: idSessions, Text: i18n.Sprintf("sessions.title", len(a.m.Sessions)), Variant: ui.ButtonSecondary}
+		rest = ui.CutRightGap(rest, th.Gap)
+		sessionsRect, remainder := ui.CutRight(rest, sessions.Width(ctx))
+		rest = remainder
+		if sessions.Layout(ctx, sessionsRect) {
+			out = intent{kind: intentOpenSessions}
+		}
+	}
+	filterRect, spinnerRect := ui.CutLeft(rest, min(360, rest.W-th.Gap))
 	if a.filterField.Layout(ctx, filterRect) {
 		out = intent{kind: intentActivate}
 	}
@@ -750,9 +762,6 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	// New opens the create form. It is always available: an empty list is
 	// exactly when creating is the thing to do.
 	newBtn := ui.Button{ID: idCreate, Text: i18n.Get("workspaces.new"), Variant: ui.ButtonSecondary}
-	// Sessions opens the switcher. The count is the point: it is how a user
-	// learns windows they closed are still connected.
-	sessionsBtn := ui.Button{ID: idSessions, Text: i18n.Sprintf("sessions.title", len(a.m.Sessions)), Variant: ui.ButtonSecondary}
 
 	widths := []int{max(180, open.Width(ctx))}
 	if console {
@@ -767,7 +776,7 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if showStop {
 		widths = append(widths, stop.Width(ctx))
 	}
-	widths = append(widths, info.Width(ctx), newBtn.Width(ctx), sessionsBtn.Width(ctx), 0)
+	widths = append(widths, info.Width(ctx), newBtn.Width(ctx), 0)
 	cols := ui.Row(r, th.Gap, widths...)
 
 	ci := 0
@@ -805,10 +814,6 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	ci++
 	if newBtn.Layout(ctx, cols[ci]) {
 		*out = intent{kind: intentCreateWorkspace}
-	}
-	ci++
-	if sessionsBtn.Layout(ctx, cols[ci]) {
-		*out = intent{kind: intentOpenSessions}
 	}
 	ci++
 
