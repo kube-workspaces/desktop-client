@@ -240,6 +240,37 @@ func TestPrepareMSINotMSI(t *testing.T) {
 	}
 }
 
+// TestPrepareMSIUnwritableDirIsAnErrorNotAPanic is the v0.5.2 Windows
+// crash: clicking download on an install the process cannot write (a
+// per-machine MSI without elevation) failed the writability probe, and the
+// error branch dereferenced the nil file CreateTemp returns on failure.
+// A file stands in for an unwritable directory so the probe fails on every
+// platform and user (ENOTDIR needs no permission setup and root cannot
+// dodge it); what matters is that PrepareMSI reports instead of panicking.
+func TestPrepareMSIUnwritableDirIsAnErrorNotAPanic(t *testing.T) {
+	_, rel := msiReleaseFixture(t, "v1.2.3", "amd64", []byte("fake-msi-bytes"))
+	notDir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(notDir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := Installer{
+		GOOS: "windows", GOARCH: "amd64",
+		MSIDetect: func(string) (*MsiInstall, error) {
+			return &MsiInstall{Dir: notDir}, nil
+		},
+	}
+	_, err := in.PrepareMSI(context.Background(), rel, nil)
+	if err == nil {
+		t.Fatal("prepared into an unwritable install dir")
+	}
+	if errors.Is(err, ErrNotMSI) {
+		t.Fatalf("got %v, want the write failure, not ErrNotMSI", err)
+	}
+	if !strings.Contains(err.Error(), notDir) {
+		t.Fatalf("error %q does not name the install dir", err)
+	}
+}
+
 func TestPrepareMSIMissingAsset(t *testing.T) {
 	in := Installer{
 		GOOS: "windows", GOARCH: "amd64",

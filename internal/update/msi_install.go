@@ -93,9 +93,10 @@ func (in *Installer) PrepareMSI(ctx context.Context, rel *Release, progress func
 		return nil, fmt.Errorf("update: asset URL does not match installer name")
 	}
 	// Fail fast on a per-machine install the process cannot write: msiexec
-	// would fail the same way later, after the download.
+	// would fail the same way later, after the download. A failed
+	// CreateTemp returns a nil file, so the error branch must not touch
+	// it — doing so panics instead of reporting ErrNeedsElevation.
 	if f, err := os.CreateTemp(inst.Dir, ".update-write-test-*"); err != nil {
-		_ = os.Remove(f.Name())
 		return nil, mapAccessError(inst.Dir, err)
 	} else {
 		_ = f.Close()
