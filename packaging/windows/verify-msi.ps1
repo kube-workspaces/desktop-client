@@ -43,7 +43,7 @@ try {
   }
   if ($properties.ProductVersion -ne $Version) { throw "Incorrect ProductVersion: $($properties.ProductVersion)" }
   if ($properties.UpgradeCode -ne "{7A877129-11B3-4532-A7F8-1356F06496A5}") { throw "UpgradeCode changed." }
-  if ($properties.ARPINSTALLLOCATION) { throw "ARPINSTALLLOCATION must not be a Property-table row: such values reach the uninstall key literally." }
+  if ($properties.ContainsKey('ARPINSTALLLOCATION')) { throw "ARPINSTALLLOCATION must not be a Property-table row: such values reach the uninstall key literally." }
   $actions = @(Read-Rows 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`' 4)
   $setLoc = @($actions | Where-Object { $_[0] -eq 'SetARPINSTALLLOCATION' })
   if ($setLoc.Count -ne 1 -or $setLoc[0][1] -ne '51' -or $setLoc[0][2] -ne 'ARPINSTALLLOCATION' -or $setLoc[0][3] -ne '[INSTALLDIR]') {
