@@ -2,7 +2,11 @@ package main
 
 import (
 	"flag"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/kube-workspaces/desktop-client/internal/rfb"
 )
 
 func TestUIScaleFlagValidation(t *testing.T) {
@@ -23,6 +27,30 @@ func TestUIScaleFlagValidation(t *testing.T) {
 		if (err != nil) != tc.wantErr {
 			t.Errorf("checkUIScale(%v) err = %v, wantErr %v", tc.in, err, tc.wantErr)
 		}
+	}
+}
+
+// TestSeriesRow pins the probe's per-second row: rates over the tick, raw
+// rect counts, and decode share — the columns a sustained full-motion run
+// is read from.
+func TestSeriesRow(t *testing.T) {
+	prev := rfb.Stats{}
+	cur := rfb.Stats{
+		Updates:    30,
+		Rects:      120,
+		BytesRead:  1_048_576,
+		DecodeTime: 150 * time.Millisecond,
+	}
+	row := seriesRow(time.Second, prev, cur)
+	for _, want := range []string{"t+1s", "30.0/s", "120", "1.0 MiB/s", "15.0%"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("series row %q does not contain %q", row, want)
+		}
+	}
+
+	// A stalled tick rates nothing and divides by nothing.
+	if row := seriesRow(0, cur, cur); !strings.Contains(row, "0.0/s") {
+		t.Errorf("stalled series row %q has no zero rate", row)
 	}
 }
 

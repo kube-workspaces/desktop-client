@@ -154,6 +154,7 @@ func (f *fakeBackend) SetClipboard(string) error           { return nil }
 func (f *fakeBackend) Raise() error                        { return nil }
 func (f *fakeBackend) WindowID() uint32                    { return 0 }
 func (f *fakeBackend) SetCursor(*viewer.CursorShape) error { return nil }
+func (f *fakeBackend) SetKeyboardGrab(bool) error          { return nil }
 
 func (f *fakeBackend) push(e viewer.Event) {
 	f.mu.Lock()

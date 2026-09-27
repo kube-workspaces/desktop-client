@@ -338,6 +338,16 @@ type Backend interface {
 	// and must not be retained after the call returns.
 	SetCursor(shape *CursorShape) error
 
+	// SetKeyboardGrab routes nearly every keystroke to the window,
+	// including the chords the host would otherwise keep (Alt+Tab on X11
+	// and the like). Sessions enable it in fullscreen and release it on
+	// focus loss, shutdown and leaving fullscreen. It is best-effort by
+	// nature: Wayland compositors may refuse it, and on Windows the Win
+	// key and Ctrl+Esc always escape a grab no matter what is asked, so a
+	// session the user cannot leave by keystroke must stay closable by
+	// pointer.
+	SetKeyboardGrab(grabbed bool) error
+
 	// Raise moves the window to the front and gives it keyboard focus. It
 	// is what the sessions switcher uses to focus an already-open window
 	// instead of opening a second one on the same transport. A backend

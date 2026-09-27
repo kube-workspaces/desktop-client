@@ -377,6 +377,23 @@ type Viewer struct {
 	// re-rasterising a glyph plate 500 times a second for it would be absurd.
 	statusLayer StatusLayer
 
+	// pill owns the rasterised quality readout, drawn top-right while the
+	// session is live. It shares the overlay texture with the status
+	// plate; the two never show at once (see PillLayer).
+	pill PillLayer
+
+	// lastFPS and lastKbps are the throughput sample the title bar and the
+	// pill report, refreshed on the stats tick. They are owned by the
+	// render loop.
+	lastFPS  float64
+	lastKbps float64
+
+	// focused reports whether the window has keyboard focus, and grabbed
+	// whether the keyboard grab was last requested on. The grab follows
+	// fullscreen (see syncGrab); both are owned by the render loop.
+	focused bool
+	grabbed bool
+
 	presentDue time.Time
 	quit       bool
 
@@ -863,6 +880,8 @@ func (v *Viewer) start(now time.Time) error {
 	// A caller that pinned a size gets it; nothing later resizes the window
 	// out from under them.
 	v.fitted = v.cfg.Width > 0 && v.cfg.Height > 0
+	// Windows open focused; the first focus event corrects this if not.
+	v.focused = true
 
 	v.inbox.Lock()
 	v.inbox.status = StatusConnecting
@@ -879,8 +898,9 @@ func (v *Viewer) start(now time.Time) error {
 // stop leaves the guest in a sane state and tears the window down.
 func (v *Viewer) stop() {
 	// Order matters: tell the guest every key is up while the connection is
-	// still open, then drop the window.
+	// still open, hand the keyboard back, then drop the window.
 	v.releaseInput()
+	v.releaseGrab()
 	// The backend's own Close destroys any audio device it opened; closing the
 	// sink here instead keeps playback from persisting across backends that
 	// do not fold it into Close.
@@ -938,6 +958,9 @@ func (v *Viewer) stepExternal(now time.Time, events []Event) error {
 	if v.quit {
 		return nil
 	}
+	// After input: a fullscreen toggle or focus change in this batch takes
+	// effect in the same step.
+	v.syncGrab()
 
 	if v.conn != nil {
 		// Pointer motion is coalesced to at most one message per iteration: a
@@ -1167,12 +1190,17 @@ func (v *Viewer) handleEvent(now time.Time, ev Event) error {
 		return nil
 
 	case EventFocus:
+		v.focused = e.Gained
 		if !e.Gained {
 			// The host window manager keeps the key-up events that arrive
 			// after focus moves away, so without this the guest is left
 			// believing Ctrl (or Alt, or any held key) is still down, and
 			// every later keystroke arrives as a shortcut.
 			v.releaseInput()
+			// A grab outlives nothing: the keys it captured belong to a
+			// window the user is no longer in. syncGrab re-arms it when
+			// focus comes back to a fullscreen window.
+			v.releaseGrab()
 		}
 		v.markPresent()
 		return nil
@@ -1637,6 +1665,37 @@ func (v *Viewer) syncCursor() {
 	}
 }
 
+// syncGrab keeps the keyboard grab following fullscreen and focus: grabbed
+// while a fullscreen window is focused, released everywhere else. Reading
+// the backend's fullscreen state every pass (rather than only on the
+// hotkey) also covers fullscreen the compositor granted or revoked itself.
+//
+// A grab the backend refuses is logged once per transition, not once per
+// frame: the request is recorded either way, so a refusal does not spin.
+func (v *Viewer) syncGrab() {
+	want := v.be.Fullscreen() && v.focused
+	if want == v.grabbed {
+		return
+	}
+	v.grabbed = want
+	if err := v.be.SetKeyboardGrab(want); err != nil {
+		v.logf("keyboard grab: %v", err)
+	}
+}
+
+// releaseGrab hands the keyboard back, for focus loss and shutdown. Errors
+// are ignored: it runs where a dead backend is expected and there is
+// nothing useful to do about one.
+func (v *Viewer) releaseGrab() {
+	if !v.grabbed {
+		return
+	}
+	v.grabbed = false
+	if err := v.be.SetKeyboardGrab(false); err != nil {
+		v.logf("keyboard grab: %v", err)
+	}
+}
+
 func (v *Viewer) syncClipboard(now time.Time) error {
 	v.inbox.Lock()
 	text, has := v.inbox.cutText, v.inbox.hasCutText
@@ -1741,6 +1800,18 @@ func (v *Viewer) redraw(now time.Time) error {
 	if err != nil {
 		return err
 	}
+	if overlay.Empty() {
+		// No status plate: the session is live, so the quality pill owns
+		// the shared overlay texture. A plate up means reconnecting or
+		// worse, and it takes precedence — reset the pill so it cannot
+		// present the plate's pixels when it comes back.
+		overlay, err = v.buildPill()
+		if err != nil {
+			return err
+		}
+	} else {
+		v.pill.Reset()
+	}
 	if err := v.be.Present(v.present, overlay); err != nil {
 		return fmt.Errorf("viewer: present: %w", err)
 	}
@@ -1791,6 +1862,21 @@ func (v *Viewer) uploadFrame(damage []rfb.Rect, full bool) error {
 // and returns how this frame should be composited.
 func (v *Viewer) buildOverlay() (Overlay, error) {
 	ov, err := v.statusLayer.Build(v.be, v.overlayLines(), v.winW, v.winH)
+	if err != nil {
+		return Overlay{}, fmt.Errorf("viewer: %w", err)
+	}
+	return ov, nil
+}
+
+// buildPill rasterises and uploads the quality readout when the session is
+// live, and returns how this frame should composite it. Before the first
+// stats tick — or with no connection at all — it draws nothing.
+func (v *Viewer) buildPill() (Overlay, error) {
+	if v.conn == nil || !v.haveFrame {
+		v.pill.Reset()
+		return Overlay{}, nil
+	}
+	ov, err := v.pill.Build(v.be, v.qualityLine(), v.winW, v.winH)
 	if err != nil {
 		return Overlay{}, fmt.Errorf("viewer: %w", err)
 	}
@@ -1876,6 +1962,7 @@ func (v *Viewer) updateTitle(now time.Time) error {
 		// The byte counter belongs to a connection that is gone; restart the
 		// sample rather than reporting a nonsensical rate on reconnect.
 		v.lastBytes = 0
+		v.lastFPS, v.lastKbps = 0, 0
 	} else {
 		stats := v.conn.Stats()
 		bytes := stats.BytesRead
@@ -1884,9 +1971,10 @@ func (v *Viewer) updateTitle(now time.Time) error {
 			kbits = float64(bytes-v.lastBytes) * 8 / 1000 / elapsed
 		}
 		v.lastBytes = bytes
+		v.lastFPS, v.lastKbps = fps, kbits
 
 		fbW, fbH := v.sourceSize()
-		title = fmt.Sprintf("%s — %dx%d — %.0f fps · %s", base, fbW, fbH, fps, formatBitrate(kbits))
+		title = fmt.Sprintf("%s — %dx%d — %s", base, fbW, fbH, v.qualityLine())
 	}
 	if title == v.title {
 		return nil
@@ -1896,6 +1984,16 @@ func (v *Viewer) updateTitle(now time.Time) error {
 		return fmt.Errorf("viewer: set title: %w", err)
 	}
 	return nil
+}
+
+// qualityLine renders the throughput sample the title bar and the
+// in-window pill report. It is empty until the first stats tick lands, so
+// callers that draw it (the pill) show nothing rather than a zero rate.
+func (v *Viewer) qualityLine() string {
+	if v.lastFPS <= 0 && v.lastKbps <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%.0f fps · %s", v.lastFPS, formatBitrate(v.lastKbps))
 }
 
 func formatBitrate(kbits float64) string {

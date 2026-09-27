@@ -34,7 +34,12 @@ Implemented and working:
   presentation, full keyboard/pointer/wheel input, bidirectional clipboard,
   guest resize, fullscreen, status overlays, local guest cursor (Cursor
   pseudo-encoding shapes via `Backend.SetCursor`, hotspot intact, hidden
-  when the guest hides its own, system cursor restored on reconnect).
+  when the guest hides its own, system cursor restored on reconnect),
+  in-window quality pill (fps·bitrate top-right while live, sharing the
+  overlay texture with the status plate — the first resident of the future
+  session tool palette), keyboard grab following fullscreen+focus
+  (`Backend.SetKeyboardGrab`, released on focus loss/shutdown; Wayland may
+  refuse, Win/Ctrl+Esc always escape on Windows).
 - **Icons and packaging.** One master SVG (`assets/icon.svg`) drives the whole
   platform icon set: `make icons` rasterises it with Inkscape to
   `assets/icon.png`, ImageMagick embeds a multi-size 32-bit `.ico`, and

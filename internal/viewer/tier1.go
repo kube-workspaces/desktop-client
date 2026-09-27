@@ -310,6 +310,8 @@ func OpenTier1Detached(ctx context.Context, be Backend, inp Tier1Input,
 	}
 	w.winW, w.winH = be.Size()
 	w.pinned = opts.Width > 0 && opts.Height > 0
+	// Windows open focused; the first focus event corrects this if not.
+	w.focused = true
 
 	prodCtx, cancel := context.WithCancel(ctx)
 	w.sink = &Tier1Sink{wake: be.Wake}
@@ -387,6 +389,7 @@ func (d *Tier1Detached) Step(now time.Time, events []Event) error {
 			return d.finish(err)
 		}
 	}
+	d.w.syncGrab()
 	if d.w.quit {
 		// The result is recorded for Result; Step itself stays clean so
 		// the pump parks the window rather than failing the session.
@@ -442,6 +445,32 @@ func (d *Tier1Detached) Backend() Backend { return d.w.be }
 // to call when focus moves to another window.
 func (d *Tier1Detached) ReleaseInput() { d.w.releaseInput() }
 
+// syncGrab keeps the keyboard grab following fullscreen and focus, exactly
+// like the RFB viewer's (see Viewer.syncGrab).
+func (w *tier1Window) syncGrab() {
+	want := w.be.Fullscreen() && w.focused
+	if want == w.grabbed {
+		return
+	}
+	w.grabbed = want
+	if err := w.be.SetKeyboardGrab(want); err != nil {
+		w.opts.logf("keyboard grab: %v", err)
+	}
+}
+
+// releaseGrab hands the keyboard back, for focus loss and shutdown. Errors
+// are ignored: it runs where a dead backend is expected and there is
+// nothing useful to do about one.
+func (w *tier1Window) releaseGrab() {
+	if !w.grabbed {
+		return
+	}
+	w.grabbed = false
+	if err := w.be.SetKeyboardGrab(false); err != nil {
+		w.opts.logf("keyboard grab: %v", err)
+	}
+}
+
 // Close joins the producer unless already joined, releases the guest's
 // keys, and tears the window down.
 func (d *Tier1Detached) Close() {
@@ -449,6 +478,7 @@ func (d *Tier1Detached) Close() {
 		d.stopWake()
 		d.stopWake = nil
 	}
+	d.w.releaseGrab()
 	if !d.joined {
 		d.cancel()
 		<-d.done
@@ -506,6 +536,12 @@ type tier1Window struct {
 
 	lastPresent time.Time
 	epoch       uint64
+
+	// focused reports whether the window has keyboard focus, and grabbed
+	// whether the keyboard grab was last requested on. The grab follows
+	// fullscreen exactly like the RFB viewer's (see Viewer.syncGrab).
+	focused bool
+	grabbed bool
 }
 
 func (w *tier1Window) syncGeneration() {
@@ -608,11 +644,13 @@ func (w *tier1Window) handleEvent(now time.Time, ev Event) error {
 		return nil
 
 	case EventFocus:
+		w.focused = e.Gained
 		if !e.Gained {
 			// Without this the guest is left believing a held key is still
 			// down, and the first keystroke after focus returns arrives as a
 			// shortcut. See [Viewer.handleEvent].
 			w.releaseInput()
+			w.releaseGrab()
 		}
 		return nil
 

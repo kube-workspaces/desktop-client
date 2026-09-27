@@ -87,6 +87,29 @@ func (r *recordInput) resetCount() int {
 	return r.resets
 }
 
+// TestTier1GrabsKeyboardInFullscreen mirrors the RFB viewer's contract: the
+// grab follows fullscreen and focus, and asks for nothing when windowed.
+func TestTier1GrabsKeyboardInFullscreen(t *testing.T) {
+	be := newFakeBackend(1280, 800)
+	w := &tier1Window{be: be, inp: &recordInput{}, focused: true}
+	now := time.Now()
+
+	if err := be.SetFullscreen(true); err != nil {
+		t.Fatalf("fullscreen: %v", err)
+	}
+	w.syncGrab()
+	if len(be.grabs) != 1 || !be.grabs[0] {
+		t.Fatalf("grabs = %v in fullscreen, want [true]", be.grabs)
+	}
+	if err := w.handleEvent(now, EventFocus{Gained: false}); err != nil {
+		t.Fatalf("focus loss: %v", err)
+	}
+	w.syncGrab()
+	if grabs := be.grabs; len(grabs) != 2 || grabs[1] {
+		t.Fatalf("grabs = %v after focus loss, want [true false]", grabs)
+	}
+}
+
 // --- helpers ----------------------------------------------------------------
 
 func waitForBool(t *testing.T, d time.Duration, fn func() bool) {

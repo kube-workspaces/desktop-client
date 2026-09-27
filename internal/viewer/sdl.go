@@ -778,6 +778,18 @@ func (b *SDLBackend) SetCursor(shape *CursorShape) error {
 	return nil
 }
 
+// SetKeyboardGrab routes nearly every keystroke to the window; see
+// [Backend.SetKeyboardGrab] for what it cannot do.
+func (b *SDLBackend) SetKeyboardGrab(grabbed bool) error {
+	if b.window == nil {
+		return fmt.Errorf("viewer: SDL backend is not open")
+	}
+	if err := b.window.SetKeyboardGrab(grabbed); err != nil {
+		return fmt.Errorf("sdl keyboard grab: %w", err)
+	}
+	return nil
+}
+
 // Clipboard returns the host clipboard text.
 func (b *SDLBackend) Clipboard() (string, error) {
 	text, err := sdl.GetClipboardText()

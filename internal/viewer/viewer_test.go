@@ -53,6 +53,7 @@ type fakeBackend struct {
 	overlays    []Overlay
 	titles      []string
 	cursors     []*CursorShape
+	grabs       []bool
 	presentCals int
 
 	clipboard    string
@@ -252,6 +253,14 @@ func (f *fakeBackend) SetCursor(shape *CursorShape) error {
 	clone := *shape
 	clone.Pix = append([]byte(nil), shape.Pix...)
 	f.cursors = append(f.cursors, &clone)
+	return nil
+}
+
+// SetKeyboardGrab records the grab state the session asked for.
+func (f *fakeBackend) SetKeyboardGrab(grabbed bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grabs = append(f.grabs, grabbed)
 	return nil
 }
 
@@ -1526,6 +1535,128 @@ func TestViewerRestoresSystemCursorOnAttach(t *testing.T) {
 	h.v.attach(h.conn, ctx, h.now)
 	if got := h.be.lastCursor(); got != nil {
 		t.Fatalf("cursor = %+v after attach, want the restored system cursor", got)
+	}
+}
+
+// TestPillSitsTopRightWithoutDim: the quality readout hugs the top-right
+// corner, draws no dim over the guest, and caches by text and size.
+func TestPillSitsTopRightWithoutDim(t *testing.T) {
+	be := newFakeBackend(800, 600)
+	var pill PillLayer
+
+	ov, err := pill.Build(be, "30 fps · 1.2 Mbit/s", 800, 600)
+	if err != nil {
+		t.Fatalf("pill build: %v", err)
+	}
+	if ov.Rect.Empty() {
+		t.Fatal("live session drew no quality pill")
+	}
+	if ov.Dim != 0 {
+		t.Fatalf("pill dim = %d, want none over a live frame", ov.Dim)
+	}
+	if ov.Rect.X+ov.Rect.W > 800 || ov.Rect.Y < 0 {
+		t.Fatalf("pill rect %s escapes the 800x600 window", ov.Rect)
+	}
+	if uploads := len(be.ovUploads); uploads != 1 {
+		t.Fatalf("pill uploads = %d, want 1", uploads)
+	}
+	// Same text, same size: cached, no re-upload.
+	if _, err := pill.Build(be, "30 fps · 1.2 Mbit/s", 800, 600); err != nil {
+		t.Fatalf("pill rebuild: %v", err)
+	}
+	if uploads := len(be.ovUploads); uploads != 1 {
+		t.Fatalf("pill uploads = %d after identical rebuild, want still 1", uploads)
+	}
+	// No stats yet: nothing.
+	ov, err = pill.Build(be, "", 800, 600)
+	if err != nil {
+		t.Fatalf("empty pill build: %v", err)
+	}
+	if !ov.Empty() {
+		t.Fatalf("empty pill drew %v", ov)
+	}
+}
+
+// TestViewerShowsQualityPillWhenLive: a live session with a stats sample
+// draws the pill; a reconnecting one draws the plate instead.
+func TestViewerShowsQualityPillWhenLive(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+
+	// Before the first stats tick there is no sample, so no pill — only
+	// the guest frame.
+	h.step(t)
+	if _, ov := h.be.lastFrame(t); !ov.Empty() {
+		t.Fatalf("pre-tick overlay = %+v, want none", ov)
+	}
+
+	// Past the tick the sampler has fps and bitrate; past the heartbeat
+	// after that the frame redraws with the pill, dim-free.
+	h.damage()
+	h.advance(DefaultStatsInterval)
+	h.step(t)
+	h.advance(600 * time.Millisecond)
+	h.step(t)
+	_, ov := h.be.lastFrame(t)
+	if ov.Rect.Empty() {
+		t.Fatal("live session drew no quality pill after the stats tick")
+	}
+	if ov.Dim != 0 {
+		t.Fatalf("pill dim = %d, want none over a live frame", ov.Dim)
+	}
+
+	// A dropped connection puts the plate back up and the pill away: the
+	// plate owns the shared texture while it shows.
+	h.v.dropConn(nil)
+	h.step(t)
+	_, ov = h.be.lastFrame(t)
+	if ov.Dim == 0 || ov.Rect.Empty() {
+		t.Fatalf("reconnect overlay = %+v, want the dimmed plate", ov)
+	}
+}
+
+// TestViewerGrabsKeyboardInFullscreen: entering fullscreen grabs the
+// keyboard so host chords stay in the guest; focus loss releases it, focus
+// regain re-arms it, and shutdown hands it back.
+func TestViewerGrabsKeyboardInFullscreen(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+
+	if err := h.v.toggleFullscreen(); err != nil {
+		t.Fatalf("fullscreen: %v", err)
+	}
+	h.step(t)
+	if grabs := h.be.grabs; len(grabs) != 1 || !grabs[0] {
+		t.Fatalf("grabs = %v after entering fullscreen, want [true]", grabs)
+	}
+
+	h.be.push(EventFocus{Gained: false})
+	h.step(t)
+	if grabs := h.be.grabs; len(grabs) != 2 || grabs[1] {
+		t.Fatalf("grabs = %v after focus loss, want [true false]", grabs)
+	}
+
+	h.be.push(EventFocus{Gained: true})
+	h.step(t)
+	if grabs := h.be.grabs; len(grabs) != 3 || !grabs[2] {
+		t.Fatalf("grabs = %v after focus regain, want [true false true]", grabs)
+	}
+
+	// A steady-state step with no transition asks for nothing new.
+	h.step(t)
+	if grabs := h.be.grabs; len(grabs) != 3 {
+		t.Fatalf("grabs = %v after a quiet step, want no new request", grabs)
+	}
+}
+
+// TestViewerWindowedNeverGrabs: the grab follows fullscreen, so a windowed
+// session leaves the host keyboard alone.
+func TestViewerWindowedNeverGrabs(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+	h.step(t)
+	if len(h.be.grabs) != 0 {
+		t.Fatalf("grabs = %v in a windowed session, want none", h.be.grabs)
 	}
 }
 

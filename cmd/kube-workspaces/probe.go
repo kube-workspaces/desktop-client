@@ -13,6 +13,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
 	"github.com/kube-workspaces/desktop-client/internal/session"
+	"github.com/kube-workspaces/desktop-client/internal/transport"
 )
 
 // runProbe connects to a VM workspace's display and reports what the server
@@ -33,6 +34,7 @@ func runProbe(ctx context.Context, args []string) error {
 	compress := fs.Int("compress", -1, "zlib compression level 0-9 to request (-1 to omit)")
 	audio := fs.Bool("audio", false, "also advertise the QEMU audio pseudo-encoding")
 	encodings := fs.String("encodings", "", "comma-separated encoding override, e.g. tight,copyrect,raw")
+	series := fs.Bool("series", false, "print per-second throughput rows while sampling — pair with -duration 60s and a video workload in the guest for a sustained full-motion baseline")
 	verbose := fs.Bool("v", false, "log every rectangle as it is decoded")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces probe <workspace> [flags]\n\n")
@@ -127,7 +129,11 @@ func runProbe(ctx context.Context, args []string) error {
 	sess.RequestUpdates(runCtx, *interval)
 
 	sampleStart := time.Now()
-	<-runCtx.Done()
+	if *series {
+		printSeries(runCtx, conn, sampleStart)
+	} else {
+		<-runCtx.Done()
+	}
 	elapsed := time.Since(sampleStart)
 	_ = sess.Close()
 	if err := <-errCh; err != nil && ctx.Err() == nil {
@@ -224,6 +230,47 @@ func runProbe(ctx context.Context, args []string) error {
 		fmt.Fprintf(w, "  Clipboard messages:\t%d\n", cutTexts)
 	}
 	return w.Flush()
+}
+
+// printSeries prints one throughput row per second until ctx ends: the
+// instrument for sustained full-motion runs. Each row diffs the
+// connection's cumulative counters, so an idle guest prints near-zero rows
+// and a video workload prints the bandwidth baseline the adaptive
+// controller tunes against. Steady clock math (whole-second ticks from the
+// sample start) keeps columns comparable across quality tiers.
+func printSeries(ctx context.Context, conn transport.Conn, start time.Time) {
+	fmt.Println("\n== Throughput series ==")
+	fmt.Println("  T+    UPD/S  RECTS  BYTES/S    DECODE")
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	prev := conn.Stats()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			cur := conn.Stats()
+			fmt.Printf("  %s\n", seriesRow(now.Sub(start), prev, cur))
+			prev = cur
+		}
+	}
+}
+
+// seriesRow renders one series row from two cumulative counter snapshots.
+// dt is the tick length the deltas are rated over; whole-second ticks make
+// it exactly one second in practice, but the rate math honours whatever it
+// is so a slow tick cannot inflate the numbers.
+func seriesRow(dt time.Duration, prev, cur rfb.Stats) string {
+	sec := dt.Seconds()
+	if sec <= 0 {
+		sec = 1
+	}
+	ups := float64(cur.Updates-prev.Updates) / sec
+	rects := cur.Rects - prev.Rects
+	bps := uint64(float64(cur.BytesRead-prev.BytesRead) / sec)
+	decode := float64(cur.DecodeTime-prev.DecodeTime) / float64(dt) * 100
+	return fmt.Sprintf("t+%ds  %5.1f/s  %5d  %9s/s  %5.1f%%",
+		int(dt.Seconds()), ups, rects, humanBytes(bps), decode)
 }
 
 // buildEncodings assembles the advertised encoding list for the probe.
