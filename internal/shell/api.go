@@ -75,23 +75,25 @@ var _ API = (*kwclient.Client)(nil)
 
 // Connector opens a workspace's session and returns when it ends.
 //
-// It blocks the shell's own loop on purpose: the session and the shell run on
-// the same main OS thread, so while a session is up the shell is not drawing
-// anything anyway. A nil error means the user closed the session window
-// normally, and the shell goes back to the workspace list. A VM workspace gets
-// its display session; a non-VM workspace opens an integrated terminal.
+// It is the blocking single-window open: the session runs its own window
+// and loop on the calling goroutine, which must own the main OS thread. A
+// nil error means the user closed the session window normally. The
+// graphical shell no longer uses it — sessions open as live windows behind
+// [SessionHandle.Open] and step beside the shell — but [TerminalConnector]
+// still builds one for callers that drive a session alone.
 type Connector func(ctx context.Context, ws kwclient.Workspace) error
 
 // SessionHandle is one held session: a transport that outlives its window.
 //
-// Attach opens the window and blocks until it closes or ctx ends; it may be
-// called again to resume the same transport in a fresh window. Close releases
-// the server side (the VNC slot, the display membership) and is idempotent —
-// calling it on a never-attached or already-closed handle is a no-op.
+// Open opens a fresh window over the held transport for the multi-window
+// pump to drive; it may be called again to resume the same transport after
+// the previous window closed. Close releases the server side (the VNC slot,
+// the display membership) and is idempotent — calling it on a never-opened
+// or already-closed handle is a no-op.
 type SessionHandle interface {
-	// Attach runs the window for the session. A nil return means the user
-	// closed the window; the transport stays held for a later Attach.
-	Attach(ctx context.Context) error
+	// Open returns a live window over the session. The pump steps it
+	// until it reports closed; the transport stays held for a later Open.
+	Open(ctx context.Context) (liveWindow, error)
 	// Close ends the session and frees what it holds on the server.
 	Close()
 	// Kind names the session for the switcher: "display", "terminal",
@@ -102,8 +104,9 @@ type SessionHandle interface {
 // SessionDialer opens holdable sessions for the concurrent-session manager.
 //
 // Dial establishes the transport (and fails fast when the workspace cannot
-// be opened); the window only appears on the first Attach. This is what lets
-// several sessions stay connected while one window is visible.
+// be opened); the window only appears on the first Open. This is what lets
+// several sessions stay connected — and several windows stay open — at
+// once.
 type SessionDialer interface {
 	Dial(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error)
 }

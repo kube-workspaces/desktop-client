@@ -231,42 +231,90 @@ func RunTier1(ctx context.Context, be Backend, inp Tier1Input,
 		return fmt.Errorf("viewer: nil tier-1 producer")
 	}
 
+	d, err := OpenTier1Detached(ctx, be, inp, produce, opts)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	for {
+		if d.Closed() {
+			return d.Result()
+		}
+
+		// A transport that has already ended surfaces before the next wait, so
+		// a dead link is reported at once.
+		if err := d.pollProduce(); err != nil {
+			return err
+		}
+
+		d.w.syncGeneration()
+		d.w.events = be.PollEvents(d.w.events)
+		events := d.w.events
+		d.w.events = d.w.events[:0]
+		for _, ev := range events {
+			if herr := d.w.handleEvent(time.Now(), ev); herr != nil {
+				return d.finish(herr)
+			}
+		}
+		if d.w.quit {
+			continue
+		}
+
+		if err := d.w.step(time.Now()); err != nil {
+			return d.finish(err)
+		}
+
+		d.w.events = be.WaitEvents(d.w.events, d.w.idleTimeout(time.Now()))
+	}
+}
+
+// Tier1Detached is one live Tier 1 window driven by the multi-window pump
+// instead of its own loop. It must be used from the goroutine that owns the
+// main OS thread, like every [Backend] window.
+type Tier1Detached struct {
+	w        *tier1Window
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan error
+	joined   bool
+	finished bool
+	result   error
+	stopWake func() bool
+}
+
+// OpenTier1Detached opens the Tier 1 window and starts its producer without
+// driving the event loop, for the multi-window pump that steps every live
+// window cooperatively. The caller feeds routed events to [Tier1Detached.Step],
+// waits on [Tier1Detached.IdleWait], and calls [Tier1Detached.Close] when
+// [Tier1Detached.Closed] reports the window is done; [Tier1Detached.Result]
+// is the transport error to report, or nil for a clean close.
+func OpenTier1Detached(ctx context.Context, be Backend, inp Tier1Input,
+	produce func(context.Context, *Tier1Sink) error, opts Tier1Config) (*Tier1Detached, error) {
+
+	opts.applyDefaults()
+	if inp == nil {
+		return nil, fmt.Errorf("viewer: nil tier-1 input")
+	}
+	if produce == nil {
+		return nil, fmt.Errorf("viewer: nil tier-1 producer")
+	}
+
 	w := &tier1Window{be: be, opts: opts, inp: inp}
 	winW, winH := w.initialSize(0, 0)
 	if err := be.Open(WindowOptions{
 		Title: opts.Title, Width: winW, Height: winH,
 		Fullscreen: opts.Fullscreen, ScaleQuality: opts.ScaleQuality, VSync: !opts.NoVSync,
 	}); err != nil {
-		return fmt.Errorf("viewer: open tier-1 window: %w", err)
+		return nil, fmt.Errorf("viewer: open tier-1 window: %w", err)
 	}
-	defer be.Close()
 	w.winW, w.winH = be.Size()
 	w.pinned = opts.Width > 0 && opts.Height > 0
 
-	ctx, cancel := context.WithCancel(ctx)
+	prodCtx, cancel := context.WithCancel(ctx)
 	w.sink = &Tier1Sink{wake: be.Wake}
 	done := make(chan error, 1)
-	go func() { done <- produce(ctx, w.sink) }()
-	joined := false
-	end := func(err error) error {
-		if !joined {
-			cancel()
-			<-done
-			joined = true
-		}
-		_ = inp.ResetKeys()
-		return err
-	}
-	defer func() {
-		// If the loop already joined, this is a no-op.
-		cancel()
-		if !joined {
-			<-done
-		}
-	}()
-
-	stopWake := context.AfterFunc(ctx, be.Wake)
-	defer stopWake()
+	go func() { done <- produce(prodCtx, w.sink) }()
 
 	// Audio: the Opus side always emits two-channel little-endian s16 48 kHz,
 	// so the device is opened once with that layout. A missing device merely
@@ -277,7 +325,6 @@ func RunTier1(ctx context.Context, be Backend, inp Tier1Input,
 				opts.logf("audio disabled: %v", err)
 			} else {
 				w.audio = a
-				defer w.audio.CloseAudio()
 			}
 		}
 	}
@@ -286,43 +333,133 @@ func RunTier1(ctx context.Context, be Backend, inp Tier1Input,
 	w.clipDue = now.Add(opts.ClipboardInterval)
 	w.lastPresent = now
 
-	for {
-		if w.quit || ctx.Err() != nil {
-			// Quit and cancellation are both ordinary ends; a transport
-			// failure is the only error this presentation reports.
-			return end(nil)
-		}
+	// Cancellation arrives as an event like everything else, because the
+	// loop blocks in the backend rather than in a select.
+	stopWake := context.AfterFunc(ctx, be.Wake)
+	return &Tier1Detached{w: w, ctx: ctx, cancel: cancel, done: done, stopWake: stopWake}, nil
+}
 
-		// A transport that has already ended surfaces before the next wait, so
-		// a dead link is reported at once.
-		select {
-		case err := <-done:
-			joined = true
-			if err == nil {
-				err = context.Canceled
-			}
-			return end(err)
-		default:
+// pollProduce reaps a finished producer without blocking, recording its
+// result for [Tier1Detached.Result]. A producer that returns nil unprompted
+// is treated as cancelled, exactly as [RunTier1] treats it.
+func (d *Tier1Detached) pollProduce() error {
+	select {
+	case err := <-d.done:
+		d.joined = true
+		if err == nil {
+			err = context.Canceled
 		}
-
-		w.syncGeneration()
-		w.events = be.PollEvents(w.events)
-		for _, ev := range w.events {
-			if err := w.handleEvent(time.Now(), ev); err != nil {
-				return end(err)
-			}
-		}
-		w.events = w.events[:0]
-		if w.quit {
-			continue
-		}
-
-		if err := w.step(time.Now()); err != nil {
-			return end(err)
-		}
-
-		w.events = be.WaitEvents(w.events, w.idleTimeout(time.Now()))
+		return d.finish(err)
+	default:
+		return nil
 	}
+}
+
+// finish joins the producer (unless already joined), releases the guest's
+// keys, and records a terminal result. Quit and cancellation are ordinary
+// ends and record nil; a transport failure records the error.
+func (d *Tier1Detached) finish(err error) error {
+	if !d.joined {
+		d.cancel()
+		<-d.done
+		d.joined = true
+	}
+	_ = d.w.inp.ResetKeys()
+	d.finished = true
+	if d.w.quit || d.ctx.Err() != nil {
+		d.result = nil
+	} else {
+		d.result = err
+	}
+	return d.result
+}
+
+// Step runs one iteration against the window's own routed events. A
+// transport that ended since the last step surfaces first, so a dead link
+// is reported at once.
+func (d *Tier1Detached) Step(now time.Time, events []Event) error {
+	if err := d.pollProduce(); err != nil {
+		return err
+	}
+	d.w.syncGeneration()
+	for _, ev := range events {
+		if err := d.w.handleEvent(now, ev); err != nil {
+			return d.finish(err)
+		}
+	}
+	if d.w.quit {
+		// The result is recorded for Result; Step itself stays clean so
+		// the pump parks the window rather than failing the session.
+		_ = d.finish(nil)
+		return nil
+	}
+	if err := d.w.step(now); err != nil {
+		return d.finish(err)
+	}
+	return nil
+}
+
+// IdleWait reports how long the pump may block before this window has work
+// of its own. A producer with frames waiting wakes the pump through the
+// sink, so a zero wait here is an optimisation, not a missed wake.
+func (d *Tier1Detached) IdleWait(now time.Time) time.Duration {
+	if d.w.sinkHasWork() {
+		return 0
+	}
+	return d.w.idleTimeout(now)
+}
+
+// Closed reports whether the window is done: its close button, the quit
+// chord, cancellation, or a finished producer.
+func (d *Tier1Detached) Closed() bool {
+	if d.w.quit || d.finished || d.ctx.Err() != nil {
+		return true
+	}
+	select {
+	case err := <-d.done:
+		d.joined = true
+		if err == nil {
+			err = context.Canceled
+		}
+		// Recorded for Result; Closed reports only the fact.
+		_ = d.finish(err)
+		return true
+	default:
+		return false
+	}
+}
+
+// Result is the transport error to report when the window closed, or nil
+// for a clean close (quit, cancellation, or a producer that ended because
+// the window was already going away).
+func (d *Tier1Detached) Result() error { return d.result }
+
+// Backend returns the backend owning this window, for the pump's routing
+// and waiting.
+func (d *Tier1Detached) Backend() Backend { return d.w.be }
+
+// ReleaseInput releases every key the guest believes is held, for the pump
+// to call when focus moves to another window.
+func (d *Tier1Detached) ReleaseInput() { d.w.releaseInput() }
+
+// Close joins the producer unless already joined, releases the guest's
+// keys, and tears the window down.
+func (d *Tier1Detached) Close() {
+	if d.stopWake != nil {
+		d.stopWake()
+		d.stopWake = nil
+	}
+	if !d.joined {
+		d.cancel()
+		<-d.done
+		d.joined = true
+	}
+	_ = d.w.inp.ResetKeys()
+	if d.w.audio != nil {
+		d.w.audio.CloseAudio()
+		d.w.audio = nil
+	}
+	d.w.be.Close()
 }
 
 // tier1Window owns the render-loop state of an interactive Tier 1 session.
@@ -453,6 +590,10 @@ func (w *tier1Window) sinkHasWork() bool {
 func (w *tier1Window) handleEvent(now time.Time, ev Event) error {
 	switch e := ev.(type) {
 	case EventQuit:
+		w.quit = true
+		return nil
+
+	case EventWindowClose:
 		w.quit = true
 		return nil
 

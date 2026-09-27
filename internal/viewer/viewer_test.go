@@ -250,6 +250,10 @@ func (f *fakeBackend) Fullscreen() bool {
 	return f.fullscreen
 }
 
+func (f *fakeBackend) Raise() error { return nil }
+
+func (f *fakeBackend) WindowID() uint32 { return 0 }
+
 func (f *fakeBackend) Clipboard() (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1402,6 +1406,20 @@ func TestViewerQuitEventEndsSession(t *testing.T) {
 	h.step(t)
 	if !h.v.quit {
 		t.Fatal("EventQuit did not end the session")
+	}
+}
+
+// TestViewerWindowCloseEndsSession is the per-window close contract: in a
+// single-window loop a close is a quit, while the multi-window pump consumes
+// the event per window and never lets it reach a loop that does not own the
+// window.
+func TestViewerWindowCloseEndsSession(t *testing.T) {
+	h := newHarness(t, 800, 600, 800, 600, Config{})
+	defer h.v.stop()
+	h.be.push(EventWindowClose{})
+	h.step(t)
+	if !h.v.quit {
+		t.Fatal("EventWindowClose did not end the session")
 	}
 }
 

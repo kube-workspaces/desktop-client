@@ -38,8 +38,8 @@ func TestTheWindowKeepsItsSizeAcrossASession(t *testing.T) {
 	r.focus(idList)
 	r.clickFocused()
 	r.step()
-	// In the new architecture, the session runs synchronously within the first
-	// Step of StateSession.
+	// Opening registers a live window within the first Step of StateSession
+	// and returns to the list at once.
 	r.settle()
 
 	if len(r.opened) != 1 {

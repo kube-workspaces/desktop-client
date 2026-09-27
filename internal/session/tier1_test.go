@@ -19,8 +19,32 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
+	"github.com/kube-workspaces/desktop-client/internal/selkies"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
+
+// TestMapTier1Result pins the detached path's classification to RunTier1's:
+// quit and cancellation are clean, refusal never falls back, everything
+// else may.
+func TestMapTier1Result(t *testing.T) {
+	ctx := context.Background()
+	if err := MapTier1Result(ctx, nil); err != nil {
+		t.Fatalf("nil result = %v, want clean", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	boom := errors.New("boom")
+	if err := MapTier1Result(cancelled, boom); err != nil {
+		t.Fatalf("cancelled result = %v, want clean", err)
+	}
+	refused := selkies.ErrRefused
+	if err := MapTier1Result(ctx, refused); !errors.Is(err, ErrNoFallback) {
+		t.Fatalf("refusal = %v, want ErrNoFallback", err)
+	}
+	if err := MapTier1Result(ctx, boom); err != boom {
+		t.Fatalf("recoverable = %v, want it passed through", err)
+	}
+}
 
 // fakeVideoDec implements selkies.VideoDecoder without native libraries. The
 // payload encodes [start code][w][h]; a marker lands in pixel (0,0).
@@ -135,6 +159,8 @@ func (f *fakeTier1Backend) SetSize(w, h int) error                    { return n
 func (f *fakeTier1Backend) SetTitle(string) error                     { return nil }
 func (f *fakeTier1Backend) SetFullscreen(bool) error                  { return nil }
 func (f *fakeTier1Backend) Fullscreen() bool                          { return false }
+func (f *fakeTier1Backend) Raise() error                              { return nil }
+func (f *fakeTier1Backend) WindowID() uint32                          { return 0 }
 func (f *fakeTier1Backend) Size() (int, int)                          { return 1280, 800 }
 func (f *fakeTier1Backend) ScaleFactor() float64                      { return 1 }
 func (f *fakeTier1Backend) Clipboard() (string, error)                { return "", nil }

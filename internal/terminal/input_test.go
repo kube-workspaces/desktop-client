@@ -238,6 +238,7 @@ func TestQuitChord(t *testing.T) {
 	in := newInput()
 	for _, e := range []viewer.Event{
 		viewer.EventQuit{},
+		viewer.EventWindowClose{},
 		key(keysym.KeyUnknown, 'q', keysym.ModControl|keysym.ModAlt),
 		key(keysym.KeyUnknown, 'Q', keysym.ModControl|keysym.ModAlt|keysym.ModShift),
 	} {

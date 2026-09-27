@@ -158,7 +158,14 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.m.CloseSessionList()
 		a.ctx.Focus().Set(idSessions)
 	case intentSwitchSession:
-		if rec, ok := a.sessions[in.sessionKey]; ok {
+		if e, ok := a.live[in.sessionKey]; ok {
+			// The session has a live window: focus it instead of opening
+			// a second one on the same transport.
+			a.m.CloseSessionList()
+			_ = e.window.Raise()
+			a.ctx.Focus().Set(idSessions)
+		} else if rec, ok := a.sessions[in.sessionKey]; ok {
+			// Parked: resume the held transport in a fresh window.
 			a.m.CloseSessionList()
 			if rec.observer {
 				a.m.OpenAsObserver(rec.ws)
@@ -573,7 +580,12 @@ func (a *App) activate(ctx context.Context, ws kwclient.Workspace, observer bool
 		a.m.Notice = ""
 		a.m.Err = i18n.Sprintf("workspaces.notOpenable", ws.Name, StatusText(ws))
 	case ws.IsVM(), ws.Type == kwclient.WorkspaceTypeContainer, ws.Type == kwclient.WorkspaceTypeScratch:
-		if observer {
+		if e, ok := a.live[ws.Key()]; ok && e.observer == observer {
+			// Already open beside the list: focus it.
+			_ = e.window.Raise()
+			a.m.Err = ""
+			a.m.Notice = i18n.Sprintf("sessions.opened", ws.Key())
+		} else if observer {
 			a.m.OpenAsObserver(ws)
 		} else {
 			a.m.Open(ws)
@@ -594,7 +606,7 @@ func (a *App) closeSessionEntry(ctx context.Context, key string) {
 	if !ok {
 		return
 	}
-	title := sessionEntryFor(rec).Title
+	title := sessionEntryFor(rec, a.isLive(key)).Title
 	a.closeSession(key)
 	a.m.Notice = i18n.Sprintf("sessions.closed", title)
 	a.refreshWorkspaces(ctx, true)

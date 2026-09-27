@@ -319,9 +319,11 @@ func TestBrowserSignInCanBeCancelled(t *testing.T) {
 	}
 }
 
-// TestOpeningAVMWorkspaceRunsASessionAndComesBack is the requirement the whole
-// single-window design exists to meet.
-func TestOpeningAVMWorkspaceRunsASessionAndComesBack(t *testing.T) {
+// TestOpeningAVMWorkspaceOpensALiveWindowAndStaysOnTheList is the
+// requirement the multi-window design exists to meet: opening a workspace
+// registers a live window with the pump instead of parking the shell, so
+// the list stays interactive beside it.
+func TestOpeningAVMWorkspaceOpensALiveWindowAndStaysOnTheList(t *testing.T) {
 	r := newRig(savedProfile(), "stored-token")
 	vm := workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)
 	r.api.set(func(f *fakeAPI) { f.workspaces = []kwclient.Workspace{vm} })
@@ -329,21 +331,24 @@ func TestOpeningAVMWorkspaceRunsASessionAndComesBack(t *testing.T) {
 
 	r.focus(idList)
 	r.clickFocused()
-	// In the new architecture, the session runs synchronously within the first
-	// Step of StateSession.
+	// Opening registers a live window within the first Step of StateSession
+	// and returns to the list at once.
 	r.settle()
 
 	if len(r.opened) != 1 || r.opened[0].Key() != "team/vm-a" {
-		t.Fatalf("the connector was called with %v", r.opened)
+		t.Fatalf("the dialer was called with %v", r.opened)
 	}
 	if r.app.m.State != StateWorkspaces {
-		t.Fatalf("after the session, state = %v; the app must not exit", r.app.m.State)
+		t.Fatalf("after opening, state = %v; the shell must stay on the list", r.app.m.State)
 	}
 	if r.app.quit {
-		t.Fatal("the shell quit when the session ended")
+		t.Fatal("the shell quit when the session opened")
+	}
+	if !r.app.isLive("team/vm-a") {
+		t.Fatal("no live window for the opened workspace")
 	}
 	if !strings.Contains(r.app.m.Notice, "team/vm-a") {
-		t.Fatalf("the disconnect was not reported: %q", r.app.m.Notice)
+		t.Fatalf("the open was not reported: %q", r.app.m.Notice)
 	}
 }
 

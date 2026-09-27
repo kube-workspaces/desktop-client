@@ -36,17 +36,18 @@ type sessionRecord struct {
 }
 
 // sessionEntry is the model's display copy of a held session.
-func sessionEntryFor(rec *sessionRecord) SessionEntry {
+func sessionEntryFor(rec *sessionRecord, open bool) SessionEntry {
 	title := rec.ws.Key()
 	kind := rec.handle.Kind()
 	if rec.observer {
 		title += i18n.Get("workspaces.observer")
 	}
-	return SessionEntry{Key: rec.ws.Key(), Title: title, Kind: kind}
+	return SessionEntry{Key: rec.ws.Key(), Title: title, Kind: kind, Open: open}
 }
 
 // syncSessions rebuilds the model's session list from the held transports,
-// in stable key order.
+// in stable key order. Entries for live windows are marked open, so the
+// switcher can focus them instead of resuming them.
 func (a *App) syncSessions() {
 	keys := make([]string, 0, len(a.sessions))
 	for key := range a.sessions {
@@ -55,13 +56,17 @@ func (a *App) syncSessions() {
 	sort.Strings(keys)
 	entries := make([]SessionEntry, 0, len(keys))
 	for _, key := range keys {
-		entries = append(entries, sessionEntryFor(a.sessions[key]))
+		entries = append(entries, sessionEntryFor(a.sessions[key], a.isLive(key)))
 	}
 	a.m.Sessions = entries
 }
 
 // closeSession releases one held session and forgets it. It is idempotent.
+// An open window on the session goes with it, silently: the caller reports
+// whatever the disconnect means (the switcher names it, teardown reports
+// nothing).
 func (a *App) closeSession(key string) {
+	a.closeLiveWindow(key)
 	if rec, ok := a.sessions[key]; ok {
 		delete(a.sessions, key)
 		rec.handle.Close()
@@ -69,11 +74,14 @@ func (a *App) closeSession(key string) {
 	}
 }
 
-// closeAllSessions releases every held session. The shell calls it whenever
-// the identity or the instance goes away — sign-out, profile switch, server
-// change, process exit — so a held transport never outlives the session that
-// authenticated it, and the server's single-seat slots are handed back.
+// closeAllSessions releases every held session and closes every open
+// window. The shell calls it whenever the identity or the instance goes
+// away — sign-out, profile switch, server change, process exit — so a held
+// transport never outlives the session that authenticated it, and the
+// server's single-seat slots are handed back. Windows go first so the
+// guests are told their keys are up while the connections are still open.
 func (a *App) closeAllSessions() {
+	a.closeAllLiveWindows()
 	for key, rec := range a.sessions {
 		delete(a.sessions, key)
 		rec.handle.Close()
@@ -81,27 +89,40 @@ func (a *App) closeAllSessions() {
 	a.syncSessions()
 }
 
-// runSession attaches the opening workspace's session and blocks until its
-// window closes: a display for a VM, an integrated terminal otherwise.
+// openLiveSession opens the opening workspace's session in a new window
+// beside the shell: a display for a VM, an integrated terminal otherwise.
 //
 // The first open dials the transport; later opens of the same workspace
-// resume the held one. A clean window close parks the session — it stays
-// connected in the background and the shell returns to the list — while a
-// mid-flight failure closes it and reports. Explicit disconnects happen in
-// the sessions modal.
+// resume the held one. Opening never blocks — the window registers with
+// the pump and the shell stays on the list — so several sessions stay live
+// side by side. A clean window close parks the session (it stays connected
+// in the background); a mid-flight failure closes it and reports.
+// Explicit disconnects happen in the sessions modal.
 //
-// It runs on the loop's goroutine, which is the goroutine that owns the
+// It runs on the loop's goroutine, which is the goroutine that owns every
 // window, which is what the viewer requires.
-func (a *App) runSession(ctx context.Context) error {
+func (a *App) openLiveSession(ctx context.Context) error {
 	ws := a.m.Opening
 	observer := a.m.OpenObserver
 	if a.dialer == nil {
-		a.afterSession()
 		a.m.SessionEnded(errors.New("this build cannot open sessions"))
 		return nil
 	}
 
 	key := ws.Key()
+	if e, ok := a.live[key]; ok {
+		if e.observer == observer {
+			// Already open: focus instead of opening a second window on
+			// the same transport.
+			_ = e.window.Raise()
+			a.m.SessionOpened(ws)
+			return nil
+		}
+		// A display and an observer of the same workspace are different
+		// sessions, not two windows on one: tear the live window down
+		// before releasing the old transport below.
+		a.closeLiveWindow(key)
+	}
 	rec := a.sessions[key]
 	if rec == nil || rec.observer != observer {
 		if rec != nil {
@@ -113,7 +134,6 @@ func (a *App) runSession(ctx context.Context) error {
 		a.logf("dialling a session to %s", key)
 		handle, err := a.dialer.Dial(ctx, ws, observer)
 		if err != nil {
-			a.afterSession()
 			a.m.SessionEnded(err)
 			return nil
 		}
@@ -122,42 +142,99 @@ func (a *App) runSession(ctx context.Context) error {
 		a.syncSessions()
 	}
 
-	a.logf("attaching a session window to %s", key)
-	err := rec.handle.Attach(ctx)
-	a.afterSession()
-
-	if ctx.Err() != nil {
-		// The process is shutting down, not returning to the list.
-		a.closeAllSessions()
-		a.quit = true
-		return nil
-	}
+	a.logf("opening a session window to %s", key)
+	w, err := rec.handle.Open(ctx)
 	if err != nil {
 		a.closeSession(key)
 		a.m.SessionEnded(err)
 		return nil
 	}
-	a.m.SessionParked(ws)
+	if ctx.Err() != nil {
+		// The process is shutting down, not opening windows.
+		w.Close()
+		a.closeAllSessions()
+		a.quit = true
+		return nil
+	}
+	a.live[key] = &liveEntry{key: key, ws: ws, observer: observer, window: w}
+	a.syncSessions()
+	a.m.SessionOpened(ws)
+	a.dirty = true
+	// The workspace was just opened; the list underneath should show it as
+	// soon as the pump gets there.
+	a.nextRefresh = time.Time{}
 	return nil
 }
 
-// afterSession cleans up the shell's state after a session ends.
-//
-// The event queue holds whatever happened to the shell's window while the
-// session was live, and none of it should be acted on. And the input state
-// describes a pointer and a set of modifiers from a window the user was not
-// interacting with.
-func (a *App) afterSession() {
-	a.events = a.be.PollEvents(a.events[:0])
-	a.events = a.events[:0]
-	a.in = ui.Input{Focused: true}
-	a.ctx.Focus().Clear()
-	a.lastState = State(-1)
-	// Refresh as soon as the list is back: the workspace was just used, and
-	// whatever else happened in the meantime should be visible immediately.
-	a.nextRefresh = time.Time{}
-	a.dirty = true
+// viewerLiveWindow drives a detached RFB viewer from the pump.
+type viewerLiveWindow struct {
+	view *viewer.Viewer
 }
+
+// Step implements [liveWindow].
+func (w *viewerLiveWindow) Step(_ context.Context, now time.Time, events []viewer.Event) error {
+	return w.view.StepExternal(now, events)
+}
+
+// IdleWait implements [liveWindow].
+func (w *viewerLiveWindow) IdleWait(now time.Time) time.Duration {
+	return w.view.IdleWait(now)
+}
+
+// Closed implements [liveWindow].
+func (w *viewerLiveWindow) Closed() bool { return w.view.DetachedClosed() }
+
+// Result implements [liveWindow].
+func (w *viewerLiveWindow) Result() error { return w.view.DetachedResult() }
+
+// Close implements [liveWindow].
+func (w *viewerLiveWindow) Close() { w.view.CloseDetached() }
+
+// WindowBackend implements [liveWindow].
+func (w *viewerLiveWindow) WindowBackend() viewer.Backend { return w.view.WindowBackend() }
+
+// Raise implements [liveWindow].
+func (w *viewerLiveWindow) Raise() error { return w.view.WindowBackend().Raise() }
+
+// ReleaseInput implements [liveWindow].
+func (w *viewerLiveWindow) ReleaseInput() { w.view.ReleaseInput() }
+
+// terminalLiveWindow drives a detached integrated terminal from the pump.
+type terminalLiveWindow struct {
+	det *terminal.Detached
+}
+
+// Step implements [liveWindow].
+func (w *terminalLiveWindow) Step(_ context.Context, now time.Time, events []viewer.Event) error {
+	w.det.Step(now, events)
+	return nil
+}
+
+// IdleWait implements [liveWindow].
+func (w *terminalLiveWindow) IdleWait(now time.Time) time.Duration {
+	return w.det.IdleWait(now)
+}
+
+// Closed implements [liveWindow].
+func (w *terminalLiveWindow) Closed() bool { return w.det.Closed() }
+
+// Result implements [liveWindow]: a terminal has no terminal failure — a
+// dropped bridge redials, a clean shell exit ends the window — so closing
+// one always parks.
+func (w *terminalLiveWindow) Result() error { return nil }
+
+// Close implements [liveWindow].
+func (w *terminalLiveWindow) Close() { w.det.Close() }
+
+// WindowBackend implements [liveWindow].
+func (w *terminalLiveWindow) WindowBackend() viewer.Backend { return w.det.Backend() }
+
+// Raise implements [liveWindow].
+func (w *terminalLiveWindow) Raise() error { return w.det.Backend().Raise() }
+
+// ReleaseInput implements [liveWindow]: the terminal sends bytes, not held
+// keys, so there is nothing to release.
+func (w *terminalLiveWindow) ReleaseInput() { w.det.ReleaseInput() }
 
 // SessionOptions tunes the display sessions the shell opens.
 type SessionOptions struct {
@@ -195,7 +272,7 @@ func NewSessionDialer(client *kwclient.Client, opts SessionOptions) SessionDiale
 }
 
 // Dial establishes the session's transport without opening any window. The
-// window appears on the first Attach; the transport survives window closes
+// window appears on the first Open; the transport survives window closes
 // until Close, which is what makes several sessions concurrent.
 func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error) {
 	switch {
@@ -206,10 +283,11 @@ func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observe
 		return dialObserverSession(ctx, d.client, ws, d.opts)
 	case !ws.IsVM():
 		return &terminalHandle{
-			run: TerminalConnector(d.client, TerminalOptions{
+			client: d.client,
+			opts: TerminalOptions{
 				Scale: 1, // the 5x8 bitmap at 1x (6x11 px cells); scale 2 reads too large
 				Logf:  d.opts.Logf,
-			}),
+			},
 			ws: ws,
 		}, nil
 	default:
@@ -336,12 +414,21 @@ func (h *exclusiveHandle) newView(ctx context.Context) *viewer.Viewer {
 	return view
 }
 
-// Attach implements [SessionHandle]: it runs a fresh window over the held
-// transport and returns when the window closes.
-func (h *exclusiveHandle) Attach(ctx context.Context) error {
+// openWindow builds a fresh window over the held transport for the pump to
+// drive. Windows are cheap, transports are not: every Open gets one.
+func (h *exclusiveHandle) openWindow(ctx context.Context) (liveWindow, error) {
 	view := h.newView(ctx)
 	h.ref.set(view)
-	return view.Run(ctx, h.sess)
+	if _, err := view.OpenDetached(ctx, h.sess); err != nil {
+		return nil, err
+	}
+	return &viewerLiveWindow{view: view}, nil
+}
+
+// Open implements [SessionHandle]: it returns a fresh live window over the
+// held transport.
+func (h *exclusiveHandle) Open(ctx context.Context) (liveWindow, error) {
+	return h.openWindow(ctx)
 }
 
 // Close implements [SessionHandle].
@@ -353,19 +440,37 @@ func (h *exclusiveHandle) Close() {
 	})
 }
 
-// terminalHandle is a held integrated terminal: every Attach redials the
+// terminalHandle is a held integrated terminal: every Open redials the
 // /exec bridge fresh (the bridge is multi-session, so nothing needs holding).
-// Scrollback does not survive a switch; the shell underneath does.
 type terminalHandle struct {
-	run Connector
-	ws  kwclient.Workspace
+	client *kwclient.Client
+	opts   TerminalOptions
+	ws     kwclient.Workspace
 }
 
 // Kind implements [SessionHandle].
 func (h *terminalHandle) Kind() string { return "terminal" }
 
-// Attach implements [SessionHandle].
-func (h *terminalHandle) Attach(ctx context.Context) error { return h.run(ctx, h.ws) }
+// Open implements [SessionHandle]: it returns a fresh live terminal window.
+func (h *terminalHandle) Open(ctx context.Context) (liveWindow, error) {
+	dial := func(ctx context.Context, cols, rows uint16) (io.ReadWriteCloser, error) {
+		conn, err := h.client.DialExec(ctx, h.ws.Namespace, h.ws.Name, cols, rows)
+		if err != nil {
+			return nil, err
+		}
+		return wsio.New(conn), nil
+	}
+	det, err := terminal.OpenDetached(ctx, dial, terminal.Options{
+		Title: h.ws.Key(),
+		Theme: h.opts.Theme,
+		Scale: h.opts.Scale,
+		Logf:  h.opts.Logf,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &terminalLiveWindow{det: det}, nil
+}
 
 // Close implements [SessionHandle]: nothing is held past the window.
 func (h *terminalHandle) Close() {}
@@ -383,50 +488,170 @@ type tier1Handle struct {
 	fallback *exclusiveHandle
 }
 
-// Kind implements [SessionHandle].
-func (h *tier1Handle) Kind() string { return "tier1" }
+// Kind implements [SessionHandle]. Once Tier 1 has fallen back the window
+// on screen is a Tier 0 display, and the switcher names what the user sees.
+func (h *tier1Handle) Kind() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.fallback != nil {
+		return "display"
+	}
+	return "tier1"
+}
 
-// Attach implements [SessionHandle].
-func (h *tier1Handle) Attach(ctx context.Context) error {
+// Open implements [SessionHandle]: it returns a live Tier 1 window that
+// falls back to Tier 0 in place on a recoverable failure, for the rest of
+// the handle's life — once a tier is dropped it is not probed again
+// mid-session (plan §7.2).
+func (h *tier1Handle) Open(ctx context.Context) (liveWindow, error) {
 	h.mu.Lock()
 	fb := h.fallback
 	h.mu.Unlock()
 	if fb != nil {
-		return fb.Attach(ctx)
+		return fb.openWindow(ctx)
 	}
 
 	agentBase := ""
 	if h.ws.RemoteDesktop != nil && h.ws.RemoteDesktop.Path != nil {
 		agentBase = *h.ws.RemoteDesktop.Path
 	}
-	err := session.RunTier1(ctx, h.client, h.ws.Namespace, h.ws.Name, agentBase,
+	live, err := session.OpenTier1(ctx, h.client, h.ws.Namespace, h.ws.Name, agentBase,
 		viewer.NewSDLBackend(), session.Tier1Config{
 			Title:        h.ws.Key(),
 			Audio:        true,
 			ScaleQuality: h.opts.ScaleQuality,
 			Logf:         h.opts.Logf,
 		})
-	if err == nil || ctx.Err() != nil {
+	if err != nil {
+		return nil, err
+	}
+	return &tier1LiveWindow{handle: h, det: live.Detached}, nil
+}
+
+// tier1LiveWindow is the live window of a [tier1Handle]: a Tier 1 window
+// that swaps itself for a Tier 0 window on a recoverable failure, without
+// the pump ever seeing the seam. A refused agent, a rejected credential or
+// a display owned elsewhere surfaces instead of being routed around.
+type tier1LiveWindow struct {
+	handle *tier1Handle
+	det    *viewer.Tier1Detached
+	fb     liveWindow
+
+	closed bool
+	result error
+}
+
+// Step implements [liveWindow].
+func (w *tier1LiveWindow) Step(ctx context.Context, now time.Time, events []viewer.Event) error {
+	if w.fb != nil {
+		return w.fb.Step(ctx, now, events)
+	}
+	if w.det == nil {
+		return nil
+	}
+	if err := w.det.Step(now, events); err != nil {
+		// A presenter failure (an upload the window cannot do) ends the
+		// window, like a viewer step failure does.
 		return err
 	}
-	if errors.Is(err, session.ErrNoFallback) {
-		// A refused agent, a rejected credential or a display owned
-		// elsewhere must surface, not be routed around.
-		return err
+	if !w.det.Closed() {
+		return nil
 	}
-	// Recoverable: dial, negotiation, startup or decode failed. Fall back
-	// for the rest of this handle's life.
-	if h.opts.Logf != nil {
-		h.opts.Logf("Tier 1 to %s failed (%v); falling back to Tier 0", h.ws.Key(), err)
+	res := session.MapTier1Result(ctx, w.det.Result())
+	w.det.Close()
+	w.det = nil
+	if res == nil || ctx.Err() != nil || errors.Is(res, session.ErrNoFallback) {
+		w.closed, w.result = true, res
+		return nil
 	}
-	fb, derr := dialExclusiveSession(ctx, h.client, h.ws, h.opts)
+	if w.handle.opts.Logf != nil {
+		w.handle.opts.Logf("Tier 1 to %s failed (%v); falling back to Tier 0", w.handle.ws.Key(), res)
+	}
+	fb, derr := dialExclusiveSession(ctx, w.handle.client, w.handle.ws, w.handle.opts)
 	if derr != nil {
-		return derr
+		w.closed, w.result = true, derr
+		return nil
 	}
-	h.mu.Lock()
-	h.fallback = fb
-	h.mu.Unlock()
-	return fb.Attach(ctx)
+	w.handle.mu.Lock()
+	w.handle.fallback = fb
+	w.handle.mu.Unlock()
+	win, err := fb.openWindow(ctx)
+	if err != nil {
+		w.closed, w.result = true, err
+		return nil
+	}
+	w.fb = win
+	return nil
+}
+
+// IdleWait implements [liveWindow].
+func (w *tier1LiveWindow) IdleWait(now time.Time) time.Duration {
+	if w.fb != nil {
+		return w.fb.IdleWait(now)
+	}
+	if w.det == nil {
+		return 0
+	}
+	return w.det.IdleWait(now)
+}
+
+// Closed implements [liveWindow].
+func (w *tier1LiveWindow) Closed() bool {
+	if w.fb != nil {
+		return w.fb.Closed()
+	}
+	return w.closed
+}
+
+// Result implements [liveWindow].
+func (w *tier1LiveWindow) Result() error {
+	if w.fb != nil {
+		return w.fb.Result()
+	}
+	return w.result
+}
+
+// Close implements [liveWindow].
+func (w *tier1LiveWindow) Close() {
+	if w.det != nil {
+		w.det.Close()
+		w.det = nil
+	}
+	if w.fb != nil {
+		w.fb.Close()
+		w.fb = nil
+	}
+}
+
+// WindowBackend implements [liveWindow].
+func (w *tier1LiveWindow) WindowBackend() viewer.Backend {
+	if w.fb != nil {
+		return w.fb.WindowBackend()
+	}
+	if w.det == nil {
+		return nil
+	}
+	return w.det.Backend()
+}
+
+// Raise implements [liveWindow].
+func (w *tier1LiveWindow) Raise() error {
+	be := w.WindowBackend()
+	if be == nil {
+		return nil
+	}
+	return be.Raise()
+}
+
+// ReleaseInput implements [liveWindow].
+func (w *tier1LiveWindow) ReleaseInput() {
+	if w.fb != nil {
+		w.fb.ReleaseInput()
+		return
+	}
+	if w.det != nil {
+		w.det.ReleaseInput()
+	}
 }
 
 // Close implements [SessionHandle].
@@ -522,9 +747,9 @@ func dialObserverSession(ctx context.Context, client API, ws kwclient.Workspace,
 	return h, nil
 }
 
-// Attach implements [SessionHandle]: it runs a fresh read-only window over
-// the held membership and returns when the window closes.
-func (h *observerHandle) Attach(ctx context.Context) error {
+// Open implements [SessionHandle]: it returns a fresh live read-only
+// window over the held membership.
+func (h *observerHandle) Open(ctx context.Context) (liveWindow, error) {
 	view := viewer.New(viewer.NewSDLBackend(), viewer.Config{
 		AdaptiveQuality: !h.opts.FixedQuality,
 		Title:           h.ws.Key() + i18n.Get("workspaces.observer"),
@@ -538,11 +763,31 @@ func (h *observerHandle) Attach(ctx context.Context) error {
 	ctl := &sharedControl{client: h.client, ws: h.ws, participantID: h.participantID, sess: h.sess, view: view}
 	view.SetControlHandler(ctl.toggle)
 
-	pollCtx, stopPoll := context.WithCancel(ctx)
-	defer stopPoll()
+	if _, err := view.OpenDetached(ctx, h.sess); err != nil {
+		return nil, err
+	}
+	// The membership poll applies remote role changes to the live window.
+	// It stops with the window, not with the membership: the participant
+	// survives window closes by design.
+	pollCtx, stopPoll := context.WithCancel(context.Background())
 	go ctl.watch(pollCtx)
+	return &observerLiveWindow{
+		viewerLiveWindow: viewerLiveWindow{view: view},
+		stopWatch:        stopPoll,
+	}, nil
+}
 
-	return view.Run(ctx, h.sess)
+// observerLiveWindow is a viewer window with a membership poll to stop: the
+// poll belongs to the window's lifetime, the membership to the handle's.
+type observerLiveWindow struct {
+	viewerLiveWindow
+	stopWatch context.CancelFunc
+}
+
+// Close implements [liveWindow].
+func (w *observerLiveWindow) Close() {
+	w.stopWatch()
+	w.viewerLiveWindow.Close()
 }
 
 // Close implements [SessionHandle]: it leaves the membership and closes the

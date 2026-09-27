@@ -640,6 +640,24 @@ func (b *SDLBackend) SetFullscreen(on bool) error {
 // is the requested state rather than SDL's flag.
 func (b *SDLBackend) Fullscreen() bool { return b.fullscreen }
 
+// WindowID reports the SDL window identity for event routing. Zero means the
+// window is not open yet and owns only global events.
+func (b *SDLBackend) WindowID() uint32 { return uint32(b.windowID) }
+
+// Raise moves the window to the front and focuses it. Best-effort: a tiling
+// compositor may refuse, in which case the window stays where it is and the
+// user switches to it themselves.
+func (b *SDLBackend) Raise() error {
+	if b.window == nil {
+		return nil
+	}
+	if err := b.window.Raise(); err != nil {
+		return fmt.Errorf("sdl raise window: %w", err)
+	}
+	_ = b.window.Sync()
+	return nil
+}
+
 // StartTextInput asks the platform to compose keystrokes into text and deliver
 // the result as [EventText]. [SDLBackend.Open] calls it, because SDL3 starts
 // with text input switched off and a window that never calls it never sees a
@@ -884,23 +902,113 @@ func (b *SDLBackend) foreign() bool {
 // eventWindowID extracts the window ID from the current event, or 0 if it is
 // a global event or has no window.
 func (b *SDLBackend) eventWindowID() sdl.WindowID {
-	if b.event.Type >= sdl.EVENT_WINDOW_FIRST && b.event.Type <= sdl.EVENT_WINDOW_LAST {
-		return b.event.WindowEvent().WindowID
+	return rawWindowID(&b.event)
+}
+
+// rawWindowID extracts the window ID from a raw SDL event, or 0 if it is a
+// global event or has no window.
+func rawWindowID(ev *sdl.Event) sdl.WindowID {
+	if ev.Type >= sdl.EVENT_WINDOW_FIRST && ev.Type <= sdl.EVENT_WINDOW_LAST {
+		return ev.WindowEvent().WindowID
 	}
-	switch b.event.Type {
+	switch ev.Type {
 	case sdl.EVENT_KEY_DOWN, sdl.EVENT_KEY_UP:
-		return b.event.KeyboardEvent().WindowID
+		return ev.KeyboardEvent().WindowID
 	case sdl.EVENT_TEXT_INPUT:
-		return b.event.TextInputEvent().WindowID
+		return ev.TextInputEvent().WindowID
 	case sdl.EVENT_MOUSE_MOTION:
-		return b.event.MouseMotionEvent().WindowID
+		return ev.MouseMotionEvent().WindowID
 	case sdl.EVENT_MOUSE_BUTTON_DOWN, sdl.EVENT_MOUSE_BUTTON_UP:
-		return b.event.MouseButtonEvent().WindowID
+		return ev.MouseButtonEvent().WindowID
 	case sdl.EVENT_MOUSE_WHEEL:
-		return b.event.MouseWheelEvent().WindowID
+		return ev.MouseWheelEvent().WindowID
 	default:
 		return 0
 	}
+}
+
+// PollRouted drains the process-global SDL event queue once and routes each
+// event to the window that owns it, translating on the owner so per-window
+// state (buttons, held keys, metrics) stays correct.
+//
+// It is the only correct way to poll when more than one SDL window is open:
+// every SDLBackend.PollEvents drains the whole queue, so letting each window
+// poll in turn would let the first window's foreign() check drop the second
+// window's input on the floor. The pump calls this instead and hands each
+// window only its own slice.
+//
+// Global events go to every target: EVENT_QUIT ends the application, not one
+// window, and a theme change concerns whichever window follows it. Wake user
+// events go nowhere — their only job was to end the wait. Events naming a
+// window that is not among the targets (a late event from a closed window)
+// are dropped.
+func PollRouted(targets []*SDLBackend) map[*SDLBackend][]Event {
+	out := make(map[*SDLBackend][]Event, len(targets))
+	var raw sdl.Event
+	for sdl.PollEvent(&raw) {
+		routeRaw(targets, out, &raw)
+	}
+	return out
+}
+
+// WaitRouted blocks for up to timeout waiting for the first event, then
+// drains whatever else queued behind it, routing exactly as [PollRouted]
+// does. A timeout of zero or less means "do not block". Like WaitEvents it
+// may return no events at all: a wake ends the wait without producing one.
+func WaitRouted(targets []*SDLBackend, timeout time.Duration) map[*SDLBackend][]Event {
+	out := make(map[*SDLBackend][]Event, len(targets))
+	if timeout <= 0 {
+		var raw sdl.Event
+		for sdl.PollEvent(&raw) {
+			routeRaw(targets, out, &raw)
+		}
+		return out
+	}
+	ms := (timeout + time.Millisecond - 1) / time.Millisecond
+	if ms > math.MaxInt32 {
+		ms = math.MaxInt32
+	}
+	var raw sdl.Event
+	if sdl.WaitEventTimeout(&raw, int32(ms)) {
+		routeRaw(targets, out, &raw)
+	}
+	for sdl.PollEvent(&raw) {
+		routeRaw(targets, out, &raw)
+	}
+	return out
+}
+
+// routeRaw delivers one raw SDL event to its owner(s), translating on the
+// owner. It runs on the pump's thread, which is the thread that owns every
+// window, so touching each owner's state here honours the Backend contract.
+func routeRaw(targets []*SDLBackend, out map[*SDLBackend][]Event, raw *sdl.Event) {
+	if raw.Type == wakeEventType {
+		// A wake from another goroutine. Its only job was to end the wait.
+		return
+	}
+	global := raw.Type == sdl.EVENT_QUIT
+	for _, t := range recipients(targets, rawWindowID(raw), global) {
+		t.event = *raw
+		out[t] = t.translate(out[t])
+	}
+}
+
+// recipients selects which windows own one raw event: a global shutdown
+// goes to every window, a global event without a window (a theme change,
+// and whatever SDL adds next) goes to every window with each ignoring what
+// it does not need, and a window-scoped event goes to its owner alone. An
+// event naming a window that is not among the targets — a late event from
+// a window that has closed since — has no recipient and is dropped.
+func recipients(targets []*SDLBackend, id sdl.WindowID, global bool) []*SDLBackend {
+	if global || id == 0 {
+		return targets
+	}
+	for _, t := range targets {
+		if t.windowID == id {
+			return []*SDLBackend{t}
+		}
+	}
+	return nil
 }
 
 // translate converts the event most recently read into b.event, appending the
@@ -911,8 +1019,15 @@ func (b *SDLBackend) translate(dst []Event) []Event {
 		return dst
 	}
 	switch b.event.Type {
-	case sdl.EVENT_QUIT, sdl.EVENT_WINDOW_CLOSE_REQUESTED:
+	case sdl.EVENT_QUIT:
+		// Global shutdown (log-out, SIGTERM dispatch). Every live window
+		// sees it; the pump quits the application.
 		dst = append(dst, EventQuit{})
+
+	case sdl.EVENT_WINDOW_CLOSE_REQUESTED:
+		// One window's close button. Only its owner acts on it; anything
+		// else would turn closing a session into quitting the app.
+		dst = append(dst, EventWindowClose{})
 
 	case sdl.EVENT_KEY_DOWN, sdl.EVENT_KEY_UP:
 		if ev, ok := b.translateKey(b.event.KeyboardEvent()); ok {

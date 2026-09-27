@@ -331,6 +331,19 @@ type Backend interface {
 	// SetTitle updates the window title.
 	SetTitle(title string) error
 
+	// Raise moves the window to the front and gives it keyboard focus. It
+	// is what the sessions switcher uses to focus an already-open window
+	// instead of opening a second one on the same transport. A backend
+	// that cannot raise reports nil and does nothing observable.
+	Raise() error
+
+	// WindowID identifies the window for event routing. The single pump
+	// of a multi-window process drains the platform queue once and hands
+	// each event to the window it names; this is the identity it routes
+	// on. Zero means "no platform window" (never opened, or a test double
+	// with a private queue that the pump polls individually).
+	WindowID() uint32
+
 	// SetFullscreen enters or leaves fullscreen.
 	SetFullscreen(on bool) error
 
@@ -421,9 +434,17 @@ type Event interface {
 	isViewerEvent()
 }
 
-// EventQuit reports that the user asked to close the window, or that the
-// platform is shutting the application down.
+// EventQuit reports that the platform is shutting the application down
+// (SDL_EVENT_QUIT: log-out, kill, Cmd-Q dispatch). It is global: every live
+// window must react to it, and the application exits.
 type EventQuit struct{}
+
+// EventWindowClose reports that the user asked to close one window (the
+// platform's close button, Alt-F4, Cmd-W dispatch as a close request). It is
+// window-scoped: in a multi-window process only the window it names goes
+// away. A session window close parks its transport; the shell window close
+// quits the application. Single-window loops treat it like [EventQuit].
+type EventWindowClose struct{}
 
 // EventKey is a key press or release.
 //
@@ -512,6 +533,7 @@ type EventClipboard struct{}
 type EventSystemTheme struct{}
 
 func (EventQuit) isViewerEvent()        {}
+func (EventWindowClose) isViewerEvent() {}
 func (EventKey) isViewerEvent()         {}
 func (EventText) isViewerEvent()        {}
 func (EventPointer) isViewerEvent()     {}

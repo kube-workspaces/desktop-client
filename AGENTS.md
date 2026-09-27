@@ -78,13 +78,19 @@ Implemented and working:
   B); the child binary (`cmd/kube-workspaces-web` + `internal/web` via
   `webview_go`) owns the browser engine's cgo/windowing stack so the shell
   stays cgo-free.
-- **Concurrent sessions.** Several sessions stay connected at once: closing a
-  session window parks it (the transport is held — RFB reuses it without
-  redialling; terminal and Tier 1 re-establish on resume), the footer's
-  **Sessions** switcher resumes or disconnects each one, and sign-out, profile
-  switch, server change and process exit release everything. Only one window
-  is visible at a time. Dial/attach are split behind `shell.SessionDialer`;
-  Tier 1 keeps its sticky Tier 0 fallback per handle.
+- **Concurrent sessions.** Several sessions stay connected — and several
+  session windows stay open beside the interactive workspace list — at once:
+  opening a workspace registers a live window with the single main-thread
+  pump (`internal/shell/windows.go`) instead of parking the shell inside it.
+  Closing a session window parks it (the transport is held — RFB reuses it
+  without redialling; terminal and Tier 1 re-establish on resume), the
+  footer's **Sessions** switcher focuses an open window or resumes (or
+  disconnects) a parked one, and sign-out, profile switch, server change and
+  process exit release everything. Closing the shell window with sessions
+  open quits the application — held sessions never outlive the process — and
+  hands every slot back. Dial/open are split behind `shell.SessionDialer`;
+  Tier 1 keeps its sticky Tier 0 fallback per handle, swapping windows
+  in place.
 - **Workspace create.** The footer **New** button opens a form (name,
   namespace, container/VM/scratch type, catalog image filtered by type) over
   `POST /v1/workspaces` (`kwclient.CreateWorkspace`; taken names report
@@ -148,8 +154,13 @@ just use a real toolkit" is a question that will be asked again:
   owners, and a process boundary to design an IPC protocol across.
 - Sharing one process and one SDL library makes opening a session a window
   creation rather than a process launch: no child to supervise, no orphan after
-  a crash. The shell parks its loop while the session runs on the same main
-  thread.
+  a crash. One multiplexed pump owns the process-global SDL queue and routes
+  each event to its window (`viewer.PollRouted`/`WaitRouted` in `sdl.go`;
+  per-window close arrives as `viewer.EventWindowClose`, distinct from global
+  `viewer.EventQuit`), and every window — shell, RFB viewer, Tier 1 presenter,
+  integrated terminal — exposes the same open/step/close shape behind the
+  `shell.liveWindow` contract so the pump steps them cooperatively on the one
+  main thread.
 
 **The cost, stated honestly:** widgets are hand-rolled. `internal/ui` is a small
 immediate-mode toolkit that rasterises into an `image.RGBA` in software. That
@@ -158,8 +169,10 @@ knows nothing about SDL, so that layer can be swapped for a real toolkit (or a
 platform-native surface) without touching the screens. Likewise `internal/viewer`
 concentrates every SDL call in `sdl.go` behind the `Backend` interface.
 
-The single-process design also means the whole app dies with the session. That
-is the accepted trade; it was the original argument for process separation.
+The single-process design means closing the shell window with sessions open
+quits the application — held sessions never outlive the process — and hands
+every slot back. That is the accepted trade; it was the original argument for
+process separation.
 
 ## Structure
 
@@ -173,10 +186,10 @@ is the accepted trade; it was the original argument for process separation.
 | `internal/config/` | Instance profiles (JSON in the user config dir) and session tokens (OS keychain, with an opt-in file fallback) |
 | `internal/session/` | Glue: workspace name → dialled bridge → RFB handshake. Also the reconnect supervisor, the shared-display supervisor (`SharedDisplay`) and the retry classifier (`Classify`) |
 | `internal/reconnect/` | Capped exponential backoff with full jitter. Stdlib only; injectable randomness so the schedule is tested exactly |
-| `internal/viewer/` | The session viewer: `Backend` interface + backend-neutral events (`backend.go`), the SDL3 implementation (`sdl.go`, the **only** file importing an SDL binding), the session loop (`viewer.go`), damage tracking, overlay and bitmap font |
+| `internal/viewer/` | The session viewer: `Backend` interface + backend-neutral events (`backend.go`), the SDL3 implementation (`sdl.go`, the **only** file importing an SDL binding, including the multi-window routed poll), the session loop as open/step/close (`viewer.go`, `tier1.go`) behind the pump contract, damage tracking, overlay and bitmap font |
 | `internal/ui/` | Software immediate-mode widget layer (labels, buttons, text inputs, lists, layout, focus ring, theme) rasterising into an `image.RGBA` |
-| `internal/shell/` | The graphical shell: `Model` state machine (server → login → workspaces → session), pure drawing functions, the loop, and the `API`/`Store`/`Connector` seams that let all of it be tested without a display or a network |
-| `internal/terminal/` | Integrated terminal over the `/exec` bridge (Track A): pure-Go xterm-go emulator, SDL window loop; the "Console" surface for container/scratch workspaces |
+| `internal/shell/` | The graphical shell: `Model` state machine (server → login → workspaces → session), pure drawing functions, the multiplexed main-thread pump (`windows.go`: shell plus every live session window), and the `API`/`Store`/`SessionDialer` seams that let all of it be tested without a display or a network |
+| `internal/terminal/` | Integrated terminal over the `/exec` bridge (Track A): pure-Go xterm-go emulator, SDL window as open/step/close (`window.go`, `term.go`); the "Console" surface for container/scratch workspaces |
 | `internal/transport/` | Transport-agnostic `Conn` interface wrapping the RFB connection (hides RFB specifics so viewer/session code is transport-independent) |
 | `internal/selkies/` | Pinned Tier 1 protocol, interactive sessions/input, idle capture cadence and diagnostics |
 | `internal/media/` | cgo-free dynamic libavcodec 59 / libavutil 57 + libopus decode; ABI-gated and bounded; used by interactive Tier 1 and diagnostics |

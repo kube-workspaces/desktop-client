@@ -102,33 +102,10 @@ type window struct {
 // means the session ended normally: the shell exited, the user quit (window
 // close or Ctrl+Alt+Q), or the context was cancelled.
 func (w *window) run(ctx context.Context) error {
-	gw, gh := w.ren.Size()
-	// Close is safe on a backend that was never opened, so it is registered
-	// before Open: an Open failure still cleans up any half-created surface.
-	defer w.be.Close()
-	if err := w.be.Open(viewer.WindowOptions{
-		Title:        w.title,
-		Width:        gw,
-		Height:       gh,
-		ScaleQuality: viewer.ScaleNearest,
-	}); err != nil {
-		return fmt.Errorf("terminal: open window: %w", err)
+	if err := w.openWindow(ctx); err != nil {
+		return err
 	}
-
-	if err := w.be.SetTextureSize(gw, gh); err != nil {
-		return fmt.Errorf("terminal: texture: %w", err)
-	}
-
-	w.ctx = ctx
-	w.winW, w.winH = w.be.Size()
-	w.cols, w.rows = w.gridFor(w.winW, w.winH)
-
-	// The session starts needing a connection, so the first process pass
-	// dials.
-	w.mu.Lock()
-	w.failed = true
-	w.nextTry = time.Now()
-	w.mu.Unlock()
+	defer w.closeWindow()
 
 	var evs []viewer.Event
 	for {
@@ -157,6 +134,126 @@ func (w *window) run(ctx context.Context) error {
 		w.present()
 	}
 }
+
+// openWindow opens the window without driving the event loop, for the
+// multi-window pump that owns the main thread. See [Detached].
+func (w *window) openWindow(ctx context.Context) error {
+	gw, gh := w.ren.Size()
+	if err := w.be.Open(viewer.WindowOptions{
+		Title:        w.title,
+		Width:        gw,
+		Height:       gh,
+		ScaleQuality: viewer.ScaleNearest,
+	}); err != nil {
+		// Close is safe on a backend that was never opened, so a failed
+		// Open still cleans up any half-created surface.
+		w.be.Close()
+		return fmt.Errorf("terminal: open window: %w", err)
+	}
+
+	if err := w.be.SetTextureSize(gw, gh); err != nil {
+		w.be.Close()
+		return fmt.Errorf("terminal: texture: %w", err)
+	}
+
+	w.ctx = ctx
+	w.winW, w.winH = w.be.Size()
+	w.cols, w.rows = w.gridFor(w.winW, w.winH)
+
+	// The session starts needing a connection, so the first process pass
+	// dials.
+	w.mu.Lock()
+	w.failed = true
+	w.nextTry = time.Now()
+	w.mu.Unlock()
+	return nil
+}
+
+// stepExternal runs one iteration against already-polled events, without
+// touching the backend's event queue. The multi-window pump routes first
+// and calls [Detached.Step], which delegates here.
+func (w *window) stepExternal(now time.Time, events []viewer.Event) {
+	w.process(now)
+	for _, e := range events {
+		w.handleEvent(e)
+		if w.quit {
+			break
+		}
+	}
+	w.present()
+}
+
+// closeWindow tears the window down and releases the live connection, if
+// any, so its pump goroutine ends instead of lingering on a window nobody
+// shows. Close is safe on a backend that was never opened.
+func (w *window) closeWindow() {
+	w.mu.Lock()
+	conn := w.conn
+	w.conn = nil
+	w.rw = nil
+	w.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	w.be.Close()
+}
+
+// Detached is one live terminal window driven by the multi-window pump
+// instead of its own loop. It must be used from the goroutine that owns the
+// main OS thread, like every [viewer.Backend] window.
+type Detached struct {
+	w *window
+}
+
+// OpenDetached opens the terminal window without driving it, for the
+// multi-window pump that steps every live window cooperatively. The caller
+// feeds routed events to [Detached.Step], waits on [Detached.IdleWait], and
+// calls [Detached.Close] when [Detached.Closed] reports the window is done.
+func OpenDetached(ctx context.Context, dial Dial, opts Options) (*Detached, error) {
+	w, err := buildWindow(dial, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.openWindow(ctx); err != nil {
+		return nil, err
+	}
+	return &Detached{w: w}, nil
+}
+
+// Step runs one iteration against the window's own routed events.
+func (d *Detached) Step(now time.Time, events []viewer.Event) {
+	d.w.stepExternal(now, events)
+}
+
+// IdleWait reports how long the pump may block before this window has
+// scheduled work of its own.
+func (d *Detached) IdleWait(now time.Time) time.Duration {
+	return d.w.nextWait(now)
+}
+
+// Closed reports whether the window asked to close: its close button, the
+// quit chord, or a clean shell exit.
+func (d *Detached) Closed() bool {
+	return d.w.quit || d.w.endedNow()
+}
+
+// Result is always nil: a terminal has no terminal failure to report — a
+// dropped bridge redials inside the window, and a clean shell exit ends it
+// — so closing one always parks. It exists so the pump can treat every
+// live window alike.
+func (d *Detached) Result() error { return nil }
+
+// Close tears the window down.
+func (d *Detached) Close() { d.w.closeWindow() }
+
+// Backend returns the backend owning this window, for the pump's routing
+// and waiting.
+func (d *Detached) Backend() viewer.Backend { return d.w.be }
+
+// ReleaseInput is a no-op for the terminal: it sends bytes, not held keys,
+// so there is no per-guest modifier state to release on focus loss. It
+// exists so the pump can treat every live window alike.
+func (d *Detached) ReleaseInput() {}
 
 // process performs the loop's scheduled work: applying a pending resize and
 // retrying a dropped connection.
@@ -328,6 +425,8 @@ func (w *window) statusNow() (viewer.Status, string) {
 func (w *window) handleEvent(e viewer.Event) {
 	switch ev := e.(type) {
 	case viewer.EventQuit:
+		w.quit = true
+	case viewer.EventWindowClose:
 		w.quit = true
 	case viewer.EventResize:
 		w.scheduleResize(ev.W, ev.H)

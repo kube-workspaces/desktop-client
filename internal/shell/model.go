@@ -35,9 +35,10 @@ const (
 	// on this computer, not on any instance.
 	StateSettings
 	StateUpdates
-	// StateSession means a display session is running in its own window.
-	// The shell's own loop is parked for the duration and resumes on
-	// StateWorkspaces.
+	// StateSession means a session window is opening. It is transient: the
+	// next step dials (or resumes) the transport, registers the live
+	// window with the pump, and returns to StateWorkspaces with the new
+	// window beside the shell.
 	StateSession
 )
 
@@ -285,6 +286,9 @@ type SessionEntry struct {
 	Title string
 	// Kind is the handle kind: "display", "terminal", "observer" or "tier1".
 	Kind string
+	// Open reports whether the session has a live window on screen. The
+	// switcher focuses an open session and resumes a parked one.
+	Open bool
 }
 
 // Open moves to the session screen for ws.
@@ -358,6 +362,18 @@ func (m *Model) SessionParked(ws kwclient.Workspace) {
 	m.Busy, m.BusyText = false, ""
 	m.Err = ""
 	m.Notice = i18n.Sprintf("sessions.parked", ws.Key())
+}
+
+// SessionOpened records that a session's window opened beside the shell.
+// Unlike SessionParked the transport just gained a window rather than
+// losing one; the shell never left the list.
+func (m *Model) SessionOpened(ws kwclient.Workspace) {
+	m.Opening = kwclient.Workspace{}
+	m.OpenObserver = false
+	m.State = StateWorkspaces
+	m.Busy, m.BusyText = false, ""
+	m.Err = ""
+	m.Notice = i18n.Sprintf("sessions.opened", ws.Key())
 }
 
 // It returns to the list whatever happened, including on a failure. The window

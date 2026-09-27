@@ -67,6 +67,10 @@ type (
 	EventFocus = viewer.EventFocus
 	// EventQuit reports that the user asked to close the window.
 	EventQuit = viewer.EventQuit
+	// EventWindowClose reports a close request for one window; see
+	// [viewer.EventWindowClose]. The shell folds it into Quit like
+	// EventQuit: its own window closing quits the application.
+	EventWindowClose = viewer.EventWindowClose
 	// EventClipboard reports that the host clipboard may have changed.
 	EventClipboard = viewer.EventClipboard
 	// EventSystemTheme reports that the platform's colour scheme changed.

@@ -155,6 +155,13 @@ func TestFoldTracksQuitAndResize(t *testing.T) {
 	if !in.Fold(epoch, nil).Quit {
 		t.Fatal("quit must be sticky; dropping it would ignore the user's request")
 	}
+
+	// A per-window close of the shell's own window quits the application
+	// exactly like a global quit; session windows never reach this fold.
+	in = Input{}.Fold(epoch, []Event{EventWindowClose{}})
+	if !in.Quit {
+		t.Fatal("a window close did not quit the shell")
+	}
 }
 
 func TestFoldTracksSystemThemeChange(t *testing.T) {

@@ -377,6 +377,15 @@ type Viewer struct {
 	srcErr   error
 	failedAt time.Time
 	failed   bool
+
+	// pumpCancel, pumpDone and stopWake are the detached (multi-window)
+	// lifetime: the connection pump and the context wake registered by
+	// OpenDetached and torn down by CloseDetached. Run manages them
+	// through the same two calls, so the single-window path and the pump
+	// path cannot drift.
+	pumpCancel context.CancelFunc
+	pumpDone   chan struct{}
+	stopWake   func() bool
 }
 
 // hotkeyID identifies a key for the purpose of suppressing its release event.
@@ -631,34 +640,12 @@ func (v *Viewer) setStatusIfLive(status Status, detail string) {
 // [Backend]. It does not close any connection: the caller owns the session,
 // and the server's single VNC slot is released by closing it.
 func (v *Viewer) Run(ctx context.Context, src ConnSource) error {
-	if src == nil {
-		return fmt.Errorf("viewer: nil connection source")
-	}
-	if err := v.start(time.Now()); err != nil {
+	stopPump, err := v.OpenDetached(ctx, src)
+	if err != nil {
 		return err
 	}
-	defer v.stop()
-
-	pumpCtx, stopPump := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		v.pump(pumpCtx, src)
-	}()
-	// The pump writes to the inbox, so it must be stopped and drained before
-	// the viewer goes away. Deferred after v.stop so that it runs first.
-	defer func() {
-		stopPump()
-		<-done
-	}()
-
-	// The loop below blocks in the backend rather than in a select, so
-	// cancellation has to arrive as an event like everything else. Registered
-	// after the defers above so that it is cancelled before the window is
-	// closed, and safe regardless: Wake is the one method a foreign goroutine
-	// may call.
-	stopWake := context.AfterFunc(ctx, v.be.Wake)
-	defer stopWake()
+	defer stopPump()
+	defer v.CloseDetached()
 
 	for {
 		if ctx.Err() != nil {
@@ -678,6 +665,93 @@ func (v *Viewer) Run(ctx context.Context, src ConnSource) error {
 		// depends on it being short.
 		v.events = v.be.WaitEvents(v.events[:0], v.idleTimeout(time.Now()))
 	}
+}
+
+// OpenDetached opens the window and starts the connection pump without
+// driving the event loop, for the multi-window pump that owns the main
+// thread and steps every live window cooperatively.
+//
+// The caller must drive the window with [Viewer.StepExternal] (feeding it
+// the window's own routed events) and [Viewer.IdleWait], and must call the
+// returned stop function and then [Viewer.CloseDetached] when the window
+// closes. OpenDetached must be called from the goroutine that owns the main
+// OS thread, and so must every StepExternal and CloseDetached call. The
+// pump's writes to the inbox remain safe from its own goroutine, as in
+// [Viewer.Run].
+//
+// It does not close any connection: the caller owns the session.
+func (v *Viewer) OpenDetached(ctx context.Context, src ConnSource) (context.CancelFunc, error) {
+	if src == nil {
+		return nil, fmt.Errorf("viewer: nil connection source")
+	}
+	if err := v.start(time.Now()); err != nil {
+		return nil, err
+	}
+	pumpCtx, stopPump := context.WithCancel(ctx)
+	v.pumpCancel = stopPump
+	v.pumpDone = make(chan struct{})
+	go func() {
+		defer close(v.pumpDone)
+		v.pump(pumpCtx, src)
+	}()
+	// Cancellation arrives as an event like everything else, because the
+	// loop blocks in the backend rather than in a select. Registered after
+	// the pump so it is stopped before the window closes; safe regardless.
+	v.stopWake = context.AfterFunc(ctx, v.be.Wake)
+	return stopPump, nil
+}
+
+// StepExternal runs one iteration of the render loop against already-polled
+// events, without touching the backend's event queue. The multi-window pump
+// drains the platform queue once (see [PollRouted]), routes each event to
+// its owner, and hands each window only its own slice here. A nil slice
+// steps timers, connections and repaints with no input.
+func (v *Viewer) StepExternal(now time.Time, events []Event) error {
+	return v.stepExternal(now, events)
+}
+
+// IdleWait reports how long the pump may block before this window has work
+// of its own. The pump waits on the union of its windows' deadlines and
+// wakes on any platform event.
+func (v *Viewer) IdleWait(now time.Time) time.Duration {
+	return v.idleTimeout(now)
+}
+
+// DetachedClosed reports whether the window asked to close (its close
+// button, the quit chord, a terminal failure lingered long enough, or a
+// global quit delivered to it).
+func (v *Viewer) DetachedClosed() bool { return v.quit }
+
+// DetachedResult is the terminal failure to report when the window closed,
+// or nil for a clean close.
+func (v *Viewer) DetachedResult() error { return v.srcErr }
+
+// WindowBackend returns the backend owning this window, for the pump's
+// routing and waiting.
+func (v *Viewer) WindowBackend() Backend { return v.be }
+
+// ReleaseInput releases every key and button the guest believes is held,
+// for the pump to call when focus moves to another window. Modifier state
+// is per guest stream: without this a Ctrl held in one display would stick
+// there while the user types in another.
+func (v *Viewer) ReleaseInput() { v.releaseInput() }
+
+// CloseDetached stops the pump and tears the window down. It runs the pump
+// shutdown before the window teardown, like [Viewer.Run]'s defers.
+func (v *Viewer) CloseDetached() {
+	if v.stopWake != nil {
+		v.stopWake()
+		v.stopWake = nil
+	}
+	if v.pumpCancel != nil {
+		v.pumpCancel()
+		v.pumpCancel = nil
+	}
+	if v.pumpDone != nil {
+		<-v.pumpDone
+		v.pumpDone = nil
+	}
+	v.stop()
 }
 
 // RunConn drives the viewer against a single connection, for callers that do
@@ -812,8 +886,6 @@ func (v *Viewer) initialSize(fbW, fbH int) (int, int) {
 // step runs one iteration of the render loop. It is separate from Run so that
 // tests can drive the loop with a controlled clock instead of racing it.
 func (v *Viewer) step(now time.Time) error {
-	v.syncConn(now)
-
 	// v.events arrives holding whatever the wait at the bottom of [Viewer.Run]
 	// harvested — that wait consumes events, it does not merely observe them —
 	// and PollEvents appends anything that has landed since. The buffer is
@@ -821,6 +893,16 @@ func (v *Viewer) step(now time.Time) error {
 	// return cannot leave an event to be handled twice.
 	events := v.be.PollEvents(v.events)
 	v.events = events[:0]
+	return v.stepExternal(now, events)
+}
+
+// stepExternal runs one iteration against already-polled events. step polls
+// its own queue and delegates here; the multi-window pump routes first and
+// calls [Viewer.StepExternal], which delegates here too, so the two paths
+// share everything but the queue ownership.
+func (v *Viewer) stepExternal(now time.Time, events []Event) error {
+	v.syncConn(now)
+
 	for _, ev := range events {
 		if err := v.handleEvent(now, ev); err != nil {
 			return err
@@ -1030,6 +1112,13 @@ func (v *Viewer) checkFailure(now time.Time) {
 func (v *Viewer) handleEvent(now time.Time, ev Event) error {
 	switch e := ev.(type) {
 	case EventQuit:
+		v.quit = true
+		return nil
+
+	case EventWindowClose:
+		// Single-window loops treat a close like a quit; the multi-window
+		// pump consumes it per window instead and never lets it reach a
+		// loop that does not own the window.
 		v.quit = true
 		return nil
 

@@ -115,7 +115,8 @@ func PlayMedia(ctx context.Context, be Backend, audio bool, produce func(context
 		default:
 		}
 		for _, ev := range be.PollEvents(events[:0]) {
-			if _, quit := ev.(EventQuit); quit {
+			switch ev.(type) {
+			case EventQuit, EventWindowClose:
 				return stats, context.Canceled
 			}
 		}

@@ -775,6 +775,34 @@ func TestCenterInBounds(t *testing.T) {
 	}
 }
 
+// TestRecipientsRoutesByWindow pins the multi-window pump's routing
+// contract without a display: global shutdown reaches every window, a
+// window-scoped event reaches its owner alone, and a late event from a
+// closed window reaches nobody.
+func TestRecipientsRoutesByWindow(t *testing.T) {
+	mk := func(id sdl.WindowID) *SDLBackend {
+		b := NewSDLBackend()
+		b.windowID = id
+		return b
+	}
+	shell, a, b := mk(11), mk(12), mk(13)
+	targets := []*SDLBackend{shell, a, b}
+
+	if got := recipients(targets, 0, true); len(got) != 3 {
+		t.Fatalf("global quit reached %d windows, want all 3", len(got))
+	}
+	if got := recipients(targets, 0, false); len(got) != 3 {
+		t.Fatalf("global event reached %d windows, want all 3", len(got))
+	}
+	got := recipients(targets, 13, false)
+	if len(got) != 1 || got[0] != b {
+		t.Fatalf("window event reached %v, want only the owner", got)
+	}
+	if got := recipients(targets, 99, false); len(got) != 0 {
+		t.Fatalf("late event from a closed window reached %d windows, want none", len(got))
+	}
+}
+
 // TestSDLBackendImplementsBackend is redundant with the compile-time assertion
 // in sdl.go, but it fails with a clearer message when someone changes the
 // interface.

@@ -140,6 +140,13 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 		case EventQuit:
 			out.Quit = true
 
+		case EventWindowClose:
+			// The shell's own window closing quits the application, exactly
+			// like a global quit. Session windows never reach this fold:
+			// the viewer and the terminal consume the event themselves so
+			// that closing one parks only that session.
+			out.Quit = true
+
 		case EventResize:
 			out.Resized = true
 			out.Size = Point{X: e.W, Y: e.H}

@@ -63,8 +63,18 @@ type Dial func(ctx context.Context, cols, rows uint16) (io.ReadWriteCloser, erro
 // Run must be called from the goroutine that will own the window; the
 // backend's event loop is that goroutine. See [viewer.Backend].
 func Run(ctx context.Context, dial Dial, opts Options) error {
+	w, err := buildWindow(dial, opts)
+	if err != nil {
+		return err
+	}
+	return w.run(ctx)
+}
+
+// buildWindow validates the dial and assembles the window without opening
+// it, shared by [Run] and [OpenDetached] so the two paths cannot drift.
+func buildWindow(dial Dial, opts Options) (*window, error) {
 	if dial == nil {
-		return errors.New("terminal: nil dial")
+		return nil, errors.New("terminal: nil dial")
 	}
 	be := opts.Backend
 	if be == nil {
@@ -96,7 +106,7 @@ func Run(ctx context.Context, dial Dial, opts Options) error {
 		in.quitRune = opts.QuitRune
 	}
 
-	w := &window{
+	return &window{
 		be:      be,
 		emu:     emu,
 		ren:     newRenderer(defaultCols, defaultRows, scale),
@@ -110,6 +120,5 @@ func Run(ctx context.Context, dial Dial, opts Options) error {
 		cellH:   ui.LineAdvance * scale,
 		cols:    defaultCols,
 		rows:    defaultRows,
-	}
-	return w.run(ctx)
+	}, nil
 }

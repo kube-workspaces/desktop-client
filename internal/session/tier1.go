@@ -140,6 +140,20 @@ func RunTier1(ctx context.Context, client *kwclient.Client, ns, name, agentBase 
 		Audio: cfg.Audio,
 		Logf:  cfg.logf,
 	})
+	return MapTier1Result(ctx, runErr)
+}
+
+// MapTier1Result classifies a Tier 1 terminal result the way [RunTier1]
+// classifies its return, so the detached (multi-window) path and the
+// blocking path cannot disagree about what a failure means:
+//
+//   - nil: the user quit or ctx was cancelled; the caller ends the session.
+//   - an error wrapping [ErrNoFallback]: do not fall back — the agent refused
+//     the session, credentials were rejected, or the display is owned
+//     elsewhere.
+//   - any other error: a recoverable failure the caller may recover from by
+//     opening a Tier 0 session.
+func MapTier1Result(ctx context.Context, runErr error) error {
 	if runErr == nil || ctx.Err() != nil {
 		return nil
 	}
@@ -147,6 +161,61 @@ func RunTier1(ctx context.Context, client *kwclient.Client, ns, name, agentBase 
 		return fmt.Errorf("%w: %v", ErrNoFallback, runErr)
 	}
 	return runErr
+}
+
+// Tier1Live is one live Tier 1 window owned by the multi-window pump: the
+// detached presenter plus the session produce worker behind it.
+type Tier1Live struct {
+	// Detached is the window the pump steps. It is never nil.
+	Detached *viewer.Tier1Detached
+}
+
+// OpenTier1 opens a Tier 1 window without driving it, for the multi-window
+// pump that steps every live window cooperatively. The caller feeds routed
+// events to Detached.Step, waits on Detached.IdleWait, closes with
+// Detached.Close, and classifies the terminal result with
+// [MapTier1Result]. It must be called from the goroutine that owns the main
+// OS thread, like every [viewer.Backend] window.
+func OpenTier1(ctx context.Context, client *kwclient.Client, ns, name, agentBase string, be viewer.Backend, cfg Tier1Config) (*Tier1Live, error) {
+	if be == nil {
+		return nil, fmt.Errorf("session: Tier 1 has no window")
+	}
+
+	requests := make(chan struct{}, 1)
+	input := &tier1Input{}
+	det, err := viewer.OpenTier1Detached(ctx, be, input, func(ctx context.Context, sink *viewer.Tier1Sink) error {
+		dial := func(ctx context.Context) (*websocket.Conn, error) {
+			return client.DialSelkies(ctx, ns, name, agentBase)
+		}
+		conn, started, err := dialTier1Display(ctx, cfg.startupTimeout(), sink, requests, dial, func(ctx context.Context) error {
+			return client.Tier1Takeover(ctx, ns, name)
+		})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = conn.Close() }()
+		return runTier1Generations(ctx, conn, input, sink, cfg, started, dial)
+	}, viewer.Tier1Config{
+		Title:        cfg.Title,
+		Width:        cfg.Width,
+		Height:       cfg.Height,
+		Fullscreen:   cfg.Fullscreen,
+		ScaleQuality: cfg.ScaleQuality,
+		NoVSync:      cfg.NoVSync,
+		NoResize:     cfg.NoResize,
+		Takeover: func() {
+			select {
+			case requests <- struct{}{}:
+			default:
+			}
+		},
+		Audio: cfg.Audio,
+		Logf:  cfg.logf,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Tier1Live{Detached: det}, nil
 }
 
 // dialTier1Display keeps a contended display in the consent UI instead of

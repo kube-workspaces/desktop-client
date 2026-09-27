@@ -134,6 +134,8 @@ func (f *fakeBackend) PollEvents(dst []viewer.Event) []viewer.Event { return f.d
 func (f *fakeBackend) Size() (int, int)                             { return f.size() }
 func (f *fakeBackend) ScaleFactor() float64                         { return f.scale() }
 func (f *fakeBackend) Fullscreen() bool                             { return f.isFullscreen() }
+func (f *fakeBackend) Raise() error                                 { return nil }
+func (f *fakeBackend) WindowID() uint32                             { return 0 }
 
 func (f *fakeBackend) OpenAudio(format viewer.AudioFormat) error {
 	f.mu.Lock()
@@ -677,7 +679,7 @@ func (m *memStore) SaveSettings(settings config.Settings) error {
 
 var _ Store = (*memStore)(nil)
 
-// fakeDialer is a [SessionDialer] that records dials and answers attaches
+// fakeDialer is a [SessionDialer] that records dials and answers opens
 // from the rig's connect hook, so session tests control the outcome without
 // a network or a window.
 type fakeDialer struct {
@@ -688,20 +690,43 @@ func (d *fakeDialer) Dial(ctx context.Context, ws kwclient.Workspace, observer b
 	return d.dial(ctx, ws, observer)
 }
 
-// fakeHandle is a [SessionHandle] with scripted attach and recorded close.
+// fakeHandle is a [SessionHandle] with scripted open and recorded close.
 type fakeHandle struct {
-	kind   string
-	attach func(ctx context.Context) error
-	close  func()
+	kind  string
+	open  func(ctx context.Context) (liveWindow, error)
+	close func()
 }
 
-func (h *fakeHandle) Attach(ctx context.Context) error { return h.attach(ctx) }
+func (h *fakeHandle) Open(ctx context.Context) (liveWindow, error) { return h.open(ctx) }
 func (h *fakeHandle) Close() {
 	if h.close != nil {
 		h.close()
 	}
 }
 func (h *fakeHandle) Kind() string { return h.kind }
+
+// fakeLiveWindow is a [liveWindow] with no platform queue behind it: it
+// steps to nothing, never closes on its own, and records raises and closes
+// so multi-window tests can assert on the pump without a display.
+type fakeLiveWindow struct {
+	key    string
+	closed bool
+	res    error
+	raises int
+	steps  int
+}
+
+func (w *fakeLiveWindow) Step(context.Context, time.Time, []viewer.Event) error {
+	w.steps++
+	return nil
+}
+func (w *fakeLiveWindow) IdleWait(time.Time) time.Duration { return time.Second }
+func (w *fakeLiveWindow) Closed() bool                     { return w.closed }
+func (w *fakeLiveWindow) Result() error                    { return w.res }
+func (w *fakeLiveWindow) Close()                           { w.closed = true }
+func (w *fakeLiveWindow) WindowBackend() viewer.Backend    { return nil }
+func (w *fakeLiveWindow) Raise() error                     { w.raises++; return nil }
+func (w *fakeLiveWindow) ReleaseInput()                    {}
 
 // --- test rig ---------------------------------------------------------------
 
@@ -738,11 +763,13 @@ func newRig(profile *config.Profile, token string) *rig {
 				run := r.connect
 				return &fakeHandle{
 					kind: "display",
-					attach: func(ctx context.Context) error {
+					open: func(ctx context.Context) (liveWindow, error) {
 						if run != nil {
-							return run(ctx, ws)
+							if err := run(ctx, ws); err != nil {
+								return nil, err
+							}
 						}
-						return nil
+						return &fakeLiveWindow{key: ws.Key()}, nil
 					},
 					close: func() { r.closed = append(r.closed, ws.Key()) },
 				}, nil

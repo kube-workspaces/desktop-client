@@ -6,16 +6,18 @@
 //
 // # One process, shared SDL
 //
-// The shell and the display session run in the same process and share the same
-// SDL library, but each opens its own window. Activating a VM workspace does
-// not spawn anything: the shell's loop parks while the session viewer runs its
-// own window and loop on the same main OS thread. A user therefore sees the
-// session window open alongside the shell, the SDL library is loaded exactly
-// once, and there is no child process to supervise, no IPC to design and no
-// orphan to clean up after a crash.
+// The shell and the display sessions run in the same process and share the
+// same SDL library, each in its own window. Activating a workspace does not
+// spawn anything: the session window registers with the pump in windows.go
+// and the shell's loop steps it beside the shell's own window on the same
+// main OS thread. A user therefore keeps the workspace list interactive
+// beside any number of live session windows, the SDL library is loaded
+// exactly once, and there is no child process to supervise, no IPC to design
+// and no orphan to clean up after a crash.
 //
-// Both halves must agree about which one owns the main thread, which is what
-// the [State] machine in model.go is for.
+// All windows must agree about who owns the main thread — the pump does —
+// which is what the [State] machine in model.go and the [liveWindow]
+// contract in windows.go are for.
 //
 // # Shape
 //
@@ -92,8 +94,9 @@ type Options struct {
 	// the verified package and reports the failure, like [RestartUpdate].
 	RestartMSI func(*update.MSIPackage) error
 	FirstFrame func() string
-	// Backend is the window. The shell opens and closes it, and lends it to
-	// the session viewer in between.
+	// Backend is the shell's own window. The shell opens and closes it;
+	// every session window brings a backend of its own, and the pump in
+	// windows.go steps them all on the same main thread.
 	Backend viewer.Backend
 
 	// NewClient builds the API client for an instance and the connector that
@@ -182,10 +185,14 @@ type App struct {
 	dialer  SessionDialer
 	profile *config.Profile
 
-	// sessions are the held transports, keyed by workspace key. At most one
-	// has a window at a time; the rest stay connected in the background.
-	// Everything here belongs to the loop's goroutine, like the model.
+	// sessions are the held transports, keyed by workspace key. Everything
+	// here belongs to the loop's goroutine, like the model.
 	sessions map[string]*sessionRecord
+
+	// live are the open session windows, keyed by workspace key: a subset
+	// of sessions with a window on screen. The shell's own window stays
+	// interactive beside them; the pump in windows.go steps them all.
+	live map[string]*liveEntry
 
 	// profiles is the cached profile list for the switcher UI. It is local
 	// disk state, reloaded whenever the switcher can be reached, so it never
@@ -256,6 +263,7 @@ func New(opts Options) (*App, error) {
 		results:  make(chan func(), resultQueue),
 		done:     make(chan struct{}),
 		sessions: make(map[string]*sessionRecord),
+		live:     make(map[string]*liveEntry),
 		// A state the machine can never be in, so that the first frame counts
 		// as a screen change and places the initial focus.
 		lastState: State(-1),
@@ -303,8 +311,11 @@ func (a *App) Run(ctx context.Context) error {
 		return fmt.Errorf("shell: open window: %w", err)
 	}
 	defer a.be.Close()
-	// Held sessions never outlive the process: the window going away is the
-	// last chance to hand the server's single-seat slots back.
+	// Held sessions never outlive the process: the windows going away is
+	// the last chance to hand the server's single-seat slots back.
+	// closeAllSessions closes the open session windows first (so the
+	// guests see their keys released while the connections are still up)
+	// and then the held transports.
 	defer a.closeAllSessions()
 	// The size at close is the size the next launch restores. The resize
 	// path rate-limits its writes mid-drag; this flush is what makes the
@@ -342,8 +353,10 @@ func (a *App) Run(ctx context.Context) error {
 		// when the user acts or when data arrives — so polling it every 8ms
 		// was 125 wakeups a second to discover, 125 times, that nothing had
 		// changed. Input ends the wait by itself; background work and
-		// cancellation end it through Wake.
-		a.events = a.be.WaitEvents(a.events[:0], a.idleTimeout(time.Now()))
+		// cancellation end it through Wake. With session windows open the
+		// wait covers their deadlines too and harvests their events
+		// alongside the shell's, routed by window.
+		a.waitPump(a.idleTimeout(time.Now()))
 	}
 }
 
@@ -365,6 +378,13 @@ func (a *App) idleTimeout(now time.Time) time.Duration {
 		return 0
 	}
 
+	// A live session window with harvested input steps without waiting.
+	for _, e := range a.liveSorted() {
+		if len(e.pending) > 0 {
+			return 0
+		}
+	}
+
 	var due time.Time
 	earlier := func(t time.Time) {
 		if !t.IsZero() && (due.IsZero() || t.Before(due)) {
@@ -374,6 +394,11 @@ func (a *App) idleTimeout(now time.Time) time.Duration {
 	// A deferred repaint is a widget that asked to be drawn again (a caret
 	// blinking, a spinner turning), so it is a real deadline.
 	earlier(a.repaintAt)
+	// Every live window's next deadline joins the union: the pump wakes
+	// for whichever window needs it first.
+	for _, e := range a.liveSorted() {
+		earlier(now.Add(e.window.IdleWait(now)))
+	}
 	if a.m.State == StateWorkspaces && a.opts.RefreshInterval > 0 {
 		if a.nextRefresh.IsZero() {
 			return 0
@@ -457,10 +482,12 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 
 	// a.events arrives holding whatever the wait at the bottom of [App.Run]
 	// harvested — that wait consumes events, it does not merely observe them —
-	// and PollEvents appends anything that has landed since. The buffer is
-	// handed back to the field empty immediately, so an early return below
-	// cannot leave an event to be folded in twice.
-	events := a.be.PollEvents(a.events)
+	// and the poll below appends anything that has landed since. The buffer
+	// is handed back to the field empty immediately, so an early return below
+	// cannot leave an event to be folded in twice. Live session windows
+	// harvest and poll the same way, routed by window (see windows.go).
+	a.pollFresh()
+	events := a.events
 	a.events = events[:0]
 	a.in = a.in.Fold(now, events)
 	if len(events) > 0 {
@@ -487,7 +514,17 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 	}
 
 	if a.m.State == StateSession {
-		return a.runSession(ctx)
+		// Opening a session registers a live window with the pump instead
+		// of parking the shell inside it: the list stays interactive
+		// beside every open display.
+		if err := a.openLiveSession(ctx); err != nil {
+			return err
+		}
+	}
+
+	// Every open session window steps beside the shell, on the same thread.
+	if err := a.stepLive(ctx, now); err != nil {
+		return err
 	}
 
 	a.tick(ctx, now)

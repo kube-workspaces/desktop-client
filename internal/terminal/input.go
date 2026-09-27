@@ -53,6 +53,8 @@ func (in *input) handle(e viewer.Event) (out []byte, quit bool) {
 	switch ev := e.(type) {
 	case viewer.EventQuit:
 		return nil, true
+	case viewer.EventWindowClose:
+		return nil, true
 	case viewer.EventKey:
 		return in.handleKey(ev)
 	case viewer.EventText:

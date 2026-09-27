@@ -1244,7 +1244,14 @@ func (a *App) drawSessionsModal(bounds ui.Rect) intent {
 		for i, entry := range a.m.Sessions {
 			r := ui.Rect{X: listRect.X, Y: y, W: listRect.W, H: th.ControlHeight}
 			y += th.ControlHeight + th.Gap/2
-			sw := ui.Button{ID: ui.FocusID(fmt.Sprintf("session-switch-%d", i)), Text: i18n.Get("sessions.switch"), Variant: ui.ButtonSecondary}
+			// An open session's window is already on screen: the button
+			// focuses it. A parked session's transport is held without a
+			// window: the button resumes it in a fresh window.
+			switchText := i18n.Get("sessions.switch")
+			if entry.Open {
+				switchText = i18n.Get("sessions.focus")
+			}
+			sw := ui.Button{ID: ui.FocusID(fmt.Sprintf("session-switch-%d", i)), Text: switchText, Variant: ui.ButtonSecondary}
 			cl := ui.Button{ID: ui.FocusID(fmt.Sprintf("session-close-%d", i)), Text: i18n.Get("sessions.close"), Variant: ui.ButtonSecondary}
 			swW, clW := sw.Width(ctx), cl.Width(ctx)
 			titleW := max(r.W-swW-clW-th.Gap, 0)
