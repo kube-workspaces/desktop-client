@@ -308,10 +308,11 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 	content.Y += th.Gap
 	content.H -= th.Gap
 
-	// Toolbar: filter on the left, sessions and refresh on the right. The
-	// sessions switcher is global, so it lives up here next to refresh
-	// rather than down in the selection-contextual footer; it appears only
-	// while at least one session is held.
+	// Toolbar: filter on the left; new, sessions and refresh on the right.
+	// All three are global — none of them acts on the selected workspace —
+	// so they live up here rather than down in the selection-contextual
+	// footer. The sessions switcher appears only while at least one
+	// session is held.
 	toolbar, content := ui.CutTop(content, th.ControlHeight)
 	refresh := ui.Button{ID: idRefresh, Text: i18n.Get("workspaces.refresh"), Variant: ui.ButtonSecondary}
 	refreshRect, rest := ui.CutRight(toolbar, refresh.Width(ctx))
@@ -323,6 +324,14 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 		if sessions.Layout(ctx, sessionsRect) {
 			out = intent{kind: intentOpenSessions}
 		}
+	}
+	// New opens the create form. It is always available: an empty list is
+	// exactly when creating is the thing to do.
+	newBtn := ui.Button{ID: idCreate, Text: i18n.Get("workspaces.new"), Variant: ui.ButtonSecondary}
+	rest = ui.CutRightGap(rest, th.Gap)
+	newRect, rest := ui.CutRight(rest, newBtn.Width(ctx))
+	if newBtn.Layout(ctx, newRect) {
+		out = intent{kind: intentCreateWorkspace}
 	}
 	filterRect, spinnerRect := ui.CutLeft(rest, min(360, rest.W-th.Gap))
 	if a.filterField.Layout(ctx, filterRect) {
@@ -759,9 +768,6 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	// Info is for looking, not acting, so it is secondary to the open button
 	// and disabled when there is no selection to look at.
 	info := ui.Button{ID: idInfo, Text: i18n.Get("workspaces.info"), Variant: ui.ButtonSecondary, Disabled: !has}
-	// New opens the create form. It is always available: an empty list is
-	// exactly when creating is the thing to do.
-	newBtn := ui.Button{ID: idCreate, Text: i18n.Get("workspaces.new"), Variant: ui.ButtonSecondary}
 
 	widths := []int{max(180, open.Width(ctx))}
 	if console {
@@ -776,7 +782,7 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if showStop {
 		widths = append(widths, stop.Width(ctx))
 	}
-	widths = append(widths, info.Width(ctx), newBtn.Width(ctx), 0)
+	widths = append(widths, info.Width(ctx), 0)
 	cols := ui.Row(r, th.Gap, widths...)
 
 	ci := 0
@@ -810,10 +816,6 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	}
 	if info.Layout(ctx, cols[ci]) {
 		*out = intent{kind: intentInfoWorkspace, workspace: ws}
-	}
-	ci++
-	if newBtn.Layout(ctx, cols[ci]) {
-		*out = intent{kind: intentCreateWorkspace}
 	}
 	ci++
 
