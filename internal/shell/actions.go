@@ -203,6 +203,16 @@ func (a *App) act(ctx context.Context, in intent) {
 	case intentSettingsDone:
 		a.m.State = a.settingsReturn
 	case intentUpdates:
+		// Reachable two ways: the Updates button on the Settings screen, and
+		// the "Update available" badge, which lands here directly. The second
+		// arrives from outside Settings, so it must record the return state
+		// the Settings button records — otherwise Done (which routes through
+		// Settings) would drop the user wherever Settings was last left,
+		// stranding them off the screen the badge was drawn on.
+		if a.m.State != StateSettings && a.m.State != StateUpdates {
+			a.settingsReturn = a.m.State
+		}
+		a.m.Err, a.m.Notice = "", ""
 		a.m.State = StateUpdates
 	case intentCheckUpdate:
 		a.checkUpdate(ctx, true)

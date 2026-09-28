@@ -46,6 +46,19 @@ func (a *App) drawStandaloneSettings(bounds ui.Rect) bool {
 	return b.Layout(a.ctx, ui.Rect{X: bounds.X + th.Pad, Y: bounds.Y + th.Gap, W: cardWidth / 2, H: th.ControlHeight})
 }
 
+// settingsTarget is where the settings button goes. Bare, it opens Settings;
+// wearing the "Update available" badge it opens the Updates screen instead,
+// because that is what the label says the button is and the user pressed it
+// to reach an update, not to change their theme. The standalone top-left
+// button and the workspace-list header button are the same button, so they
+// share this decision instead of each keeping its own.
+func (a *App) settingsTarget() intentKind {
+	if a.updates.result.Available {
+		return intentUpdates
+	}
+	return intentOpenSettings
+}
+
 func (a *App) updatePolicy() update.Policy {
 	p := update.Policy{AutoUpdate: &a.updates.auto}
 	if a.opts.UpdatePolicy != nil {

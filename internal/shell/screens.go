@@ -577,7 +577,7 @@ func (a *App) drawHeader(r ui.Rect, out *intent) {
 		*out = intent{kind: intentOpenProfiles}
 	}
 	if settings.Layout(ctx, cols[1]) {
-		*out = intent{kind: intentOpenSettings}
+		*out = intent{kind: a.settingsTarget()}
 	}
 	if signOut.Layout(ctx, cols[2]) {
 		*out = intent{kind: intentSignOut}

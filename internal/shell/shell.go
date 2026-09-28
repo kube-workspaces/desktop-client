@@ -607,7 +607,7 @@ func (a *App) draw(ctx context.Context) error {
 		intent = a.drawUpdatesScreen(a.canvas.Bounds())
 	}
 	if (a.m.State == StateServer || a.m.State == StateLogin) && a.drawStandaloneSettings(a.canvas.Bounds()) {
-		intent.kind = intentOpenSettings
+		intent.kind = a.settingsTarget()
 	}
 	a.ctx.End()
 

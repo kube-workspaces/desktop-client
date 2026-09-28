@@ -11,6 +11,7 @@ import (
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
+	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/update"
 )
 
@@ -249,6 +250,102 @@ func TestUpdateAvailableDrawsNoTick(t *testing.T) {
 	r.settle()
 	if containsColor(r.app.img, r.app.opts.Theme.Success) {
 		t.Fatal("green tick drawn while an update is still available")
+	}
+}
+
+// TestUpdateBadgeOpensTheUpdatesScreen covers the button that relabels itself
+// "Update available": whatever screen it is drawn on, it must go to the
+// Updates screen, because that is what the user pressed it for. The standalone
+// top-left button (login/server) and the workspace-list header button are the
+// same button, so both are exercised.
+func TestUpdateBadgeOpensTheUpdatesScreen(t *testing.T) {
+	t.Run("header", func(t *testing.T) {
+		r := newRig(savedProfile(), "token")
+		r.api.set(func(f *fakeAPI) {
+			f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}
+		})
+		r.app.opts.Version = "v1.0.0"
+		r.app.opts.Updater = &fakeUpdater{}
+		r.start()
+		if !r.app.updates.result.Available {
+			t.Fatal("setup failed: no update available, so the badge never shows")
+		}
+		if r.app.m.State != StateWorkspaces {
+			t.Fatalf("setup failed: state = %v", r.app.m.State)
+		}
+		r.focus(idSettings)
+		r.clickFocused()
+		r.settle()
+		if r.app.m.State != StateUpdates {
+			t.Fatalf("the Update available button left the shell on %v, want the updates screen", r.app.m.State)
+		}
+		// Done from Updates routes through Settings, and Done from there must
+		// return to the workspace list the badge was pressed on.
+		r.focus("update-back")
+		r.clickFocused()
+		r.settle()
+		if r.app.m.State != StateSettings {
+			t.Fatalf("Done on Updates left the shell on %v, want settings", r.app.m.State)
+		}
+		r.focus(idSettingsDone)
+		r.clickFocused()
+		r.settle()
+		if r.app.m.State != StateWorkspaces {
+			t.Fatalf("Done on Settings left the shell on %v, want the workspace list", r.app.m.State)
+		}
+	})
+
+	t.Run("standalone", func(t *testing.T) {
+		r := newRig(nil, "")
+		r.app.opts.Version = "v1.0.0"
+		r.app.opts.Updater = &fakeUpdater{}
+		r.start()
+		if !r.app.updates.result.Available {
+			t.Fatal("setup failed: no update available, so the badge never shows")
+		}
+		// The standalone button is drawn on both pre-workspace screens; with
+		// no profile this rig lands on the server one.
+		if r.app.m.State != StateLogin && r.app.m.State != StateServer {
+			t.Fatalf("setup failed: state = %v", r.app.m.State)
+		}
+		from := r.app.m.State
+		r.focus(idSettings)
+		r.clickFocused()
+		r.settle()
+		if r.app.m.State != StateUpdates {
+			t.Fatalf("the Update available button left the shell on %v, want the updates screen", r.app.m.State)
+		}
+		// The round trip must come back to the screen the badge was pressed
+		// on, not to whatever was current the last time Settings was opened.
+		r.focus("update-back")
+		r.clickFocused()
+		r.settle()
+		r.focus(idSettingsDone)
+		r.clickFocused()
+		r.settle()
+		if r.app.m.State != from {
+			t.Fatalf("Done left the shell on %v, want %v", r.app.m.State, from)
+		}
+	})
+}
+
+// TestSettingsButtonWithoutAnUpdateStillOpensSettings is the other half: the
+// badge is what changes the target, so with nothing pending the button must
+// keep meaning "Settings".
+func TestSettingsButtonWithoutAnUpdateStillOpensSettings(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}
+	})
+	r.start()
+	if r.app.updates.result.Available {
+		t.Fatal("setup failed: an update is available, so the button is badged")
+	}
+	r.focus(idSettings)
+	r.clickFocused()
+	r.settle()
+	if r.app.m.State != StateSettings {
+		t.Fatalf("the settings button left the shell on %v", r.app.m.State)
 	}
 }
 
