@@ -355,6 +355,7 @@ func (a *App) verifySession(ctx context.Context) {
 
 			default:
 				a.m.SignedIn(identity)
+				a.rememberTokenExpiry(api.Token())
 				if identity.MustChangePassword {
 					a.m.Notice = i18n.Get("workspaces.mustChange")
 				}
@@ -938,6 +939,16 @@ func (a *App) rememberProfile(server string, insecure bool, email string) {
 	a.profile.InsecureSkipVerify = insecure
 	if email != "" {
 		a.profile.Email = email
+	}
+}
+
+// rememberTokenExpiry decodes the session token's expiry for the header's
+// countdown. An undecodable token clears it: unknown, not never.
+func (a *App) rememberTokenExpiry(token string) {
+	if claims, err := kwclient.ParseToken(token); err == nil {
+		a.m.TokenExpiry = claims.ExpiresAt()
+	} else {
+		a.m.TokenExpiry = time.Time{}
 	}
 }
 

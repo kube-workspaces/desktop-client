@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -249,6 +250,47 @@ func TestRecoverInterruptedSwap(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, WebChildBinary)); !os.IsNotExist(err) {
 		t.Fatal("new-only child survived rollback")
 	}
+}
+
+// TestReleaseNotesAreKept walks the body through discovery: kept verbatim
+// when short, trimmed at a line boundary when long.
+func TestReleaseNotesAreKept(t *testing.T) {
+	serve := func(t *testing.T, payload string) *Release {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(payload))
+		}))
+		defer srv.Close()
+		rel, err := (Fetcher{APIBase: srv.URL}).GetLatest(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rel
+	}
+
+	rel := serve(t, `{"tag_name":"v1.2.3","body":"## Highlights\n\n- faster\n"}`)
+	if rel.Notes != "## Highlights\n\n- faster\n" {
+		t.Fatalf("notes = %q", rel.Notes)
+	}
+
+	long := "line one\n" + strings.Repeat("x", maxReleaseNotes) + "\nline three\n"
+	rel = serve(t, `{"tag_name":"v1.2.3","body":`+quoteJSON(t, long)+`}`)
+	if len([]rune(rel.Notes)) > maxReleaseNotes+1 {
+		t.Fatalf("notes kept %d runes, want at most %d", len([]rune(rel.Notes)), maxReleaseNotes+1)
+	}
+	if strings.Contains(rel.Notes, "line three") {
+		t.Fatalf("notes were not trimmed: %q", rel.Notes)
+	}
+}
+
+// quoteJSON quotes s as a JSON string for the fixture payloads above.
+func quoteJSON(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func TestDiscoveryFailuresAndStableSelection(t *testing.T) {

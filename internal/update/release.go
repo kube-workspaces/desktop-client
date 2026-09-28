@@ -33,7 +33,16 @@ type Release struct {
 	Tag string
 	// Assets are the release's files by name.
 	Assets []Asset
+	// Notes are the release notes (the GitHub body markdown), capped at
+	// maxReleaseNotes runes. The Updates screen and `update --check`
+	// show them so the user sees what an update contains before
+	// downloading it.
+	Notes string
 }
+
+// maxReleaseNotes bounds the notes kept per release. Bodies can carry long
+// changelogs; the updater needs an excerpt, not the archive.
+const maxReleaseNotes = 4000
 
 // Asset is one downloadable release file.
 type Asset struct {
@@ -50,6 +59,7 @@ type releaseJSON struct {
 	Draft      bool   `json:"draft"`
 	Prerelease bool   `json:"prerelease"`
 	TagName    string `json:"tag_name"`
+	Body       string `json:"body"`
 	Assets     []struct {
 		Size               int64  `json:"size"`
 		Name               string `json:"name"`
@@ -121,7 +131,7 @@ func (f Fetcher) GetLatest(ctx context.Context) (*Release, error) {
 	if _, err := Parse(raw.TagName); err != nil {
 		return nil, err
 	}
-	rel := &Release{Tag: raw.TagName}
+	rel := &Release{Tag: raw.TagName, Notes: capNotes(raw.Body)}
 	for _, a := range raw.Assets {
 		if a.Name == "" || a.BrowserDownloadURL == "" {
 			continue
@@ -129,6 +139,20 @@ func (f Fetcher) GetLatest(ctx context.Context) (*Release, error) {
 		rel.Assets = append(rel.Assets, Asset{Name: a.Name, URL: a.BrowserDownloadURL, Size: a.Size})
 	}
 	return rel, nil
+}
+
+// capNotes bounds release notes to maxReleaseNotes runes, trimming at a
+// line boundary when one is near so the excerpt does not end mid-word.
+func capNotes(body string) string {
+	runes := []rune(body)
+	if len(runes) <= maxReleaseNotes {
+		return body
+	}
+	cut := string(runes[:maxReleaseNotes])
+	if i := strings.LastIndex(cut[maxReleaseNotes-200:], "\n"); i >= 0 {
+		return cut[:maxReleaseNotes-200+i] + "\n…"
+	}
+	return cut + "…"
 }
 
 // Result is the outcome of comparing the running build against a release.

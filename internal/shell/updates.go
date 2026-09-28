@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -210,6 +211,41 @@ func (a *App) restartUpdate() {
 	a.quit = true
 }
 
+// updateNotesLines caps the release notes shown on the Updates screen, so
+// a long changelog cannot push the buttons off the card.
+const updateNotesLines = 10
+
+// updateNotes returns the pending update's release notes, or "" when no
+// update is available.
+func (a *App) updateNotes() string {
+	if !a.updates.result.Available || a.updates.result.Release == nil {
+		return ""
+	}
+	return a.updates.result.Release.Notes
+}
+
+// updateNotesPreview trims release notes to maxLines lines for display,
+// dropping blank edges. A capped note ends in an ellipsis line.
+func updateNotesPreview(notes string, maxLines int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	lines := strings.Split(notes, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	if len(lines) > maxLines {
+		lines = append(lines[:maxLines], "…")
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (a *App) stopUpdates() {
 	a.updates.resourceMu.Lock()
 	defer a.updates.resourceMu.Unlock()
@@ -261,6 +297,13 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 		} else {
 			ui.Spinner(ctx, body.Next(th.ControlHeight), th.TextMuted)
 		}
+	}
+	// Release notes for the pending update, so the user sees what it
+	// contains before downloading it.
+	if notes := updateNotesPreview(a.updateNotes(), updateNotesLines); notes != "" {
+		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.whatsNew", a.updates.result.Latest), ui.LabelStyle{Scale: th.Body})
+		lines := strings.Count(notes, "\n") + 1
+		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*lines), notes, ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 	}
 	var out intent
 	managed := a.updatePolicy().Managed

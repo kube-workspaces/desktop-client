@@ -29,6 +29,7 @@ var english = map[string]string{
 	"updates.autoOn":         "Automatic checks: On",
 	"updates.autoOff":        "Automatic checks: Off",
 	"updates.check":          "Check for updates",
+	"updates.whatsNew":       "What's new in %s",
 	"updates.download":       "Download update",
 	"updates.restart":        "Restart to update",
 	"app.name":               "Kube Workspaces",
@@ -149,10 +150,11 @@ var english = map[string]string{
 	"create.taken":       "A workspace named %s already exists.",
 
 	// Header.
-	"header.signout":  "Sign out",
-	"header.settings": "Settings",
-	"header.profiles": "Profiles",
-	"header.noAuth":   "authentication disabled",
+	"header.signout":       "Sign out",
+	"header.sessionExpiry": "session expires in %s",
+	"header.settings":      "Settings",
+	"header.profiles":      "Profiles",
+	"header.noAuth":        "authentication disabled",
 
 	// Profile switcher.
 	"profiles.title":   "Profiles",

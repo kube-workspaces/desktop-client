@@ -1433,7 +1433,46 @@ func (a *App) identityLine() string {
 	if a.m.Identity.Role != "" {
 		who += " (" + a.m.Identity.Role + ")"
 	}
+	if warn := sessionExpiryWarning(a.m.TokenExpiry, a.ctx.Input.Now); warn != "" {
+		who += "  ·  " + warn
+	}
 	return who + "  ·  " + a.m.Server
+}
+
+// sessionExpiryWarnBefore is how early the header starts counting down the
+// session token: late enough to matter, early enough to act on. Past expiry
+// the server's 401 owns the story, so nothing shows.
+const sessionExpiryWarnBefore = 2 * time.Hour
+
+// sessionExpiryWarning renders the header's session countdown, or "" when
+// there is nothing to warn about: unknown expiry, comfortably fresh, or
+// already past (the next refresh routes that to sign-in on its own).
+func sessionExpiryWarning(expiry, now time.Time) string {
+	if expiry.IsZero() || now.IsZero() {
+		return ""
+	}
+	remaining := expiry.Sub(now)
+	if remaining <= 0 || remaining >= sessionExpiryWarnBefore {
+		return ""
+	}
+	return i18n.Sprintf("header.sessionExpiry", shortCountdown(remaining))
+}
+
+// shortCountdown renders a short future duration the way the header needs
+// it: minutes under the hour, whole hours under two days, days beyond.
+func shortCountdown(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		m := int(d.Minutes())
+		if m < 1 {
+			m = 1
+		}
+		return fmt.Sprintf("%dm", m)
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // emptyText explains an empty list, which has three quite different causes.

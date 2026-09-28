@@ -44,6 +44,48 @@ func (u *fakeMSIUpdater) PrepareMSI(context.Context, *update.Release, func(int64
 	return u.pkg, u.err
 }
 
+// TestUpdateNotesPreview trims the notes the Updates screen shows: blank
+// edges go, long bodies end in an ellipsis line, short ones pass through.
+func TestUpdateNotesPreview(t *testing.T) {
+	if got := updateNotesPreview("", 10); got != "" {
+		t.Fatalf("empty notes = %q", got)
+	}
+	if got := updateNotesPreview("\n\n- fix\n\n", 10); got != "- fix" {
+		t.Fatalf("padded notes = %q", got)
+	}
+	long := ""
+	for i := 0; i < 15; i++ {
+		long += "line\n"
+	}
+	got := updateNotesPreview(long, 10)
+	lines := 1
+	for _, c := range got {
+		if c == '\n' {
+			lines++
+		}
+	}
+	if lines != 11 || got[len(got)-len("…"):] != "…" {
+		t.Fatalf("capped notes = %q", got)
+	}
+}
+
+// TestUpdateNotesGatesOnAvailability: the screen shows notes only while an
+// update awaits, never for the up-to-date or unknown states.
+func TestUpdateNotesGatesOnAvailability(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	if got := r.app.updateNotes(); got != "" {
+		t.Fatalf("notes without a check = %q", got)
+	}
+	r.app.updates.result = update.Check("v1.2.3", &update.Release{Tag: "v1.2.3", Notes: "notes"})
+	if got := r.app.updateNotes(); got != "" {
+		t.Fatalf("notes when up to date = %q", got)
+	}
+	r.app.updates.result = update.Check("v1.2.2", &update.Release{Tag: "v1.2.3", Notes: "notes"})
+	if got := r.app.updateNotes(); got != "notes" {
+		t.Fatalf("notes when available = %q", got)
+	}
+}
+
 func TestMSIDownloadAndRestart(t *testing.T) {
 	r := newRig(nil, "")
 	u := &fakeMSIUpdater{pkg: &update.MSIPackage{Tag: "v1.2.3", Dir: t.TempDir()}}

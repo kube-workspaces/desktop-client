@@ -43,6 +43,11 @@ func runUpdate(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Printf("Current: %s; latest: %s\n", version, r.Latest)
+	if r.Release != nil {
+		if notes := strings.TrimSpace(r.Release.Notes); notes != "" {
+			fmt.Printf("\nRelease notes for %s:\n\n%s\n", r.Latest, notes)
+		}
+	}
 	if *check || !r.Available {
 		return nil
 	}

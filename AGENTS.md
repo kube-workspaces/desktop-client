@@ -273,7 +273,8 @@ must stay on a release built with go1.26 or newer.
   `email`) can be decoded locally with `kwclient.ParseToken` without a round
   trip — the signature cannot be verified client-side. Default expiry is
   **24 h** and **there is no refresh endpoint**; re-authentication is the only
-  option today.
+  option today. The shell decodes `exp` at sign-in and counts down in the
+  header under 2 h remaining; the 401 still owns actual expiry.
 - **Discovery:** `GET /v1/workspaces?namespace=_all` (`kwclient.AllNamespaces`).
   A workspace is connectable **iff `!stopped && ready_replicas > 0`**. There is
   no URL/links field — the client composes proxy URLs itself from the Image
@@ -512,6 +513,8 @@ time, since actions and pricing drift.
 - `internal/update` discovers stable GitHub Releases and verifies `SHA256SUMS`
   before extraction. The shell remains cgo-free. `update --check`, `update`,
   and `update --yes` share the same implementation as Settings → Updates.
+  Releases carry their notes (`Release.Notes`, capped GitHub body), shown on
+  the Updates screen while an update awaits and by `update --check`.
 - Preserve archive names `kube-workspaces-<tag>-<os>-<arch>.tar.gz` (`.zip` on
   Windows), the single `kube-workspaces-<os>-<arch>/` stage directory, and the
   shell/child sibling layout (inside `.app/Contents/MacOS` on macOS).

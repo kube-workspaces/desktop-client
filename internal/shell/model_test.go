@@ -17,6 +17,27 @@ var testNow = time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
 // TestStateMachineHappyPath walks the journey the whole client exists for:
 // nothing configured, a server, a sign-in, a list, a session, and back to the
 // list — never to an exit.
+// TestSessionExpiryWarning counts down only inside the warning window:
+// unknown, fresh and past expiries all stay quiet.
+func TestSessionExpiryWarning(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		expiry time.Time
+		want   string
+	}{
+		{"unknown", time.Time{}, ""},
+		{"fresh", now.Add(23 * time.Hour), ""},
+		{"past", now.Add(-time.Minute), ""},
+		{"minutes", now.Add(45 * time.Minute), "session expires in 45m"},
+		{"hour", now.Add(90 * time.Minute), "session expires in 1h"},
+	} {
+		if got := sessionExpiryWarning(tc.expiry, now); got != tc.want {
+			t.Errorf("%s: warning = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestStateMachineHappyPath(t *testing.T) {
 	var m Model
 

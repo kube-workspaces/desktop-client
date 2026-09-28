@@ -85,6 +85,12 @@ type Model struct {
 	// Identity is the signed-in user.
 	Identity *kwclient.Identity
 
+	// TokenExpiry is when the session token stops working, decoded from
+	// its claims at sign-in. Zero means unknown (an undecodable token);
+	// the header warns while it approaches, and the server's 401 still
+	// owns the actual expiry.
+	TokenExpiry time.Time
+
 	// Workspaces is the last list fetched, and Images the catalog used to
 	// build browser URLs for non-VM workspaces.
 	Workspaces []kwclient.Workspace

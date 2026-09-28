@@ -5,6 +5,7 @@ package shell
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"strings"
@@ -390,6 +391,47 @@ func TestSessionEndingWithAnExpiredTokenGoesToLogin(t *testing.T) {
 
 	if r.app.m.State != StateLogin {
 		t.Fatalf("a session that failed with a 401 left the shell in %v", r.app.m.State)
+	}
+}
+
+// expiringToken mints a session token expiring at exp, for the countdown
+// tests. The signature is unverified client-side, by design.
+func expiringToken(exp time.Time) string {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp.Unix())))
+	return payload + ".sig"
+}
+
+// TestTokenExpiryIsDecodedAtSignIn: verifying the session records when its
+// token stops working, so the header can count down to it.
+func TestTokenExpiryIsDecodedAtSignIn(t *testing.T) {
+	exp := time.Unix(2000000000, 0)
+	r := newRig(savedProfile(), expiringToken(exp))
+	r.start()
+	if r.app.m.State != StateWorkspaces {
+		t.Fatalf("state = %v, want workspaces", r.app.m.State)
+	}
+	if !r.app.m.TokenExpiry.Equal(exp) {
+		t.Fatalf("token expiry = %v, want %v", r.app.m.TokenExpiry, exp)
+	}
+}
+
+// TestExpiringTokenShowsCountdownInHeader: a token dying within the warning
+// window names its remaining time beside the identity; anything else stays
+// quiet.
+func TestExpiringTokenShowsCountdownInHeader(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.start()
+
+	r.app.m.TokenExpiry = r.now.Add(30 * time.Minute)
+	r.step()
+	if got := r.app.identityLine(); !strings.Contains(got, "session expires in 30m") {
+		t.Fatalf("identity line = %q, want the countdown", got)
+	}
+
+	r.app.m.TokenExpiry = r.now.Add(23 * time.Hour)
+	r.step()
+	if got := r.app.identityLine(); strings.Contains(got, "expires") {
+		t.Fatalf("identity line = %q, want no countdown for a fresh token", got)
 	}
 }
 
