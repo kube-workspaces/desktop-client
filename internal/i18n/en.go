@@ -33,6 +33,7 @@ var english = map[string]string{
 	"updates.download":       "Download update",
 	"updates.restart":        "Restart to update",
 	"app.name":               "Kube Workspaces",
+	"common.copy":            "Copy",
 
 	// Server screen.
 	"server.subtitle":     "Connect to your workspaces instance.",

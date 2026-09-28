@@ -165,3 +165,8 @@ func (c *Context) copy(text string) {
 	}
 	_ = c.SetClipboard(text)
 }
+
+// Copy places text on the host clipboard: the one-shot action behind a Copy
+// button beside a selectable value. It shares [Context.copy]'s guards, so a
+// button that copies an empty string is a silent no-op rather than a wipe.
+func (c *Context) Copy(text string) { c.copy(text) }

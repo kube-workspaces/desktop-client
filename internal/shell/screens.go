@@ -281,9 +281,14 @@ func (a *App) drawBrowserWait(body *ui.Stack) intent {
 		})
 		urlBox := body.Next(ui.LineHeight(th.Small, th.Font)*3 + th.Gap)
 		ctx.Canvas.FillRounded(urlBox, th.Radius, th.SurfaceAlt)
-		ui.Label(ctx, ui.Inset(urlBox, th.Gap/2), a.authorizeURL, ui.LabelStyle{
-			Color: th.TextMuted, Scale: th.Small, Wrap: true,
+		a.urlSel.Layout(ctx, ui.Inset(urlBox, th.Gap/2), a.authorizeURL, ui.SelectableStyle{
+			Color: th.TextMuted, Scale: th.Small,
 		})
+		body.Skip(th.Gap / 2)
+		copyBtn := ui.Button{ID: idCopyURL, Text: i18n.Get("common.copy"), Variant: ui.ButtonSecondary}
+		if copyBtn.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, copyBtn.Width(ctx), 0)[0]) {
+			ctx.Copy(a.authorizeURL)
+		}
 	}
 
 	body.Skip(th.Pad)
@@ -1367,18 +1372,20 @@ func resourceRange(request, limit *string) string {
 //
 // An error and a notice are mutually exclusive by construction — every
 // transition sets one and clears the other — so there is only ever one strip,
-// and the layout does not have to reserve space for two.
+// and the layout does not have to reserve space for two. The strip is
+// selectable: server errors are the text a user pastes into a bug report.
 func (a *App) drawMessagesIn(r ui.Rect) {
 	switch {
 	case a.m.Err != "":
-		ui.Banner(a.ctx, r, ui.BannerError, a.m.Err)
+		ui.BannerSelectable(a.ctx, r, ui.BannerError, a.m.Err, &a.msgSel)
 	case a.m.Notice != "":
-		ui.Banner(a.ctx, r, ui.BannerInfo, a.m.Notice)
+		ui.BannerSelectable(a.ctx, r, ui.BannerInfo, a.m.Notice, &a.msgSel)
 	}
 }
 
 // messageHeight is how much room the message strip needs, so that the list
-// above it can be given the rest.
+// above it can be given the rest. It measures the selectable strip, not the
+// plain banner, so the reservation always fits what is drawn.
 func (a *App) messageHeight(width int) int {
 	text := a.m.Err
 	if text == "" {
@@ -1388,8 +1395,7 @@ func (a *App) messageHeight(width int) int {
 		return 0
 	}
 	th := a.opts.Theme
-	lines := ui.Wrap(text, th.Body, th.Font, width-2*th.Gap)
-	return len(lines)*ui.LineHeight(th.Body, th.Font) + th.Gap + th.Gap
+	return ui.SelectHeight(text, th.Body, th.Font, width-2*th.Gap) + th.Gap + th.Gap
 }
 
 // drawBusy draws a spinner and a caption inline.

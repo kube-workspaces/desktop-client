@@ -1380,3 +1380,30 @@ func Banner(ctx *Context, r Rect, kind BannerKind, text string) int {
 	})
 	return height
 }
+
+// BannerSelectable draws a message strip like [Banner] whose text can be
+// selected and copied through sel. It measures exactly like Banner — same
+// wrap width, same padding — so a screen can swap one for the other without
+// re-laying-out, and a height reserved for a Banner still fits.
+func BannerSelectable(ctx *Context, r Rect, kind BannerKind, text string, sel *SelectableText) int {
+	if text == "" || r.W <= 0 {
+		return 0
+	}
+	th := ctx.Theme
+	fill, ink := th.SurfaceAlt, th.TextMuted
+	if kind == BannerError {
+		fill, ink = th.DangerSurface, th.Danger
+	}
+
+	scale := th.Body
+	inner := InsetXY(r, th.Gap, th.Gap/2)
+	height := SelectHeight(text, scale, th.Font, inner.W) + th.Gap
+
+	box := Rect{X: r.X, Y: r.Y, W: r.W, H: height}
+	ctx.Canvas.FillRounded(box, th.Radius, fill)
+	sel.Layout(ctx, InsetXY(box, th.Gap, th.Gap/2), text, SelectableStyle{
+		Color: ink,
+		Scale: scale,
+	})
+	return height
+}

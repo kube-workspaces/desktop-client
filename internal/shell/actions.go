@@ -1178,4 +1178,11 @@ const (
 	idScale150         ui.FocusID = "scale-150"
 	idScale200         ui.FocusID = "scale-200"
 	idSettingsDone     ui.FocusID = "settings-done"
+
+	idMsgSel  ui.FocusID = "message"
+	idURLSel  ui.FocusID = "auth-url"
+	idCopyURL ui.FocusID = "copy-url"
+	idVerSel  ui.FocusID = "version"
+
+	idUpdates ui.FocusID = "updates"
 )

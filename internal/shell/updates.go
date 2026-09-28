@@ -279,7 +279,7 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 	card.Y = bounds.Y + th.Pad
 	body := ui.NewStack(card, th.Gap)
 	ui.Label(ctx, body.Next(ui.LineHeight(th.Title, th.Font)), i18n.Get("updates.title"), ui.LabelStyle{Scale: th.Title})
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.current", a.opts.Version), ui.LabelStyle{})
+	a.verSel.Layout(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.current", a.opts.Version), ui.SelectableStyle{})
 	last := i18n.Get("updates.never")
 	if a.updates.last != 0 {
 		last = time.Unix(a.updates.last, 0).Format(time.RFC3339)

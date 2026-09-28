@@ -217,6 +217,12 @@ type App struct {
 	filterField   ui.TextInput
 	list          ui.List
 
+	// Selectable read-only values: the message strip, the browser sign-in
+	// URL and the installed version. Each keeps its own selection.
+	msgSel ui.SelectableText
+	urlSel ui.SelectableText
+	verSel ui.SelectableText
+
 	// The "new workspace" form's widget state. The type and image selections
 	// are indices rather than widgets: the type row is three buttons and the
 	// images ride a second list widget.
@@ -286,6 +292,9 @@ func New(opts Options) (*App, error) {
 	a.createImageList.ID = idCreateImages
 	a.insecureBox.ID = idInsecure
 	a.insecureBox.Label = i18n.Get("server.tls")
+	a.msgSel.ID = idMsgSel
+	a.urlSel.ID = idURLSel
+	a.verSel.ID = idVerSel
 
 	a.ctx.Clipboard = a.be.Clipboard
 	a.ctx.SetClipboard = a.be.SetClipboard
