@@ -93,17 +93,20 @@ func cleanScale(scale int) int {
 func cleanTextHeight(scale int) int { return cleanCell[cleanScale(scale)] }
 func cleanLineHeight(scale int) int { return cleanLine[cleanScale(scale)] }
 
-// rasterizeGlyph draws one rune into a cell exactly as wide as its ink and
-// returns the ink coverage. The advance that steps past the cell is the
-// face's own, so left and right side bearings are preserved and a glyph never
-// loses an extremity.
+// rasterizeGlyph draws one rune into a cell as wide as its advance and
+// returns the ink coverage. The ink sits inside the cell at its own left
+// side bearing, so the cell tiles exactly with the advance that steps past
+// it: measurement, drawing and hit-testing all agree, and a glyph with a
+// generous bearing (like "e") neither crowds its right neighbour nor gaps
+// its left one. A negative bearing (an overhang, rare in these faces) pins
+// to the cell edge rather than drawing into the previous cell.
 //
 // The mask arrives positioned by the face such that the destination row for
 // mask pixel my is my + dr.Min.Y - maskp.Y: read the alpha by inverting that
 // mapping for each dr row, and no intermediate image is allocated. Getting
 // this wrong moves every glyph up or down by its own ink top — a line then
 // looks like it types on stairs rather than a baseline.
-func rasterizeGlyph(face font.Face, r rune, baseY, cellH int) Raster {
+func rasterizeGlyph(face font.Face, r rune, baseY, cellH, adv int) Raster {
 	var out Raster
 	dr, mask, maskp, _, ok := face.Glyph(fixed.P(0, baseY), r)
 	if !ok {
@@ -113,20 +116,27 @@ func rasterizeGlyph(face font.Face, r rune, baseY, cellH int) Raster {
 	if !ok {
 		return out
 	}
-	w := dr.Dx()
+	w := adv
+	if w < 1 {
+		w = 1
+	}
 	if w > MaxRasterW {
 		w = MaxRasterW
 	}
 	out.W, out.H = w, cellH
+	off := dr.Min.X
+	if off < 0 {
+		off = 0
+	}
 	for y := dr.Min.Y; y < dr.Max.Y; y++ {
 		if y < 0 || y >= cellH {
 			continue
 		}
 		my := y - dr.Min.Y + maskp.Y
 		for x := dr.Min.X; x < dr.Max.X; x++ {
-			i := x - dr.Min.X
-			if i >= w {
-				break
+			i := x - dr.Min.X + off
+			if i < 0 || i >= w {
+				continue
 			}
 			mx := x - dr.Min.X + maskp.X
 			out.Px[y*w+i] = am.AlphaAt(mx, my).A

@@ -331,6 +331,34 @@ must stay on a release built with go1.26 or newer.
   must be sent on focus loss, and a hotkey's key-*up* must be swallowed as well
   as its key-down.
 
+### Font rendering facts (verified by an SDL_ttf A/B — do not rediscover them)
+
+- **The clean face steps by its natural advances, with no added tracking.**
+  It used to add one pixel per rune above scale 1 (`chainAdvanceOf` in
+  `internal/viewer/chain_font.go`). A headless spike rendering the same
+  strings through SDL_ttf (FreeType 12.2.1, same embedded Inter/DejaVu
+  bytes) showed the natural advances match SDL_ttf's shaped widths exactly
+  at every scale — the tracking was the whole of the "strange spacing" —
+  so it was removed. `TestCleanTextWidthMatchesShapedWidths` in
+  `internal/ui/text_test.go` pins the SDL_ttf-verified widths; if tracking
+  is ever re-added every scale-2-and-up row there fails by one pixel per
+  rune.
+- **Clean-face rasters carry their left side bearing.** `rasterizeGlyph`
+  (`internal/viewer/clean_font.go`) used to size the raster to the ink and
+  plot from column 0, shifting every glyph left by its own bearing — "e"
+  crowded its right neighbour and gapped its left one. The raster is now
+  as wide as the advance with the ink at its bearing offset, so the cell
+  tiles exactly. `TestChainRasterOffsetsInkByLeftBearing` pins first-ink
+  columns against the face's own bounds.
+- **SDL_ttf was evaluated and rejected; do not re-adopt it for quality
+  reasons.** Glyph shapes were visually identical, widths exactly equal,
+  and the bundled SDL_ttf reports HarfBuzz 0.0.0 (no shaping advantage for
+  complex scripts either). It would cost ~1 MB per arch, a `binttf.Load()`
+  path that fails via `log.Fatal` (a crash where the software path degrades
+  to a visible missing box), and a per-string render cache for zero
+  demonstrated gain. The spike (`cmd/ttf-spike`) was deleted after the
+  verdict; this paragraph is its surviving record.
+
 ### Icon and packaging facts (each verified against the tools' source)
 
 - **`winres.json` is three levels deep** — type → resource → language, value

@@ -127,13 +127,16 @@ func chainSetFor(scale int) *chainSet {
 // chainBuild resolves one rune through the chain: Inter first, DejaVu behind
 // it, the missing box when neither covers it. Coverage is whatever the faces
 // report via GlyphAdvance — no hardcoded ranges to drift out of sync with the
-// fonts.
+// fonts. The raster is laid out in its own advance (see rasterizeGlyph), so
+// the entry carries the same step for measuring and drawing.
 func (cs *chainSet) chainBuild(r rune, scale int) chainEntry {
 	if _, ok := faceAdvance(cs.primary, r); ok {
-		return chainEntry{raster: rasterizeGlyph(cs.primary, r, cleanBase[scale], cleanCell[scale]), adv: chainAdvanceOf(cs.primary, r, scale), ok: true}
+		adv := chainAdvanceOf(cs.primary, r, scale)
+		return chainEntry{raster: rasterizeGlyph(cs.primary, r, cleanBase[scale], cleanCell[scale], adv), adv: adv, ok: true}
 	}
 	if _, ok := faceAdvance(cs.fallback, r); ok {
-		return chainEntry{raster: rasterizeGlyph(cs.fallback, r, cleanBase[scale], cleanCell[scale]), adv: chainAdvanceOf(cs.fallback, r, scale), ok: true}
+		adv := chainAdvanceOf(cs.fallback, r, scale)
+		return chainEntry{raster: rasterizeGlyph(cs.fallback, r, cleanBase[scale], cleanCell[scale], adv), adv: adv, ok: true}
 	}
 	return chainEntry{raster: cleanMissing(scale), adv: cleanAvg[scale]}
 }
@@ -152,15 +155,16 @@ func faceAdvance(f font.Face, r rune) (int, bool) {
 }
 
 // chainAdvanceOf reads the advance the raster was laid out with: the face's
-// own advance plus the one-pixel tracking the clean face applies above scale
-// 1, so measurement and drawing use the same step.
+// own advance, so measurement and drawing use the same step.
+//
+// This used to add one pixel of tracking above scale 1. An SDL_ttf A/B
+// (FreeType 12.2.1, same embedded Inter/DejaVu bytes) showed the natural
+// advances match SDL_ttf's shaped widths exactly at every scale — the extra
+// pixel per rune was the whole of the "strange spacing", so it was removed.
 func chainAdvanceOf(f font.Face, r rune, scale int) int {
 	adv, ok := faceAdvance(f, r)
 	if !ok {
 		return cleanAvg[cleanScale(scale)]
-	}
-	if cleanScale(scale) > 1 {
-		adv += 1
 	}
 	return adv
 }

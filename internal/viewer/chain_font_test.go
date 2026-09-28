@@ -5,6 +5,9 @@ package viewer
 
 import (
 	"testing"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/math/fixed"
 )
 
 func TestChainCoversEuropeanScripts(t *testing.T) {
@@ -59,6 +62,61 @@ func TestChainDrawsCoveredRunesAsInk(t *testing.T) {
 		a1, a2 := chainGlyphAdvance(r, 2), chainGlyphAdvance(r, 2)
 		if a1 <= 0 || a1 != a2 {
 			t.Fatalf("advance for %q = %d/%d, want a stable positive step", r, a1, a2)
+		}
+	}
+}
+
+func TestChainRasterOffsetsInkByLeftBearing(t *testing.T) {
+	// A cached raster is as wide as its advance with the ink sitting at its
+	// own left side bearing: dropping the bearing shifts every glyph left
+	// inside its cell, which reads as crowding the right neighbour and
+	// gapping the left one (most visibly on "e"). The face's own Glyph
+	// answer is the truth the raster is checked against.
+	faces := func(cs *chainSet) []font.Face { return []font.Face{cs.primary, cs.fallback} }
+	for _, scale := range []int{1, 2, 3} {
+		cs := chainSetFor(scale)
+		for _, r := range "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;!?-'\"() \u00e4\u00f6\u00fc\u03a6\u0396\u2026\u2014" {
+			var face font.Face
+			for _, f := range faces(cs) {
+				if _, ok := faceAdvance(f, r); ok {
+					face = f
+					break
+				}
+			}
+			if face == nil {
+				continue
+			}
+			dr, _, _, _, ok := face.Glyph(fixed.P(0, cleanBase[scale]), r)
+			if !ok || dr.Empty() {
+				continue
+			}
+			e := chainLookup(r, scale)
+			if e.raster.W != e.adv {
+				t.Fatalf("raster for %q at scale %d is %d wide with advance %d", r, scale, e.raster.W, e.adv)
+			}
+			first := e.raster.W
+			for x := 0; x < e.raster.W; x++ {
+				for y := 0; y < e.raster.H; y++ {
+					if e.raster.Px[y*e.raster.W+x] != 0 {
+						first = x
+						break
+					}
+				}
+				if first != e.raster.W {
+					break
+				}
+			}
+			want := dr.Min.X
+			if want < 0 {
+				want = 0
+			}
+			// One pixel of slack: the integer bounds can include an edge
+			// pixel whose coverage rounds to zero. What this catches is a
+			// dropped bearing, which lands the ink at column 0 no matter
+			// how generous the bearing is.
+			if first < want || first > want+1 {
+				t.Errorf("ink for %q at scale %d starts at column %d, want bearing %d", r, scale, first, want)
+			}
 		}
 	}
 }

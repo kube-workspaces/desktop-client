@@ -33,6 +33,34 @@ func TestTextWidthCountsInkNotCells(t *testing.T) {
 	}
 }
 
+// TestCleanTextWidthMatchesShapedWidths pins the clean face's advances to the
+// values an SDL_ttf A/B measured against FreeType shaping of the same
+// embedded Inter bytes: the face steps by its natural advances with no added
+// tracking, so these widths must equal SDL_ttf's StringSize exactly. If
+// tracking is ever re-added, every scale-2-and-up row here fails by exactly
+// one pixel per rune.
+func TestCleanTextWidthMatchesShapedWidths(t *testing.T) {
+	tests := []struct {
+		s     string
+		scale int
+		want  int
+	}{
+		{"cf-debian-gnome-vm-0", 1, 126},
+		{"cf-debian-gnome-vm-0", 2, 179},
+		{"cf-debian-gnome-vm-0", 3, 279},
+		{"The quick brown fox jumps over the lazy dog", 1, 239},
+		{"The quick brown fox jumps over the lazy dog", 2, 345},
+		{"The quick brown fox jumps over the lazy dog", 3, 524},
+		{"AVAWAToWeTa AVA 0123456789", 2, 263},
+		{"AVAWAToWeTa AVA 0123456789", 3, 400},
+	}
+	for _, tt := range tests {
+		if got := TextWidth(tt.s, tt.scale, viewer.CleanFont); got != tt.want {
+			t.Errorf("TextWidth(%q, %d, clean) = %d, want shaped %d", tt.s, tt.scale, got, tt.want)
+		}
+	}
+}
+
 // TestTextWidthMatchesWhatIsDrawn is the property layout depends on: a label
 // measured at one width and drawn at another is a label that overlaps its
 // neighbour. It holds for both faces: the retro bitmap and the clean
