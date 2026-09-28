@@ -206,9 +206,9 @@ func (a *App) act(ctx context.Context, in intent) {
 		// Reachable two ways: the Updates button on the Settings screen, and
 		// the "Update available" badge, which lands here directly. The second
 		// arrives from outside Settings, so it must record the return state
-		// the Settings button records — otherwise Done (which routes through
-		// Settings) would drop the user wherever Settings was last left,
-		// stranding them off the screen the badge was drawn on.
+		// the Settings button records — Done returns there, and without it
+		// the user would land wherever Settings was last left instead of on
+		// the screen the badge was pressed on.
 		if a.m.State != StateSettings && a.m.State != StateUpdates {
 			a.settingsReturn = a.m.State
 		}

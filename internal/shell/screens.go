@@ -463,7 +463,7 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	body.Skip(th.Pad)
 	done := ui.Button{ID: idSettingsDone, Text: i18n.Get("settings.done"), Variant: ui.ButtonPrimary}
 	buttons := ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)
-	updates := ui.Button{ID: "updates", Text: i18n.Get("updates.title"), Disabled: a.opts.Updater == nil}
+	updates := ui.Button{ID: idUpdates, Text: i18n.Get("updates.title"), Disabled: a.opts.Updater == nil}
 	if updates.Layout(ctx, buttons[1]) {
 		out = intent{kind: intentUpdates}
 	}
@@ -564,28 +564,44 @@ type styleOption struct {
 }
 
 // drawHeader draws the title bar: who is signed in, the way out, and the way
-// to the appearance settings.
+// to the appearance settings. The buttons carry chrome (rather than the quiet
+// treatment): a text-only Settings label blends into the identity line beside
+// it and users cannot find it. When an update is available the badge joins
+// them as its own button instead of relabelling Settings, so both stay
+// reachable.
 func (a *App) drawHeader(r ui.Rect, out *intent) {
 	th := a.opts.Theme
 	ctx := a.ctx
 
-	profiles := ui.Button{ID: idProfiles, Text: i18n.Get("header.profiles"), Variant: ui.ButtonQuiet}
-	signOut := ui.Button{ID: idSignOut, Text: i18n.Get("header.signout"), Variant: ui.ButtonQuiet}
-	settings := ui.Button{ID: idSettings, Text: i18n.Get("header.settings"), Variant: ui.ButtonQuiet}
+	type headerButton struct {
+		id   ui.FocusID
+		text string
+		kind intentKind
+	}
+	buttons := []headerButton{
+		{idProfiles, i18n.Get("header.profiles"), intentOpenProfiles},
+	}
 	if a.updates.result.Available {
-		settings.Text = i18n.Get("updates.availableBadge")
+		buttons = append(buttons, headerButton{idUpdates, i18n.Get("updates.availableBadge"), intentUpdates})
 	}
-	buttonsW := profiles.Width(ctx) + signOut.Width(ctx) + settings.Width(ctx) + th.Gap
-	signOutRect, rest := ui.CutRight(r, buttonsW)
-	cols := ui.Row(signOutRect, th.Gap/2, profiles.Width(ctx), settings.Width(ctx), signOut.Width(ctx))
-	if profiles.Layout(ctx, cols[0]) {
-		*out = intent{kind: intentOpenProfiles}
+	buttons = append(buttons,
+		headerButton{idSettings, i18n.Get("header.settings"), intentOpenSettings},
+		headerButton{idSignOut, i18n.Get("header.signout"), intentSignOut},
+	)
+	widths := make([]int, len(buttons))
+	buttonsW := 0
+	for i, b := range buttons {
+		widths[i] = (&ui.Button{Text: b.text}).Width(ctx)
+		buttonsW += widths[i]
 	}
-	if settings.Layout(ctx, cols[1]) {
-		*out = intent{kind: a.settingsTarget()}
-	}
-	if signOut.Layout(ctx, cols[2]) {
-		*out = intent{kind: intentSignOut}
+	buttonsW += th.Gap / 2 * (len(buttons) - 1)
+	actionRect, rest := ui.CutRight(r, buttonsW)
+	cols := ui.Row(actionRect, th.Gap/2, widths...)
+	for i, b := range buttons {
+		btn := ui.Button{ID: b.id, Text: b.text, Variant: ui.ButtonSecondary}
+		if btn.Layout(ctx, cols[i]) {
+			*out = intent{kind: b.kind}
+		}
 	}
 
 	title, identity := ui.CutLeft(rest, ui.TextWidth(i18n.Get("workspaces.title"), th.Title, th.Font)+th.Pad)

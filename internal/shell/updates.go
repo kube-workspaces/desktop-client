@@ -36,27 +36,31 @@ type updateState struct {
 	bytes               atomic.Int64
 }
 
-func (a *App) drawStandaloneSettings(bounds ui.Rect) bool {
+// drawStandaloneSettings draws the top-left settings entry point for the
+// server and login screens and reports what it was asked to do. When an
+// update is available the badge joins it as its own button instead of
+// relabelling it, so both stay reachable.
+func (a *App) drawStandaloneSettings(bounds ui.Rect) intentKind {
 	th := a.opts.Theme
-	label := i18n.Get("header.settings")
-	if a.updates.result.Available {
-		label = i18n.Get("updates.availableBadge")
+	y := bounds.Y + th.Gap
+	if !a.updates.result.Available {
+		b := ui.Button{ID: idSettings, Text: i18n.Get("header.settings"), Disabled: a.m.Busy}
+		if b.Layout(a.ctx, ui.Rect{X: bounds.X + th.Pad, Y: y, W: cardWidth / 2, H: th.ControlHeight}) {
+			return intentOpenSettings
+		}
+		return intentNone
 	}
-	b := ui.Button{ID: idSettings, Text: label, Disabled: a.m.Busy}
-	return b.Layout(a.ctx, ui.Rect{X: bounds.X + th.Pad, Y: bounds.Y + th.Gap, W: cardWidth / 2, H: th.ControlHeight})
-}
-
-// settingsTarget is where the settings button goes. Bare, it opens Settings;
-// wearing the "Update available" badge it opens the Updates screen instead,
-// because that is what the label says the button is and the user pressed it
-// to reach an update, not to change their theme. The standalone top-left
-// button and the workspace-list header button are the same button, so they
-// share this decision instead of each keeping its own.
-func (a *App) settingsTarget() intentKind {
-	if a.updates.result.Available {
+	badge := ui.Button{ID: idUpdates, Text: i18n.Get("updates.availableBadge"), Disabled: a.m.Busy, Variant: ui.ButtonSecondary}
+	settings := ui.Button{ID: idSettings, Text: i18n.Get("header.settings"), Disabled: a.m.Busy, Variant: ui.ButtonSecondary}
+	cols := ui.Row(ui.Rect{X: bounds.X + th.Pad, Y: y, W: badge.Width(a.ctx) + th.Gap + settings.Width(a.ctx), H: th.ControlHeight},
+		th.Gap, badge.Width(a.ctx), settings.Width(a.ctx))
+	if badge.Layout(a.ctx, cols[0]) {
 		return intentUpdates
 	}
-	return intentOpenSettings
+	if settings.Layout(a.ctx, cols[1]) {
+		return intentOpenSettings
+	}
+	return intentNone
 }
 
 func (a *App) updatePolicy() update.Policy {
@@ -333,7 +337,7 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 		{"update-check", i18n.Get("updates.check"), intentCheckUpdate, managed || a.updates.busy || a.updates.prepared != nil || a.updates.msi != nil},
 		{"update-download", i18n.Get("updates.download"), intentDownloadUpdate, managed || a.updates.busy || !a.updates.result.Available || a.updates.prepared != nil || a.updates.msi != nil},
 		{"update-restart", i18n.Get("updates.restart"), intentRestartUpdate, managed || (a.updates.prepared == nil && a.updates.msi == nil) || len(a.sessions) != 0 || webProcesses.Load() != 0},
-		{"update-back", i18n.Get("settings.done"), intentOpenSettings, false},
+		{"update-back", i18n.Get("settings.done"), intentSettingsDone, false},
 	} {
 		button := ui.Button{ID: ui.FocusID(b.id), Text: b.text, Disabled: b.disabled}
 		if button.Layout(ctx, body.Next(th.ControlHeight)) {
@@ -344,7 +348,7 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2), i18n.Get("updates.sessions"), ui.LabelStyle{Wrap: true})
 	}
 	if ctx.Input.KeyPressed(keysym.KeyEscape) {
-		out = intent{kind: intentOpenSettings}
+		out = intent{kind: intentSettingsDone}
 	}
 	return out
 }

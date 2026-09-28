@@ -273,25 +273,20 @@ func TestUpdateBadgeOpensTheUpdatesScreen(t *testing.T) {
 		if r.app.m.State != StateWorkspaces {
 			t.Fatalf("setup failed: state = %v", r.app.m.State)
 		}
-		r.focus(idSettings)
+		r.focus(idUpdates)
 		r.clickFocused()
 		r.settle()
 		if r.app.m.State != StateUpdates {
 			t.Fatalf("the Update available button left the shell on %v, want the updates screen", r.app.m.State)
 		}
-		// Done from Updates routes through Settings, and Done from there must
-		// return to the workspace list the badge was pressed on.
+		// Done from Updates returns directly to the workspace list the badge
+		// was pressed on — routing through Settings strands the user on a
+		// screen they never asked for.
 		r.focus("update-back")
 		r.clickFocused()
 		r.settle()
-		if r.app.m.State != StateSettings {
-			t.Fatalf("Done on Updates left the shell on %v, want settings", r.app.m.State)
-		}
-		r.focus(idSettingsDone)
-		r.clickFocused()
-		r.settle()
 		if r.app.m.State != StateWorkspaces {
-			t.Fatalf("Done on Settings left the shell on %v, want the workspace list", r.app.m.State)
+			t.Fatalf("Done on Updates left the shell on %v, want the workspace list", r.app.m.State)
 		}
 	})
 
@@ -309,22 +304,26 @@ func TestUpdateBadgeOpensTheUpdatesScreen(t *testing.T) {
 			t.Fatalf("setup failed: state = %v", r.app.m.State)
 		}
 		from := r.app.m.State
-		r.focus(idSettings)
+		// The round trip must come back to the screen the badge was pressed
+		// on, not detour through Settings.
+		r.focus(idUpdates)
 		r.clickFocused()
 		r.settle()
 		if r.app.m.State != StateUpdates {
 			t.Fatalf("the Update available button left the shell on %v, want the updates screen", r.app.m.State)
 		}
-		// The round trip must come back to the screen the badge was pressed
-		// on, not to whatever was current the last time Settings was opened.
 		r.focus("update-back")
-		r.clickFocused()
-		r.settle()
-		r.focus(idSettingsDone)
 		r.clickFocused()
 		r.settle()
 		if r.app.m.State != from {
 			t.Fatalf("Done left the shell on %v, want %v", r.app.m.State, from)
+		}
+		// And Settings stays reachable beside the badge.
+		r.focus(idSettings)
+		r.clickFocused()
+		r.settle()
+		if r.app.m.State != StateSettings {
+			t.Fatalf("the standalone Settings button led to %v, want settings", r.app.m.State)
 		}
 	})
 }
@@ -360,4 +359,77 @@ func containsColor(img *image.RGBA, col color.RGBA) bool {
 		}
 	}
 	return false
+}
+
+// TestUpdatesFromSettingsDoneExitsSettings proves the other route: Settings
+// → Updates → Done also lands home, because Done means done with settings,
+// not one level up.
+func TestUpdatesFromSettingsDoneExitsSettings(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	// The Updates button disables itself without an update service.
+	r.app.opts.Updater = &fakeUpdater{}
+	r.start()
+	r.app.m.State = StateWorkspaces
+	r.app.dirty = true
+	r.step()
+
+	r.focus(idSettings)
+	r.clickFocused()
+	if r.app.m.State != StateSettings {
+		t.Fatalf("the header button led to %v, want Settings", r.app.m.State)
+	}
+	r.focus(idUpdates)
+	r.clickFocused()
+	if r.app.m.State != StateUpdates {
+		t.Fatalf("the Settings Updates button led to %v, want Updates", r.app.m.State)
+	}
+	r.focus(ui.FocusID("update-back"))
+	r.clickFocused()
+	if r.app.m.State != StateWorkspaces {
+		t.Fatalf("Done on Updates led to %v, want the workspace list", r.app.m.State)
+	}
+}
+
+// TestUpdatesEscapeReturnsToOrigin proves Escape matches Done.
+func TestUpdatesEscapeReturnsToOrigin(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	r.start()
+	r.app.m.State = StateWorkspaces
+	r.app.updates.result.Available = true
+	r.app.dirty = true
+	r.step()
+
+	r.focus(idUpdates)
+	r.clickFocused()
+	if r.app.m.State != StateUpdates {
+		t.Fatalf("the update badge led to %v, want Updates", r.app.m.State)
+	}
+	r.press(keysym.KeyEscape, keysym.ModNone)
+	if r.app.m.State != StateWorkspaces {
+		t.Fatalf("Escape on Updates led to %v, want the workspace list", r.app.m.State)
+	}
+}
+
+// TestBadgeAndSettingsBothReachable proves an available update adds a badge
+// button without removing Settings: both the header and the standalone
+// entry point offer the two side by side.
+func TestBadgeAndSettingsBothReachable(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	r.start()
+	r.app.m.State = StateWorkspaces
+	r.app.updates.result.Available = true
+	r.app.dirty = true
+	r.step()
+
+	r.focus(idUpdates)
+	r.clickFocused()
+	if r.app.m.State != StateUpdates {
+		t.Fatalf("the header badge led to %v, want Updates", r.app.m.State)
+	}
+	r.press(keysym.KeyEscape, keysym.ModNone)
+	r.focus(idSettings)
+	r.clickFocused()
+	if r.app.m.State != StateSettings {
+		t.Fatalf("the header Settings button led to %v, want Settings", r.app.m.State)
+	}
 }
