@@ -318,6 +318,26 @@ jobs:
       - name: Verify assembled update archive contract
         run: python3 scripts/verify-update-archives.py final '${{ steps.version.outputs.version }}'
 
+      # The Linux amd64 AppImage is an extra artifact on top of the six-archive
+      # updater contract; the contract + SHA256SUMS are untouched above, and the
+      # AppImage goes out with a sidecar .sha256 instead (see the script doc).
+      - name: Install AppImage tooling
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            squashfs-tools desktop-file-utils
+
+      - name: Build Linux amd64 AppImage
+        run: scripts/build-appimage.sh final/kube-workspaces-${{ steps.version.outputs.version }}-linux-amd64.tar.gz '${{ steps.version.outputs.version }}' appimage
+
+      - name: Upload Linux amd64 AppImage
+        uses: actions/upload-artifact@v7
+        with:
+          name: appimage-linux-amd64
+          path: appimage/
+          if-no-files-found: error
+
       - name: Upload linux/amd64
         uses: actions/upload-artifact@v7
         with:
@@ -549,6 +569,15 @@ jobs:
           path: msi
           github-token: ${{ github.token }}
 
+      # The AppImage (extra artifact, outside SHA256SUMS) rides along with its
+      # sidecar checksum, produced in the assemble job from these same archives.
+      - name: Download Linux amd64 AppImage
+        uses: actions/download-artifact@v8
+        with:
+          name: appimage-linux-amd64
+          path: appimage
+          github-token: ${{ github.token }}
+
       - name: Stage MSIs and recompute checksums
         run: |
           set -euo pipefail
@@ -590,6 +619,7 @@ jobs:
             echo "| Platform | Architecture | File |"
             echo "|---|---|---|"
             echo "| Linux | x86_64 | [\`kube-workspaces-$VERSION-linux-amd64.tar.gz\`]($base/kube-workspaces-$VERSION-linux-amd64.tar.gz) |"
+            echo "| Linux | x86_64 | **AppImage** [\`kube-workspaces-$VERSION-linux-amd64.AppImage\`]($base/kube-workspaces-$VERSION-linux-amd64.AppImage) |"
             echo "| Linux | arm64 | [\`kube-workspaces-$VERSION-linux-arm64.tar.gz\`]($base/kube-workspaces-$VERSION-linux-arm64.tar.gz) |"
             echo "| macOS | Apple silicon | [\`kube-workspaces-$VERSION-darwin-arm64.tar.gz\`]($base/kube-workspaces-$VERSION-darwin-arm64.tar.gz) |"
             echo "| macOS | Intel | [\`kube-workspaces-$VERSION-darwin-amd64.tar.gz\`]($base/kube-workspaces-$VERSION-darwin-amd64.tar.gz) |"
@@ -600,6 +630,9 @@ jobs:
             echo
             echo "Verify with [\`SHA256SUMS\`]($base/SHA256SUMS): \`sha256sum -c SHA256SUMS\` (covers zips, tarballs and MSIs)"
             echo
+            echo "The AppImage is not part of \`SHA256SUMS\` (the in-app updater contract covers"
+            echo "the six archives); it ships its own sidecar: \`sha256sum -c kube-workspaces-$VERSION-linux-amd64.AppImage.sha256\`."
+            echo
             echo "## Install"
             echo
             echo '**Linux**'
@@ -608,6 +641,16 @@ jobs:
             echo "tar -xzf kube-workspaces-$VERSION-linux-amd64.tar.gz"
             echo "cd kube-workspaces-linux-amd64"
             echo "./kube-workspaces --help"
+            echo '```'
+            echo
+            echo "or the AppImage (no install step; a KDE/GNOME launcher entry appears when you"
+            echo 'integration-mount the file):'
+            echo
+            echo '```bash'
+            echo "wget $base/kube-workspaces-$VERSION-linux-amd64.AppImage $base/kube-workspaces-$VERSION-linux-amd64.AppImage.sha256"
+            echo "sha256sum -c kube-workspaces-$VERSION-linux-amd64.AppImage.sha256"
+            echo "chmod +x kube-workspaces-$VERSION-linux-amd64.AppImage"
+            echo "./kube-workspaces-$VERSION-linux-amd64.AppImage"
             echo '```'
             echo
             echo '**macOS** — the archive contains a `Kube Workspaces.app` bundle. Drag it to'
@@ -694,4 +737,5 @@ jobs:
           else
             gh release create "$TAG" --title "$TAG" --notes-file /tmp/release-notes.md
           fi
-          gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/*.msi dist/SHA256SUMS --clobber
+          gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/*.msi dist/SHA256SUMS \
+            appimage/*.AppImage appimage/*.sha256 --clobber

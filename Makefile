@@ -55,7 +55,7 @@ WINRES ?= go run github.com/tc-hib/go-winres@v0.3.3
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
-.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres winres-web clean build-all install-windows-prereqs install-latest-windows-release
+.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres winres-web clean build-all build-appimage install-windows-prereqs install-latest-windows-release
 
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -235,3 +235,15 @@ build-all: ## Cross-build and package all 6 targets into dist/
 	done
 	@cd $(DIST_DIR) && sha256sum *.tar.gz *.zip > SHA256SUMS 2>/dev/null || true
 	@echo; echo "$(DIST_DIR)/ ($(VERSION)):"; ls -1 $(DIST_DIR)
+
+# Linux amd64 AppImage, assembled by scripts/build-appimage.sh. This is the
+# one target that is not plain go: appimagetool is a binary the script fetches
+# (pinned) on first use, and mksquashfs + desktop-file-validate (squashfs-tools,
+# desktop-file-utils) must be installed. The AppImage is an extra artifact on
+# top of the six-archive updater contract, so it is kept out of SHA256SUMS
+# (the verify script would reject the extra entry) and ships with a sidecar
+# .sha256 instead. CI runs this from the assembled archive, not build-all:
+# build-all has no web child beside the shell, and the AppImage should.
+build-appimage: ## Build a Linux amd64 AppImage into dist/ from the built archive
+	@test -f "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" || { echo "error: build $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz first (make build-all VERSION=$(VERSION))" >&2; exit 1; }
+	scripts/build-appimage.sh "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" "$(VERSION)" "$(DIST_DIR)"

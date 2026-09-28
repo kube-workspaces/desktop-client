@@ -93,6 +93,7 @@ isolated out of the shell so the cgo-free main program never links it.
 | `kube-workspaces-web` (`kube-workspaces-web.exe` on Windows) | Every archive **except** windows/arm64 | The per-OS browser engine (WebKitGTK / WebKit / WebView2) as a separate cgo child. It opens **container/scratch** workspace web UIs in a native window. Lives beside the shell (inside `Kube Workspaces.app` on macOS) so the shell finds it at run time. |
 | `Kube Workspaces.app` | macOS archives only | The macOS application bundle: `kube-workspaces` (and its web child) wrapped with the icon and `Info.plist` so macOS treats it as an app. Drag it into Applications. |
 | `kube-workspaces-<version>-windows-<arch>.msi` | Windows only (amd64 + arm64, alongside the zips) | The unsigned Windows installer: same payload as the zip (amd64 ships shell + web child; arm64 is shell-only), plus Start Menu shortcut, Add/Remove Programs entry and clean upgrade/uninstall. Per-user by default; per-machine with `ALLUSERS=1`. Not a trust fix — SmartScreen warns exactly like the zip. |
+| `kube-workspaces-<version>-linux-amd64.AppImage` | Linux amd64 only (beside the tar.gz) | A single-file, portable Linux package: shell **and** web child bundled, ready to run after `chmod +x` (no install step). Same icon and desktop entry as the archives, carried in its header. Ships with a sidecar `.sha256`; it is **not** in `SHA256SUMS`, which is exactly the six-archive updater contract plus the MSIs — the AppImage is a packaging extra, and the in-app updater never sees it. |
 
 ### Which download has all the features?
 
@@ -100,7 +101,8 @@ The **assembled release archives** — the downloads on the releases page and in
 CI's artifacts — include everything the client can do: the shell *and* the web
 child, so VM sessions and the in-client webview for container workspaces both
 work. Pick the archive matching your OS and processor (**linux / macos / windows**
-× **amd64 / arm64**) and run it.
+× **amd64 / arm64**) and run it. The Linux amd64 **AppImage** carries the same
+complete payload as its matching tar.gz, without the unpack step.
 
 The single exception is **windows/arm64**: no webview toolchain exists for that
 target on the CI runners yet, so that archive ships shell-only. VM sessions work
