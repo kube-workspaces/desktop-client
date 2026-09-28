@@ -796,10 +796,10 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	// and disabled when there is no selection to look at.
 	info := ui.Button{ID: idInfo, Text: i18n.Get("workspaces.info"), Variant: ui.ButtonSecondary, Disabled: !has}
 
+	// Order: the open buttons first (primary open, then open-in-browser,
+	// then the shared-display observer), then stop, with Console second to
+	// last and Info last.
 	widths := []int{max(180, open.Width(ctx))}
-	if console {
-		widths = append(widths, consoleBtn.Width(ctx))
-	}
 	if browser {
 		widths = append(widths, browserBtn.Width(ctx))
 	}
@@ -809,6 +809,9 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if showStop {
 		widths = append(widths, stop.Width(ctx))
 	}
+	if console {
+		widths = append(widths, consoleBtn.Width(ctx))
+	}
 	widths = append(widths, info.Width(ctx), 0)
 	cols := ui.Row(r, th.Gap, widths...)
 
@@ -817,12 +820,6 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 		*out = intent{kind: kind, workspace: ws}
 	}
 	ci++
-	if console {
-		if consoleBtn.Layout(ctx, cols[ci]) {
-			*out = intent{kind: intentActivate, workspace: ws}
-		}
-		ci++
-	}
 	if browser {
 		if browserBtn.Layout(ctx, cols[ci]) {
 			*out = intent{kind: intentOpenInBrowser, workspace: ws}
@@ -838,6 +835,12 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if showStop {
 		if stop.Layout(ctx, cols[ci]) {
 			*out = intent{kind: intentStopWorkspace, workspace: ws}
+		}
+		ci++
+	}
+	if console {
+		if consoleBtn.Layout(ctx, cols[ci]) {
+			*out = intent{kind: intentActivate, workspace: ws}
 		}
 		ci++
 	}
@@ -948,15 +951,14 @@ func (a *App) drawWorkspaceInfoModal(bounds ui.Rect) intent {
 
 	footer := body.Next(parts[len(parts)-1])
 	closeRow := ui.Button{ID: idInfoClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
-	// Start/Stop is the one thing a detail sheet is worth acting on: the rest
-	// of the modal is for looking. It is omitted in the in-between state
-	// (neither stopped nor running) because neither action applies then.
+	// Starting a stopped workspace is the one thing a detail sheet is worth
+	// acting on: the rest of the modal is for looking. Stopping lives only
+	// on the main view — a running workspace's sheet offers no toggle. The
+	// button is omitted in the in-between state (neither stopped nor
+	// running) because the action does not apply then.
 	toggleKind, toggleText, toggleID := intentNone, "", ui.FocusID("")
-	switch {
-	case ws.Stopped:
+	if ws.Stopped {
 		toggleKind, toggleText, toggleID = intentStartWorkspace, i18n.Get("workspaces.start"), idInfoStart
-	case ws.Running():
-		toggleKind, toggleText, toggleID = intentStopWorkspace, i18n.Get("workspaces.stop"), idInfoStop
 	}
 	rest := footer
 	if toggleKind != intentNone {

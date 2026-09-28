@@ -616,8 +616,8 @@ func TestStopRunningWorkspaceViaFooter(t *testing.T) {
 	}
 }
 
-// TestInfoModalStartsAStoppedWorkspace: start/stop is the one action the
-// detail sheet is good for, and it works from behind the modal.
+// TestInfoModalStartsAStoppedWorkspace: starting a stopped workspace is the
+// one action the detail sheet is good for, and it works from behind the modal.
 func TestInfoModalStartsAStoppedWorkspace(t *testing.T) {
 	r := newRig(savedProfile(), "stored-token")
 	r.api.set(func(f *fakeAPI) {
@@ -642,6 +642,62 @@ func TestInfoModalStartsAStoppedWorkspace(t *testing.T) {
 	// action it took.
 	if r.app.m.Info != nil {
 		t.Fatal("info modal stayed open after the start")
+	}
+}
+
+// TestInfoModalHasNoStopButton: stopping lives only on the main view, so a
+// running workspace's sheet offers nothing but Close. The traversal order is
+// the assertion: any re-added button shows up in it.
+func TestInfoModalHasNoStopButton(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}
+	})
+	r.start()
+
+	r.focus(idInfo)
+	r.clickFocused()
+	r.step()
+	if r.app.m.Info == nil {
+		t.Fatal("info modal did not open")
+	}
+	r.app.dirty = true
+	r.step()
+	order := append([]ui.FocusID(nil), r.app.ctx.Focus().Order()...)
+	if len(order) != 1 || order[0] != idInfoClose {
+		t.Fatalf("modal traversal order = %v, want only Close", order)
+	}
+}
+
+// TestFooterButtonOrder pins the main-view footer: the open buttons first,
+// Console second to last, Info last.
+func TestFooterButtonOrder(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "code", kwclient.WorkspaceTypeContainer, true)}
+	})
+	r.start()
+	r.app.dirty = true
+	r.step()
+	order := append([]ui.FocusID(nil), r.app.ctx.Focus().Order()...)
+	at := func(id ui.FocusID) int {
+		for i, got := range order {
+			if got == id {
+				return i
+			}
+		}
+		return -1
+	}
+	for _, id := range []ui.FocusID{idOpen, idOpenInBrowser, idStop, idConsole, idInfo} {
+		if at(id) < 0 {
+			t.Fatalf("footer button %q missing from traversal order %v", id, order)
+		}
+	}
+	want := []ui.FocusID{idOpen, idOpenInBrowser, idStop, idConsole, idInfo}
+	for i := 1; i < len(want); i++ {
+		if at(want[i-1]) > at(want[i]) {
+			t.Fatalf("footer order = %v, want open, open-in-browser, stop, console, info in sequence", order)
+		}
 	}
 }
 

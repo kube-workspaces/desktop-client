@@ -1150,7 +1150,6 @@ const (
 	idInfo      ui.FocusID = "info"
 	idInfoClose ui.FocusID = "info-close"
 	idInfoStart ui.FocusID = "info-start"
-	idInfoStop  ui.FocusID = "info-stop"
 
 	idCreate          ui.FocusID = "create"
 	idCreateName      ui.FocusID = "create-name"
