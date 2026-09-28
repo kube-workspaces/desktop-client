@@ -55,7 +55,7 @@ WINRES ?= go run github.com/tc-hib/go-winres@v0.3.3
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
-.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres winres-web clean build-all build-appimage install-windows-prereqs install-latest-windows-release
+.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres winres-web clean flush build-all build-appimage install-windows-prereqs install-latest-windows-release
 
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -165,6 +165,19 @@ cover: ## Run tests with coverage and print a per-function summary
 
 clean: ## Remove build output and coverage artefacts
 	rm -rf $(BIN_DIR) $(DIST_DIR) coverage.out coverage.html
+
+# flush goes beyond clean: everything the toolchain or a build can leave
+# behind — bin/ contents (stale binaries are how you end up running last
+# week's build), dist/, the root binary, compiled test binaries, MSI
+# staging dirs, updater transaction markers, coverage and the generated
+# Windows .syso resources (every build regenerates those via winres).
+# Anything it deletes can be rebuilt; versioned sources are untouched.
+flush: ## Remove everything generated (thorough clean)
+	rm -rf $(BIN_DIR) $(DIST_DIR) coverage.out coverage.html
+	mkdir -p $(BIN_DIR)
+	rm -f kube-workspaces *.test .pending-update
+	rm -rf msi-stage-*
+	rm -f cmd/kube-workspaces/*.syso cmd/kube-workspaces-web/*.syso
 
 install-windows-prereqs: ## Install Windows build prerequisites (Go, .NET SDK + WiX, MinGW) via winget/choco
 	@powershell -ExecutionPolicy Bypass -File scripts/install-windows-prereqs.ps1
