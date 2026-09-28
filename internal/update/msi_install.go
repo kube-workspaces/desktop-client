@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // MSIInstaller is the optional updater capability for MSI-managed Windows
@@ -170,6 +171,9 @@ func (e *msiExitError) Error() string {
 // production path only ever runs on Windows (see [applyMSI]).
 var execMsiexec = func(args []string) error {
 	cmd := exec.Command("msiexec.exe", args...)
+	if err := configureMSICommand(cmd, args); err != nil {
+		return err
+	}
 	if err := cmd.Run(); err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
@@ -178,6 +182,40 @@ var execMsiexec = func(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// msiexec does not use CommandLineToArgvW quoting (see os/exec.Command).
+// In particular, public properties need NAME="value with spaces", not
+// "NAME=value with spaces". Backslashes are literal, including a directory's
+// trailing separator; do not apply CRT backslash doubling here.
+func msiCommandLine(exe string, args []string) (string, error) {
+	quote := func(s string) (string, error) {
+		if strings.ContainsAny(s, "\"\x00\r\n") {
+			return "", fmt.Errorf("update: invalid character in installer argument")
+		}
+		return `"` + s + `"`, nil
+	}
+	program, err := quote(exe)
+	if err != nil {
+		return "", err
+	}
+	parts := []string{program}
+	for _, arg := range args {
+		prefix, value := "", arg
+		if strings.HasPrefix(arg, "INSTALLDIR=") {
+			prefix, value = "INSTALLDIR=", strings.TrimPrefix(arg, "INSTALLDIR=")
+		}
+		if prefix != "" || strings.ContainsAny(value, " \t") {
+			value, err = quote(value)
+			if err != nil {
+				return "", err
+			}
+		} else if strings.ContainsAny(value, "\"\x00\r\n") {
+			return "", fmt.Errorf("update: invalid character in installer argument")
+		}
+		parts = append(parts, prefix+value)
+	}
+	return strings.Join(parts, " "), nil
 }
 
 // applyMSI runs the staged installer and proves the result: the installed
@@ -194,6 +232,10 @@ var execMsiexec = func(args []string) error {
 func applyMSI(pkg *MSIPackage, verify func(binary, wantTag string) error) error {
 	log := filepath.Join(pkg.Work, "msi-update.log")
 	err := execMsiexec(msiArgs(pkg.Path, pkg.Dir, pkg.MachineScope, log))
+	diagnostic := "Windows Installer did not create a log; staged package: " + pkg.Path
+	if _, statErr := os.Stat(log); statErr == nil {
+		diagnostic = "see " + log
+	}
 	var xe *msiExitError
 	if errors.As(err, &xe) {
 		switch xe.Code {
@@ -202,12 +244,14 @@ func applyMSI(pkg *MSIPackage, verify func(binary, wantTag string) error) error 
 			// (Unlikely — the caller quits first — but not a failure.)
 			err = nil
 		case 1602:
-			return fmt.Errorf("update: installer was cancelled (see %s)", log)
+			return fmt.Errorf("update: installer was cancelled (%s)", diagnostic)
+		case 1639:
+			return fmt.Errorf("update: Windows Installer rejected the command line (exit code 1639; %s)", diagnostic)
 		case 1925:
-			return fmt.Errorf("%w in %s: approve the administrator prompt, or run the update from an elevated terminal (see %s)",
-				ErrNeedsElevation, pkg.Dir, log)
+			return fmt.Errorf("%w in %s: approve the administrator prompt, or run the update from an elevated terminal (%s)",
+				ErrNeedsElevation, pkg.Dir, diagnostic)
 		default:
-			return fmt.Errorf("update: installer failed with exit code %d (see %s)", xe.Code, log)
+			return fmt.Errorf("update: installer failed with exit code %d (%s)", xe.Code, diagnostic)
 		}
 	}
 	if err != nil {
