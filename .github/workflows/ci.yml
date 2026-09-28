@@ -17,7 +17,7 @@ jobs:
   # skips the packages that would otherwise drag webview_go into the build.
   build:
     name: Build, Vet and Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -92,7 +92,7 @@ jobs:
         # kube-workspaces-web child (see the Build workflow), not in the shell.
         # macOS and Windows compile the real cgo webview.
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             cgo: "0"
           - os: macos-latest
             cgo: "1"
