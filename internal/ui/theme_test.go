@@ -15,7 +15,7 @@ func TestStylesAndModesRoundTrip(t *testing.T) {
 			t.Fatalf("ParseStyle(%q) = %v, %t, want %v", style.String(), got, ok, style)
 		}
 	}
-	for _, mode := range []Mode{ModeDark, ModeLight, ModeSystem} {
+	for _, mode := range []Mode{ModeDark, ModeLight, ModeSystem, ModeHighContrast} {
 		if got, ok := ParseMode(mode.String()); !ok || got != mode {
 			t.Fatalf("ParseMode(%q) = %v, %t, want %v", mode.String(), got, ok, mode)
 		}
@@ -110,6 +110,30 @@ func TestLightModeIsDistinctFromDark(t *testing.T) {
 	system := ThemeFor(StyleBubbly, ModeSystem)
 	if system.Background != dark.Background {
 		t.Fatal("an unresolved system mode must fall back to the default dark scheme")
+	}
+}
+
+func TestHighContrastIsAccessibleAndDistinct(t *testing.T) {
+	hc := ThemeFor(StyleBubbly, ModeHighContrast)
+	if hc.Background != rgb(0x00, 0x00, 0x00) {
+		t.Fatalf("high contrast background = %v, want pure black", hc.Background)
+	}
+	if hc.Text != rgb(0xff, 0xff, 0xff) {
+		t.Fatalf("high contrast text = %v, want pure white", hc.Text)
+	}
+	// The scheme must not be the dark palette wearing a different name.
+	if hc.Background == darkPalette().Background || hc.Text == darkPalette().Text {
+		t.Fatal("high contrast reuses the dark palette")
+	}
+	// Controls keep their edges when colour is not the channel: borders and
+	// the focus ring are thicker than the standard palettes'.
+	if hc.BorderWidth != 2 || hc.FocusWidth != 3 {
+		t.Fatalf("high contrast strokes are %d/%d, want 2/3", hc.BorderWidth, hc.FocusWidth)
+	}
+	// Muted text must stay legible: contrast between ink and background far
+	// above the standard palettes, never a grey-on-grey.
+	if hc.TextMuted == hc.Background || hc.TextMuted == hc.Surface {
+		t.Fatal("high contrast muted text collapses into its background")
 	}
 }
 

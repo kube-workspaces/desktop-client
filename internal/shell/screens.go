@@ -425,6 +425,7 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 		{id: idModeSystem, label: i18n.Get("settings.system")},
 		{id: idModeDark, label: i18n.Get("settings.dark")},
 		{id: idModeLight, label: i18n.Get("settings.light")},
+		{id: idModeHighContrast, label: i18n.Get("settings.highContrast")},
 	}
 	modeIdx := modeIndex(a.settings.Mode)
 	if picked := a.drawChoice(ctx, modeRow, modeIdx, modeOpts); picked != modeIdx {
@@ -524,13 +525,16 @@ func styleFromIndex(i int) ui.Style {
 // modeIndex maps a mode to its position in the settings screen's row, and its
 // inverse modeFromIndex maps the row back. The row leads with "follow the
 // system" because it is the default; the two concrete schemes follow in the
-// historic order.
+// historic order, and high contrast last so the everyday options keep their
+// place.
 func modeIndex(m ui.Mode) int {
 	switch m {
 	case ui.ModeDark:
 		return 1
 	case ui.ModeLight:
 		return 2
+	case ui.ModeHighContrast:
+		return 3
 	default:
 		return 0
 	}
@@ -542,6 +546,8 @@ func modeFromIndex(i int) ui.Mode {
 		return ui.ModeDark
 	case 2:
 		return ui.ModeLight
+	case 3:
+		return ui.ModeHighContrast
 	default:
 		return ui.ModeSystem
 	}

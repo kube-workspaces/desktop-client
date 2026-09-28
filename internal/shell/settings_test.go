@@ -227,6 +227,39 @@ func TestSettingsScreenSwitchesStyleAndColours(t *testing.T) {
 	}
 }
 
+func TestSettingsScreenSwitchesToHighContrast(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.api.set(func(f *fakeAPI) {
+		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}
+	})
+	r.start()
+
+	r.focus(idSettings)
+	r.clickFocused()
+	r.settle()
+	if r.app.m.State != StateSettings {
+		t.Fatalf("setup failed: state = %v", r.app.m.State)
+	}
+
+	r.focus(idModeHighContrast)
+	r.clickFocused()
+	r.settle()
+	if r.app.settings.Mode != ui.ModeHighContrast {
+		t.Fatalf("high contrast was not selected: %+v", r.app.settings)
+	}
+	th := r.app.opts.Theme
+	black := color.RGBA{R: 0, G: 0, B: 0, A: 0xff}
+	if th.Background != black {
+		t.Fatalf("the high contrast colours did not arrive (background=%v)", th.Background)
+	}
+	if th.FocusWidth != 3 {
+		t.Fatalf("the high contrast theme did not thicken the focus ring (width=%d)", th.FocusWidth)
+	}
+	if r.store.settings.Mode != "high-contrast" {
+		t.Fatalf("the choice was not persisted: %+v", r.store.settings)
+	}
+}
+
 func TestSettingsScreenDoneCloses(t *testing.T) {
 	r := newRig(savedProfile(), "stored-token")
 	r.api.set(func(f *fakeAPI) {

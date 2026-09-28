@@ -76,6 +76,7 @@ const (
 	ModeDark Mode = iota
 	ModeLight
 	ModeSystem
+	ModeHighContrast
 )
 
 // String implements fmt.Stringer and is also the name persisted in config.
@@ -87,6 +88,8 @@ func (m Mode) String() string {
 		return "light"
 	case ModeSystem:
 		return "system"
+	case ModeHighContrast:
+		return "high-contrast"
 	default:
 		return "dark"
 	}
@@ -102,6 +105,8 @@ func ParseMode(s string) (Mode, bool) {
 		return ModeLight, true
 	case "system":
 		return ModeSystem, true
+	case "high-contrast":
+		return ModeHighContrast, true
 	default:
 		return ModeDark, false
 	}
@@ -197,6 +202,13 @@ func ThemeFor(style Style, mode Mode) *Theme {
 	default:
 		t.Font = viewer.RetroFont
 	}
+	if mode == ModeHighContrast {
+		// Accessibility strokes win over the look: the style layers replace
+		// the palette's border and focus widths, and a high-contrast shell
+		// must keep its edges visible whatever the typeface.
+		t.BorderWidth = 2
+		t.FocusWidth = 3
+	}
 	return &t
 }
 
@@ -276,10 +288,14 @@ func scalePx(v int, factor float64) int {
 // is the shell's job, and this fallback is what a caller that forgets that
 // would draw for — the historic default, never a surprise palette.
 func palette(mode Mode) Theme {
-	if mode == ModeLight {
+	switch mode {
+	case ModeLight:
 		return lightPalette()
+	case ModeHighContrast:
+		return highContrastPalette()
+	default:
+		return darkPalette()
 	}
-	return darkPalette()
 }
 
 // darkPalette is the original, larger-than-life design: a muted, low-contrast
@@ -368,6 +384,52 @@ func lightPalette() Theme {
 
 		BorderWidth: 1,
 		FocusWidth:  2,
+	}
+}
+
+// highContrastPalette is the accessibility scheme: pure-black chrome, pure
+// white ink, and controls that do not depend on colour to be seen. The accent
+// goes bright yellow and the focus ring bright cyan so the two do not need to
+// be told apart from each other, and every border and stroke is heavier than
+// the other palettes'. This is a user-chosen mode, never a system fallback:
+// the widget code that dims and greys is unchanged, but the colours it starts
+// from are the strongest pair the screen can show.
+func highContrastPalette() Theme {
+	return Theme{
+		Background:      rgb(0x00, 0x00, 0x00),
+		Surface:         rgb(0x0f, 0x0f, 0x0f),
+		SurfaceAlt:      rgb(0x22, 0x22, 0x22),
+		SurfaceSelected: rgb(0x35, 0x35, 0x35),
+		Border:          rgb(0x85, 0x85, 0x85),
+		BorderStrong:    rgb(0xff, 0xff, 0xff),
+
+		Text:         rgb(0xff, 0xff, 0xff),
+		TextMuted:    rgb(0xcf, 0xcf, 0xcf),
+		TextOnAccent: rgb(0x00, 0x00, 0x00),
+		TextDisabled: rgb(0x78, 0x78, 0x78),
+
+		Accent:      rgb(0xff, 0xd5, 0x00),
+		AccentHover: rgb(0xff, 0xe5, 0x59),
+		Focus:       rgb(0x00, 0xee, 0xff),
+
+		Danger:        rgb(0xff, 0x6a, 0x5c),
+		Success:       rgb(0x4c, 0xe0, 0x7e),
+		Warning:       rgb(0xff, 0xab, 0x2e),
+		DangerSurface: rgb(0x42, 0x0a, 0x08),
+
+		Body:  2,
+		Title: 3,
+		Small: 1,
+
+		Pad:    20,
+		Gap:    12,
+		Radius: 6,
+
+		ControlHeight: 34,
+		RowHeight:     46,
+
+		BorderWidth: 2,
+		FocusWidth:  3,
 	}
 }
 
