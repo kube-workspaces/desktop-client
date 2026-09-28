@@ -59,7 +59,9 @@ func runUpdate(ctx context.Context, args []string) error {
 	} else if msi != nil {
 		scope := "per-user"
 		if msi.MachineScope {
-			scope = "per-machine (needs elevation)"
+			// No action needed from the user: Windows Installer performs the
+			// per-machine writes itself and prompts for consent if it needs it.
+			scope = "per-machine"
 		}
 		fmt.Printf("Windows Installer (%s) installation in %s\n", scope, msi.Dir)
 		if !*yes {

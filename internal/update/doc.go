@@ -29,6 +29,14 @@
 // Manual installs keep the in-place swap above; other platforms never take
 // the MSI path.
 //
+// An MSI update writes nothing from the client process: the verified package
+// is staged in the user cache, and Windows Installer performs the per-machine
+// writes as LocalSystem, raising its own UAC prompt when the install context
+// needs consent. A per-machine install is therefore updatable from an
+// unelevated process, and [ErrNeedsElevation] there means Windows Installer
+// really could not obtain the rights — never that the download should have
+// been refused.
+//
 // The package is pure Go, with no UI imports — the same
 // testability rule as internal/rfb and internal/kwclient. Platform specifics
 // live behind OS-specific files (using the existing x/sys dependency for

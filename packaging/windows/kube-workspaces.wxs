@@ -14,10 +14,14 @@
 //     updater swaps the same sibling layout (internal/update/apply.go
 //     LayoutForExe); codec DLLs load from the app dir only
 //     (internal/media/load_windows.go LOAD_LIBRARY_SEARCH_DEFAULT_DIRS).
-//   - Default INSTALLDIR is %LocalAppData%\Programs\Kube Workspaces: writable
-//     without UAC so the built-in updater works unelevated. Per-machine is a
-//     wizard choice: All users installs to Program Files and requests elevation.
-//     Silent installs use ALLUSERS=1 for the same machine-wide default path.
+//   - Default INSTALLDIR is %LocalAppData%\Programs\Kube Workspaces: per-user
+//     is the least-privilege default, so a fresh install needs no elevation.
+//     Per-machine is a wizard choice: All users installs to Program Files and
+//     requests elevation AT INSTALL TIME. It costs nothing to update
+//     afterwards: the built-in updater stages the release .msi in the user
+//     cache and lets Windows Installer (msiserver, LocalSystem) do the
+//     writing, so per-machine installs self-update unelevated. Silent
+//     installs use ALLUSERS=1 for the same machine-wide default path.
 //   - The install NEVER touches %AppData%\kube-workspaces (profiles) or the
 //     Credential Manager (tokens): upgrade/uninstall preserves user data by
 //     construction. No other registry claims.

@@ -48,8 +48,12 @@ Windows installs owned by the MSI update through the installer instead of the
 binary swap: the client detects its Add/Remove Programs registration, downloads
 the release's `.msi` under the same `SHA256SUMS` trust, and runs it unattended
 (same scope, same directory) after the client quits. Manual zip installs keep
-the in-place swap described above; per-machine MSI updates surface
-`ErrNeedsElevation` like Program Files manual installs.
+the in-place swap described above. Per-machine (All users) MSI installs update
+from an ordinary, unelevated client: the verified `.msi` is staged in the user
+cache, and Windows Installer performs the writes to Program Files as
+LocalSystem, prompting for administrator consent itself. Nothing needs to be
+re-run elevated; if that consent is genuinely unavailable, the update stops
+before touching anything and says so.
 
 Archive installs must be writable. For a protected location such as Windows
 Program Files, close all instances and run the CLI update with the required
@@ -149,11 +153,12 @@ on Windows 11, else the Evergreen bootstrapper). windows/arm64 is shell-only:
 VM sessions work, container web UIs fall back to the system browser. Moving
 the install dir is safe — tokens live in Credential Manager, profiles in
 `%AppData%\kube-workspaces\`. Close all instances before
-`kube-workspaces update`; a Program Files install reports
-`install directory needs elevated permissions` instead of updating unelevated.
-The zip makes no registry claims. The MSI wizard offers **Just me** (default)
-or **All users on this computer** (Program Files, administrator permission
-required). The completion page has an **Open Kube Workspaces now** checkbox.
+`kube-workspaces update`; a zip extracted into Program Files reports
+`install directory needs elevated permissions` instead of updating
+unelevated. The zip makes no registry claims. The MSI wizard offers **Just me**
+(default) or **All users on this computer** (Program Files, administrator
+permission required; still updatable unelevated, see above). The completion
+page has an **Open Kube Workspaces now** checkbox.
 Silent per-machine installation uses
 `msiexec /i kube-workspaces-<version>-windows-<arch>.msi /qn ALLUSERS=1`
 from an elevated terminal. Full detail lives on the

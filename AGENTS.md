@@ -403,6 +403,22 @@ must stay on a release built with go1.26 or newer.
   MSIs are outside the binary updater contract. Blessed manual install dir is the same per-user path;
   `scripts/install-windows-release.ps1` defaults to it (`-PerMachine` for
   Program Files).
+- **The `Upgrade` table's empty `Remove` column is correct, not a bug — do not
+  "fix" it.** `<MajorUpgrade DowngradeErrorMessage="..." />` emits two rows: an
+  upgrade row (VersionMin 0.0.0, VersionMax = this version, Attributes 1 =
+  VersionMinInclusive) and a downgrade-guard row (Attributes 2), both with
+  `Remove` empty and `ActionProperty` `WIX_UPGRADE_DETECTED` /
+  `WIX_DOWNGRADE_DETECTED`. Empty `Remove` is defined MSI behaviour: the
+  found ProductCodes land in the `ActionProperty`, and the unconditional
+  `RemoveExistingProducts` (scheduled by WiX after `InstallValidate`, ahead of
+  `InstallFinalize`) removes them. Verified empirically by building the
+  skeleton and installing a two-version chain with a throwaway `UpgradeCode`:
+  after installing 0.2.0 over 0.1.0 only the newer product remained registered.
+  A machine showing several registered products for one `UpgradeCode` was not
+  produced by this package — check for hand-registered products (a harness
+  calling `MsiRegisterProduct` leaves an `Uninstall` key with an empty
+  `LocalPackage` and, tellingly, **no** `MsiInstaller` event-log history)
+  before suspecting the WiX configuration.
 
 ### Deferred: code signing and notarisation (blocked on budget, not engineering)
 
@@ -535,8 +551,17 @@ time, since actions and pricing drift.
   detached helper runs it unattended (`/qn`, current scope, current
   INSTALLDIR) after the client quits, then proves the installed build
   reports the release tag. Manual Windows installs keep the in-place swap;
-  per-machine MSI updates surface `ErrNeedsElevation` like Program Files
-  manual installs. `MSIAssetName` pins the
+  **per-machine MSI installs update unelevated** — the MSI flow stages in
+  the user cache and never writes to the install dir, because Windows
+  Installer (msiserver, LocalSystem) does the writing and raises its own
+  UAC prompt when the install context needs consent. Do not reintroduce a
+  writability probe of the install dir in `PrepareMSI`: v0.6.2 shipped one
+  and it failed every "All users" install at download time with
+  `ErrNeedsElevation`, which re-running elevated cannot fix. Elevation is
+  an msiexec-time story (exit 1925 is the only code that means the rights
+  were genuinely unavailable). The helper's `.update-error` marker
+  therefore falls back to the user cache when the install dir is not
+  writable — a per-machine helper cannot write into Program Files. `MSIAssetName` pins the
   `kube-workspaces-<tag>-windows-<arch>.msi` asset contract beside
   `AssetName`; the msi CI job resolves the version from the release tag on
   tag pushes so MSI file names and ProductVersion always carry the release

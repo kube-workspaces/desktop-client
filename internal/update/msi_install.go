@@ -40,7 +40,9 @@ type MSIPackage struct {
 	// update preserves even a customized location.
 	Dir string
 	// MachineScope selects the ALLUSERS=1 MST-style override for per-machine
-	// installs; per-user installs pass MSIINSTALLPERUSER=1 instead.
+	// installs; per-user installs pass MSIINSTALLPERUSER=1 instead. It changes
+	// the installer's scope, not the client's rights: see [Installer.PrepareMSI]
+	// for why the process running it needs no write access to Dir.
 	MachineScope bool
 	// Work is the staging directory owning Path (and the update log).
 	Work string
@@ -64,8 +66,21 @@ func (in *Installer) DetectMSI() (*MsiInstall, error) {
 
 // PrepareMSI downloads the release's .msi for the configured platform and
 // verifies it against the release's SHA256SUMS. It touches nothing in the
-// install: even the writability probe only creates and removes a temp file,
-// mapping a permission failure to [ErrNeedsElevation] before any bytes move.
+// install: the verified package is staged in the user cache ([CacheDir]), and
+// the only thing checked here is that the recorded install location is a real
+// directory.
+//
+// It deliberately does NOT probe whether this process can write that
+// directory. An MSI update moves no bytes from the client: msiexec hands the
+// install to the Windows Installer service, which runs as LocalSystem and
+// performs the per-machine writes, raising its own UAC consent prompt when the
+// install context needs one. A per-machine install in Program Files is
+// therefore updatable from an unelevated shell, and a writability probe would
+// reject exactly the installs that work — v0.6.2 shipped that probe and every
+// "All users" install died at download time with [ErrNeedsElevation], which
+// re-running elevated cannot fix, because it is not the client that writes.
+// Elevation is an msiexec-time story, not a download-time one; see
+// [applyMSI] for the one exit code that means it was actually needed.
 //
 // Like [Installer.Prepare], the trust anchor is SHA256SUMS over TLS, and an
 // unconfigured signature step is accepted explicitly (see [Install]).
@@ -92,15 +107,12 @@ func (in *Installer) PrepareMSI(ctx context.Context, rel *Release, progress func
 	if err != nil || filepath.Base(u.Path) != asset.Name {
 		return nil, fmt.Errorf("update: asset URL does not match installer name")
 	}
-	// Fail fast on a per-machine install the process cannot write: msiexec
-	// would fail the same way later, after the download. A failed
-	// CreateTemp returns a nil file, so the error branch must not touch
-	// it — doing so panics instead of reporting ErrNeedsElevation.
-	if f, err := os.CreateTemp(inst.Dir, ".update-write-test-*"); err != nil {
-		return nil, mapAccessError(inst.Dir, err)
-	} else {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
+	// A recorded location that is not a directory is a real, actionable
+	// failure (a moved or hand-edited registration): report it now, by name,
+	// rather than after the download. Writability is deliberately NOT probed
+	// here — see this function's doc comment.
+	if fi, err := os.Stat(inst.Dir); err != nil || !fi.IsDir() {
+		return nil, fmt.Errorf("update: MSI install location %s is not a directory; reinstall the current MSI", inst.Dir)
 	}
 
 	cache, err := CacheDir()
@@ -172,6 +184,13 @@ var execMsiexec = func(args []string) error {
 // shell must report the release tag afterwards, the same self-check the
 // archive flow applies before and after its swap (see [Apply]). A nil verify
 // means [VerifyVersion].
+//
+// Windows Installer performs the writes as LocalSystem, so a per-machine
+// install normally succeeds from an unelevated process and prompts for its own
+// UAC consent when the install context requires it. Exit 1925 is the one code
+// that means the rights genuinely were not available, and it maps to
+// [ErrNeedsElevation] so the user is told to approve the prompt (or re-run
+// elevated) instead of reading a bare exit code.
 func applyMSI(pkg *MSIPackage, verify func(binary, wantTag string) error) error {
 	log := filepath.Join(pkg.Work, "msi-update.log")
 	err := execMsiexec(msiArgs(pkg.Path, pkg.Dir, pkg.MachineScope, log))
@@ -184,6 +203,9 @@ func applyMSI(pkg *MSIPackage, verify func(binary, wantTag string) error) error 
 			err = nil
 		case 1602:
 			return fmt.Errorf("update: installer was cancelled (see %s)", log)
+		case 1925:
+			return fmt.Errorf("%w in %s: approve the administrator prompt, or run the update from an elevated terminal (see %s)",
+				ErrNeedsElevation, pkg.Dir, log)
 		default:
 			return fmt.Errorf("update: installer failed with exit code %d (see %s)", xe.Code, log)
 		}

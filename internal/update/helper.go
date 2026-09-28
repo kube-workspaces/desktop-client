@@ -136,7 +136,7 @@ func RunHelper(job string) error {
 	}
 	err = Apply(h.Prepared.Staged, h.Exe, h.Prepared.Tag, nil)
 	if err != nil {
-		_ = os.WriteFile(filepath.Join(filepath.Dir(h.Exe), ".update-error"), []byte(err.Error()), 0o600)
+		recordUpdateError(layout.Dir, err)
 	}
 	// Apply restores the previous generation on failure; either way the user
 	// gets a shell again. Keep the stage on failure for diagnosis/recovery.
@@ -170,11 +170,15 @@ func RunHelper(job string) error {
 // exited, so msiexec owns the install directory uncontested. A failure keeps
 // the stage (including msi-update.log) for diagnosis; success cleans it.
 // The client relaunches only when args are present.
+//
+// The marker goes beside the running binary, not to the MSI's recorded
+// location: the two normally agree, and if they ever do not it is the binary
+// the user will launch again whose directory [TakeError] reads.
 func runMSIHelper(h handoff) error {
 	pkg := &MSIPackage{Path: h.MSI.Path, Tag: h.MSI.Tag, Dir: h.MSI.Dir, MachineScope: h.MSI.Machine, Work: h.MSI.Work}
 	err := applyMSI(pkg, nil)
 	if err != nil {
-		_ = os.WriteFile(filepath.Join(h.MSI.Dir, ".update-error"), []byte(err.Error()), 0o600)
+		recordUpdateError(filepath.Dir(h.Exe), err)
 		return err
 	}
 	pkg.Close()
@@ -190,13 +194,55 @@ func runMSIHelper(h handoff) error {
 	return nil
 }
 
+// errorMarker is where a failed update records its message for the next
+// launch to report (see [TakeError]).
+const errorMarker = ".update-error"
+
+// recordUpdateError leaves err where the next shell launch will find it.
+//
+// installDir is the running binary's directory — the same place [TakeError]
+// looks — and it is preferred because it sits beside the binaries whose swap
+// failed. When it cannot be written, the message goes to the user cache
+// instead. That fallback is not a nicety: an MSI update of a per-machine
+// install runs from an ordinary user process (Windows Installer does the
+// writing, not us), so writing the marker into Program Files fails and the
+// only record of a failed update would be discarded. Best effort by nature: a
+// helper that can write nowhere has nothing left to report with.
+func recordUpdateError(installDir string, err error) {
+	if err == nil {
+		return
+	}
+	if werr := os.WriteFile(filepath.Join(installDir, errorMarker), []byte(err.Error()), 0o600); werr == nil {
+		return
+	}
+	cache, cerr := CacheDir()
+	if cerr != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(cache, errorMarker), []byte(err.Error()), 0o600)
+}
+
 // TakeError returns the previous helper's failure once.
 func TakeError(exe string) string {
 	l, err := LayoutForExe(exe)
 	if err != nil {
 		return ""
 	}
-	p := filepath.Join(l.Dir, ".update-error")
+	if msg := takeErrorMarker(l.Dir); msg != "" {
+		return msg
+	}
+	// The cache fallback, for a per-machine install the helper could not
+	// write into (see recordUpdateError).
+	cache, cerr := CacheDir()
+	if cerr != nil {
+		return ""
+	}
+	return takeErrorMarker(cache)
+}
+
+// takeErrorMarker consumes the marker in dir, if any.
+func takeErrorMarker(dir string) string {
+	p := filepath.Join(dir, errorMarker)
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return ""

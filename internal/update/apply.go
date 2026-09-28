@@ -16,8 +16,13 @@ import (
 	"time"
 )
 
-// ErrNeedsElevation means the install directory is not writable (a
-// Program-Files-style install): re-run elevated or defer, never half-install.
+// ErrNeedsElevation means the update could not obtain the rights it needs:
+// the archive swap found the install directory not writable (a
+// Program-Files-style manual install), or Windows Installer reported that
+// administrator rights were genuinely unavailable. Re-run elevated or defer,
+// never half-install. It is deliberately not reported for an MSI-managed
+// per-machine install, which the Windows Installer service performs as
+// LocalSystem — see [Installer.PrepareMSI].
 var ErrNeedsElevation = errors.New("update: install directory needs elevated permissions")
 
 // ErrTranslocated means the app is running translocated from a disk image or

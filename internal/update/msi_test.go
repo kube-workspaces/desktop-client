@@ -143,6 +143,7 @@ func TestApplyMSIExitCodes(t *testing.T) {
 		{1641, ""},
 		{1602, "cancelled"},
 		{1603, "exit code 1603"},
+		{1925, "elevated permissions"},
 	} {
 		execMsiexec = func(args []string) error {
 			if args[0] != "/i" || args[2] != "/qn" {
@@ -160,6 +161,13 @@ func TestApplyMSIExitCodes(t *testing.T) {
 		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
 			t.Fatalf("code %d: got %v, want %q", tc.code, err, tc.wantErr)
 		}
+	}
+	// 1925 is Windows Installer saying the administrative rights really were
+	// not available, which is the one elevation story this flow has: it must
+	// be the actionable error, not a bare exit code.
+	execMsiexec = func([]string) error { return &msiExitError{Code: 1925} }
+	if err := applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: t.TempDir()}, verify); !errors.Is(err, ErrNeedsElevation) {
+		t.Fatalf("1925 reported %v, want ErrNeedsElevation", err)
 	}
 	execMsiexec = func([]string) error { return errors.New("no msiexec here") }
 	if err := applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: t.TempDir()}, verify); err == nil {
@@ -240,14 +248,12 @@ func TestPrepareMSINotMSI(t *testing.T) {
 	}
 }
 
-// TestPrepareMSIUnwritableDirIsAnErrorNotAPanic is the v0.5.2 Windows
-// crash: clicking download on an install the process cannot write (a
-// per-machine MSI without elevation) failed the writability probe, and the
-// error branch dereferenced the nil file CreateTemp returns on failure.
-// A file stands in for an unwritable directory so the probe fails on every
-// platform and user (ENOTDIR needs no permission setup and root cannot
-// dodge it); what matters is that PrepareMSI reports instead of panicking.
-func TestPrepareMSIUnwritableDirIsAnErrorNotAPanic(t *testing.T) {
+// TestPrepareMSINotADirectoryIsAnErrorNotAPanic is the v0.5.2 Windows
+// crash's shape: a bad recorded install location must be reported, never
+// dereferenced. A file stands in for the bad location so the check fails on
+// every platform and user (ENOTDIR needs no permission setup and root cannot
+// dodge it).
+func TestPrepareMSINotADirectoryIsAnErrorNotAPanic(t *testing.T) {
 	_, rel := msiReleaseFixture(t, "v1.2.3", "amd64", []byte("fake-msi-bytes"))
 	notDir := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(notDir, []byte("x"), 0o644); err != nil {
@@ -261,14 +267,92 @@ func TestPrepareMSIUnwritableDirIsAnErrorNotAPanic(t *testing.T) {
 	}
 	_, err := in.PrepareMSI(context.Background(), rel, nil)
 	if err == nil {
-		t.Fatal("prepared into an unwritable install dir")
+		t.Fatal("prepared into a location that is not a directory")
 	}
 	if errors.Is(err, ErrNotMSI) {
-		t.Fatalf("got %v, want the write failure, not ErrNotMSI", err)
+		t.Fatalf("got %v, want the bad-location failure, not ErrNotMSI", err)
 	}
 	if !strings.Contains(err.Error(), notDir) {
 		t.Fatalf("error %q does not name the install dir", err)
 	}
+}
+
+// TestPrepareMSIDoesNotWriteInstallDir pins the contract that replaced the
+// writability probe: the MSI flow stages in the user cache and writes nothing
+// at all into the install location, so a per-machine install in Program Files
+// is updatable from an ordinary user process. Windows Installer does the
+// writing (as LocalSystem, raising its own UAC prompt), so probing this
+// process's own access to the directory rejects exactly the installs that work
+// — the v0.6.2 bug, which failed every "All users" install at download time
+// with an error the user could not act on.
+func TestPrepareMSIDoesNotWriteInstallDir(t *testing.T) {
+	srv, rel := msiReleaseFixture(t, "v1.2.3", "amd64", []byte("fake-msi-bytes"))
+	dir := t.TempDir()
+	before, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := Installer{
+		Client: srv.Client(), GOOS: "windows", GOARCH: "amd64",
+		MSIDetect: func(string) (*MsiInstall, error) {
+			return &MsiInstall{Dir: dir, MachineScope: true}, nil
+		},
+	}
+	pkg, err := in.PrepareMSI(context.Background(), rel, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pkg.Close()
+	if pkg.MachineScope != true {
+		t.Fatalf("per-machine scope not carried through: %+v", pkg)
+	}
+	after, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("PrepareMSI wrote into the install dir: %d entries, want %d", len(after), len(before))
+	}
+	if fi, err := os.Stat(pkg.Path); err != nil || fi.IsDir() {
+		t.Fatalf("staged package %q is not a file: %v", pkg.Path, err)
+	}
+	if filepath.Dir(pkg.Path) == dir {
+		t.Fatal("staged the package inside the install dir instead of the cache")
+	}
+}
+
+// TestPrepareMSIPerMachineInstallIsNotBlocked is the regression proper: a
+// per-machine install directory this process cannot write must still prepare.
+// Root ignores the directory mode, so the assertion would be vacuous there.
+func TestPrepareMSIPerMachineInstallIsNotBlocked(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	srv, rel := msiReleaseFixture(t, "v1.2.3", "amd64", []byte("fake-msi-bytes"))
+	dir := filepath.Join(t.TempDir(), "Program Files", "Kube Workspaces")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Restrict only the leaf: a read-only parent would block creating the
+	// child at all, and the point is the install directory itself.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, err := os.CreateTemp(dir, "probe"); err == nil {
+		t.Skip("directory is writable after all")
+	}
+	in := Installer{
+		Client: srv.Client(), GOOS: "windows", GOARCH: "amd64",
+		MSIDetect: func(string) (*MsiInstall, error) {
+			return &MsiInstall{Dir: dir, MachineScope: true}, nil
+		},
+	}
+	pkg, err := in.PrepareMSI(context.Background(), rel, nil)
+	if err != nil {
+		t.Fatalf("a per-machine install must still prepare, got %v", err)
+	}
+	pkg.Close()
 }
 
 func TestPrepareMSIMissingAsset(t *testing.T) {
