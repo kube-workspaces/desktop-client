@@ -293,6 +293,77 @@ func quoteJSON(t *testing.T, s string) string {
 	return string(b)
 }
 
+// TestWhatsChanged extracts the changelog section from a release body: the
+// heading matches with ATX, bold or no markup and case-insensitively, while
+// prose merely mentioning the phrase does not. The section runs to the next
+// heading of the same or higher level, without the heading line itself.
+func TestWhatsChanged(t *testing.T) {
+	const body = "# v0.7.1\n\nInstall from the release archives.\n\n" +
+		"## What's Changed\n" +
+		"🐛 Fixes\n" +
+		"3d83e8a fix(shell): open the Updates screen\n" +
+		"🔧 CI and tooling\n" +
+		"8c551f5 test(update): hold the MSI tests on Windows\n" +
+		"\n## Install\n\nUnpack the archive.\n\n**Full Changelog**: https://example.com/compare\n"
+	got := WhatsChanged(body)
+	for _, want := range []string{
+		"🐛 Fixes",
+		"3d83e8a fix(shell): open the Updates screen",
+		"🔧 CI and tooling",
+		"8c551f5 test(update): hold the MSI tests on Windows",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("section = %q, want it to contain %q", got, want)
+		}
+	}
+	for _, drop := range []string{"Install from", "## Install", "Unpack", "Full Changelog", "What's Changed"} {
+		if strings.Contains(got, drop) {
+			t.Fatalf("section = %q, want no %q", got, drop)
+		}
+	}
+
+	if got := WhatsChanged("just a paragraph\n\nsee what's changed below\n"); got != "" {
+		t.Fatalf("no heading = %q, want empty", got)
+	}
+	if got := WhatsChanged("## What's Changed\n"); got != "" {
+		t.Fatalf("empty section = %q, want empty", got)
+	}
+	nested := "### WHAT'S CHANGED\ntop\n#### Sub\ndeep\n## Install\nout\n"
+	got = WhatsChanged(nested)
+	for _, want := range []string{"top", "Sub", "deep"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("nested section = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "out") {
+		t.Fatalf("nested section = %q, want no trailing section", got)
+	}
+	if got := WhatsChanged("**What's Changed**\n- fix\n## Next\nout\n"); !strings.Contains(got, "- fix") || strings.Contains(got, "out") {
+		t.Fatalf("bold heading section = %q", got)
+	}
+}
+
+// TestChangesSurviveTheNotesCap is the reason Changes exists separately from
+// Notes: bodies bury the changelog past install matrices the excerpt cap
+// would otherwise cut off.
+func TestChangesSurviveTheNotesCap(t *testing.T) {
+	body := strings.Repeat("install text line\n", 300) + "## What's Changed\n- the fix\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","body":` + quoteJSON(t, body) + `}`))
+	}))
+	defer srv.Close()
+	rel, err := (Fetcher{APIBase: srv.URL}).GetLatest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rel.Changes, "- the fix") {
+		t.Fatalf("changes = %q, want the section", rel.Changes)
+	}
+	if strings.Contains(rel.Notes, "What's Changed") {
+		t.Fatalf("notes unexpectedly reach the section: %.60q…", rel.Notes)
+	}
+}
+
 func TestDiscoveryFailuresAndStableSelection(t *testing.T) {
 	for _, tc := range []struct {
 		status int

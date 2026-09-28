@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
@@ -241,6 +242,47 @@ func (a *App) updateNotes() string {
 	return a.updates.result.Release.Notes
 }
 
+// updateDisplayNotes returns what the Updates screen shows for the pending
+// update: the changelog section when the release carried one, else the
+// notes excerpt — sanitized for the face in both cases.
+func (a *App) updateDisplayNotes() string {
+	if !a.updates.result.Available || a.updates.result.Release == nil {
+		return ""
+	}
+	raw := a.updates.result.Release.Changes
+	if raw == "" {
+		raw = a.updates.result.Release.Notes
+	}
+	return sanitizeNotes(raw, a.opts.Theme.Font.Covers)
+}
+
+// sanitizeNotes drops decorative symbols the face cannot draw (emoji
+// category headers like "🐛 Fixes") rather than rendering them as missing
+// boxes. Uncovered scripts still pass through to box, as everywhere else:
+// a box shows something is there, while no box at all could be mistaken
+// for nothing to show.
+func sanitizeNotes(s string, covers func(rune) bool) string {
+	if covers == nil {
+		covers = func(r rune) bool { return r >= ' ' && r <= '~' }
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if covers(r) || !undrawableSymbol(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// undrawableSymbol reports whether r is decorative rather than content:
+// symbols, format and private-use runes. Letters and marks of uncovered
+// scripts are not symbols, so they still reach the missing box instead of
+// vanishing.
+func undrawableSymbol(r rune) bool {
+	return unicode.IsOneOf(
+		[]*unicode.RangeTable{unicode.S, unicode.Cf, unicode.Co, unicode.Cs}, r)
+}
+
 // updateNotesPreview trims release notes to maxLines lines for display,
 // dropping blank edges. A capped note ends in an ellipsis line.
 func updateNotesPreview(notes string, maxLines int) string {
@@ -315,12 +357,15 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 			ui.Spinner(ctx, body.Next(th.ControlHeight), th.TextMuted)
 		}
 	}
-	// Release notes for the pending update, so the user sees what it
-	// contains before downloading it.
-	if notes := updateNotesPreview(a.updateNotes(), updateNotesLines); notes != "" {
-		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.whatsNew", a.updates.result.Latest), ui.LabelStyle{Scale: th.Body})
-		lines := strings.Count(notes, "\n") + 1
-		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*lines), notes, ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	// Release notes for the pending update, rendered from the release's
+	// Markdown at a small size, so the user sees what it contains before
+	// downloading it. Only the What's Changed section shows: the body
+	// around it is install text and checksums, not changelog.
+	if raw := a.updateDisplayNotes(); raw != "" {
+		if notes := updateNotesPreview(raw, updateNotesLines); notes != "" {
+			ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.whatsNew", a.updates.result.Latest), ui.LabelStyle{Scale: th.Body})
+			ui.Markdown(ctx, body.Next(ui.MarkdownHeight(notes, th.Small, th.Font, card.W)), notes, ui.MarkdownStyle{Scale: th.Small})
+		}
 	}
 	var out intent
 	managed := a.updatePolicy().Managed

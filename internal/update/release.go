@@ -38,6 +38,12 @@ type Release struct {
 	// show them so the user sees what an update contains before
 	// downloading it.
 	Notes string
+	// Changes is the "What's Changed" section of the body, extracted
+	// before capping and capped itself. Bodies bury the changelog past
+	// install matrices the cap would otherwise cut off (a 6.7k body with
+	// the section at 5.5k is real); the Updates screen shows this, while
+	// Notes keeps the full excerpt for `update --check`.
+	Changes string
 }
 
 // maxReleaseNotes bounds the notes kept per release. Bodies can carry long
@@ -131,7 +137,7 @@ func (f Fetcher) GetLatest(ctx context.Context) (*Release, error) {
 	if _, err := Parse(raw.TagName); err != nil {
 		return nil, err
 	}
-	rel := &Release{Tag: raw.TagName, Notes: capNotes(raw.Body)}
+	rel := &Release{Tag: raw.TagName, Notes: capNotes(raw.Body), Changes: capNotes(WhatsChanged(raw.Body))}
 	for _, a := range raw.Assets {
 		if a.Name == "" || a.BrowserDownloadURL == "" {
 			continue
@@ -153,6 +159,71 @@ func capNotes(body string) string {
 		return cut[:maxReleaseNotes-200+i] + "\n…"
 	}
 	return cut + "…"
+}
+
+// WhatsChanged returns the "What's Changed" section of a release body, or
+// "" when there is none. The heading matches case-insensitively with ATX
+// ("## What's Changed"), bold ("**What's Changed**") or no markup; a prose
+// sentence merely mentioning the phrase does not. The section runs to the
+// next heading of the same or higher level (deeper subsections stay) and
+// excludes the heading line itself; an empty section reads as absent.
+func WhatsChanged(body string) string {
+	lines := strings.Split(body, "\n")
+	start, level := -1, 0
+	for i, l := range lines {
+		if lv, ok := changelogHeading(l); ok {
+			start, level = i, lv
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if lv, ok := atxHeading(lines[i]); ok && (level == 0 || lv <= level) {
+			end = i
+			break
+		}
+	}
+	section := strings.Join(lines[start+1:end], "\n")
+	if strings.TrimSpace(section) == "" {
+		return ""
+	}
+	return section
+}
+
+// changelogHeading reports whether line is a "What's Changed" heading, and
+// its ATX level (0 for markup without hashes, e.g. a bold line).
+func changelogHeading(line string) (int, bool) {
+	t := strings.TrimSpace(line)
+	level := 0
+	for strings.HasPrefix(t, "#") {
+		level++
+		t = strings.TrimSpace(strings.TrimPrefix(t, "#"))
+	}
+	if level > 6 {
+		return 0, false
+	}
+	t = strings.Trim(t, "*_`~")
+	if !strings.EqualFold(strings.TrimSpace(t), "what's changed") {
+		return 0, false
+	}
+	return level, true
+}
+
+// atxHeading reports whether line is an ATX heading ("## …"), and its level.
+func atxHeading(line string) (int, bool) {
+	t := strings.TrimSpace(line)
+	level := 0
+	for strings.HasPrefix(t, "#") {
+		level++
+		t = strings.TrimPrefix(t, "#")
+	}
+	if level == 0 || level > 6 || (t != "" && t[0] != ' ' && t[0] != '\t') {
+		return 0, false
+	}
+	return level, true
 }
 
 // Result is the outcome of comparing the running build against a release.

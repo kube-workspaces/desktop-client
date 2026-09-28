@@ -11,7 +11,9 @@ import (
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
+	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
+	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"github.com/kube-workspaces/desktop-client/internal/update"
 )
 
@@ -67,6 +69,41 @@ func TestUpdateNotesPreview(t *testing.T) {
 	}
 	if lines != 11 || got[len(got)-len("…"):] != "…" {
 		t.Fatalf("capped notes = %q", got)
+	}
+}
+
+// TestSanitizeNotes drops decorative symbols the face cannot draw (emoji
+// category headers like "🐛 Fixes") while keeping covered runes and
+// uncovered scripts: stripping follows the face, not a fixed list.
+func TestSanitizeNotes(t *testing.T) {
+	if got := sanitizeNotes("🐛 Fixes\n🔧 CI", nil); got != " Fixes\n CI" {
+		t.Fatalf("sanitized = %q", got)
+	}
+	if got := sanitizeNotes("修复中文问题 ★ →", nil); got != "修复中文问题  " {
+		t.Fatalf("sanitized = %q, want scripts kept", got)
+	}
+	all := func(rune) bool { return true }
+	if got := sanitizeNotes("🐛 Fixes", all); got != "🐛 Fixes" {
+		t.Fatalf("covered emoji stripped: %q", got)
+	}
+}
+
+// TestUpdateDisplayNotes prefers the changelog section and falls back to
+// the notes excerpt, staying silent when no update awaits.
+func TestUpdateDisplayNotes(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	if got := r.app.updateDisplayNotes(); got != "" {
+		t.Fatalf("display notes without a check = %q", got)
+	}
+	r.app.updates.result = update.Check("v1.2.2", &update.Release{
+		Tag: "v1.2.3", Notes: "full body", Changes: "- fix\n",
+	})
+	if got := r.app.updateDisplayNotes(); got != "- fix\n" {
+		t.Fatalf("display notes = %q, want the section", got)
+	}
+	r.app.updates.result = update.Check("v1.2.2", &update.Release{Tag: "v1.2.3", Notes: "full body"})
+	if got := r.app.updateDisplayNotes(); got != "full body" {
+		t.Fatalf("display notes = %q, want the fallback", got)
 	}
 }
 
