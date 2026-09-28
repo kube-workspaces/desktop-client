@@ -1009,31 +1009,36 @@ func (a *App) drawCreateModal(bounds ui.Rect) intent {
 	if a.createImageIdx >= len(images) {
 		a.createImageIdx = max(len(images)-1, 0)
 	}
+	// Image rows are compact small-font rows: a tall default row makes a
+	// five-image list dominate the modal and feel sluggish to move through.
+	imgRowH := ui.LineHeight(th.Small, th.Font) + th.Gap/2
 	listRows := min(len(images), 5)
-	listH := listRows*th.RowHeight + 2*th.BorderWidth
+	listH := listRows*imgRowH + 2*th.BorderWidth
 	if len(images) == 0 {
 		listH = ui.LineHeight(th.Body, th.Font)
 	}
 
 	fieldH := th.ControlHeight
 	labelH := ui.LineHeight(th.Small, th.Font)
-	parts := []int{
-		ui.TextHeight(th.Title, th.Font) + th.Gap/2, // title
-		labelH + th.Gap/2 + fieldH,                  // name
-		labelH + th.Gap/2 + fieldH,                  // namespace
-		labelH + th.Gap/2 + th.ControlHeight,        // type row
-		labelH + th.Gap/2 + listH,                   // image list
-		th.ControlHeight,                            // buttons
+	// One entry per body.Next call below, in order: the card height is exact
+	// by construction, so the footer cannot spill past the card's edge.
+	rows := []int{
+		ui.TextHeight(th.Title, th.Font), // title
+		labelH, fieldH,                   // name
+		labelH, fieldH, // namespace
+		labelH, th.ControlHeight, // type row
+		labelH, listH, // image list
 	}
 	if a.m.Err != "" {
-		parts = append(parts, ui.LineHeight(th.Body, th.Font)) // error line
+		rows = append(rows, ui.LineHeight(th.Body, th.Font)) // error line
 	}
+	rows = append(rows, th.ControlHeight) // buttons
 	content := 2 * th.Pad
-	for i, p := range parts {
+	for i, h := range rows {
 		if i > 0 {
 			content += th.Gap
 		}
-		content += p
+		content += h
 	}
 
 	width := min(bounds.W-2*th.Pad, infoCardWidth)
@@ -1047,7 +1052,7 @@ func (a *App) drawCreateModal(bounds ui.Rect) intent {
 	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
 	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
 
-	ui.Label(ctx, body.Next(parts[0]), i18n.Get("create.title"), ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(rows[0]), i18n.Get("create.title"), ui.LabelStyle{Scale: th.Title})
 
 	ui.Label(ctx, body.Next(labelH), i18n.Get("create.name"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
 	if a.createNameField.Layout(ctx, body.Next(fieldH)) && !a.m.Busy {
@@ -1109,16 +1114,22 @@ func (a *App) drawCreateModal(bounds ui.Rect) intent {
 		ui.Label(ctx, imgRect, i18n.Get("create.noImages"), ui.LabelStyle{Color: th.TextMuted})
 	} else {
 		a.createImageList.Selected = a.createImageIdx
+		a.createImageList.RowHeight = imgRowH
 		a.createImageList.Layout(ctx, imgRect, len(images), func(ctx *ui.Context, row ui.Rect, state ui.RowState) {
 			img := images[state.Index]
 			name := img.DisplayName
 			if name == "" {
 				name = img.Name
 			}
-			if state.Index == a.createImageIdx {
-				ctx.Canvas.FillRounded(ui.InsetXY(row, th.Gap/2, 2), th.Radius, th.SurfaceSelected)
+			switch {
+			case state.Index == a.createImageIdx:
+				ctx.Canvas.FillRounded(ui.InsetXY(row, 0, 2), th.Radius, th.SurfaceSelected)
+			case state.Hovered:
+				ctx.Canvas.FillRounded(ui.InsetXY(row, 0, 2), th.Radius, th.SurfaceAlt)
 			}
-			ui.Label(ctx, row, name+"  ·  "+img.Image, ui.LabelStyle{Middle: true})
+			ui.Label(ctx, ui.InsetXY(row, th.Gap/2, 0), name+"  ·  "+img.Image, ui.LabelStyle{
+				Scale: th.Small, Middle: true,
+			})
 		})
 		if a.createImageList.Selected >= 0 && a.createImageList.Selected < len(images) {
 			a.createImageIdx = a.createImageList.Selected
@@ -1126,14 +1137,15 @@ func (a *App) drawCreateModal(bounds ui.Rect) intent {
 	}
 
 	if a.m.Err != "" {
-		ui.Label(ctx, body.Next(parts[len(parts)-2]), a.m.Err, ui.LabelStyle{Color: th.Danger, Wrap: true})
+		ui.Label(ctx, body.Next(rows[len(rows)-2]), a.m.Err, ui.LabelStyle{Color: th.Danger, Wrap: true})
 	}
 
-	foot := body.Next(parts[len(parts)-1])
+	foot := body.Next(rows[len(rows)-1])
 	submit := ui.Button{ID: idCreateSubmit, Text: i18n.Get("create.create"), Variant: ui.ButtonPrimary, Disabled: a.m.Busy || len(images) == 0}
 	cancel := ui.Button{ID: idCreateClose, Text: i18n.Get("create.cancel"), Variant: ui.ButtonSecondary}
 	cancelRect, rest := ui.CutRight(foot, cancel.Width(ctx))
-	submitRect, _ := ui.CutRight(rest, submit.Width(ctx)+th.Gap)
+	rest = ui.CutRightGap(rest, th.Gap)
+	submitRect, _ := ui.CutRight(rest, submit.Width(ctx))
 	if submit.Layout(ctx, submitRect) && !a.m.Busy && len(images) > 0 {
 		out = intent{kind: intentCreateSubmit}
 	}
