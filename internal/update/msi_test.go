@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -323,36 +324,78 @@ func TestPrepareMSIDoesNotWriteInstallDir(t *testing.T) {
 
 // TestPrepareMSIPerMachineInstallIsNotBlocked is the regression proper: a
 // per-machine install directory this process cannot write must still prepare.
-// Root ignores the directory mode, so the assertion would be vacuous there.
+//
+// "Unwritable" is the load-bearing half, and it needs a directory mode the
+// platform enforces. Windows does not: chmod there only toggles the read-only
+// attribute, so a 0500 directory stays writable and the assertion would pass
+// vacuously — a green test that proved nothing. So that half is skipped on
+// Windows and runs on Linux and macOS, which the native CI matrix covers. The
+// portable half runs everywhere and pins the rest of the contract: machine
+// scope survives preparation and nothing is left behind in the install
+// directory.
 func TestPrepareMSIPerMachineInstallIsNotBlocked(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
+	prepare := func(t *testing.T, dir string) {
+		t.Helper()
+		srv, rel := msiReleaseFixture(t, "v1.2.3", "amd64", []byte("fake-msi-bytes"))
+		in := Installer{
+			Client: srv.Client(), GOOS: "windows", GOARCH: "amd64",
+			MSIDetect: func(string) (*MsiInstall, error) {
+				return &MsiInstall{Dir: dir, MachineScope: true}, nil
+			},
+		}
+		pkg, err := in.PrepareMSI(context.Background(), rel, nil)
+		if err != nil {
+			t.Fatalf("a per-machine install must still prepare, got %v", err)
+		}
+		defer pkg.Close()
+		if !pkg.MachineScope {
+			t.Fatalf("per-machine scope not carried through: %+v", pkg)
+		}
 	}
-	srv, rel := msiReleaseFixture(t, "v1.2.3", "amd64", []byte("fake-msi-bytes"))
-	dir := filepath.Join(t.TempDir(), "Program Files", "Kube Workspaces")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// Restrict only the leaf: a read-only parent would block creating the
-	// child at all, and the point is the install directory itself.
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if _, err := os.CreateTemp(dir, "probe"); err == nil {
-		t.Skip("directory is writable after all")
-	}
-	in := Installer{
-		Client: srv.Client(), GOOS: "windows", GOARCH: "amd64",
-		MSIDetect: func(string) (*MsiInstall, error) {
-			return &MsiInstall{Dir: dir, MachineScope: true}, nil
-		},
-	}
-	pkg, err := in.PrepareMSI(context.Background(), rel, nil)
-	if err != nil {
-		t.Fatalf("a per-machine install must still prepare, got %v", err)
-	}
-	pkg.Close()
+
+	t.Run("leaves the install dir untouched", func(t *testing.T) {
+		dir := t.TempDir()
+		before, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepare(t, dir)
+		after, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after) != len(before) {
+			t.Fatalf("PrepareMSI wrote into the install dir: %d entries, want %d", len(after), len(before))
+		}
+	})
+
+	t.Run("install dir is not writable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		if runtime.GOOS == "windows" {
+			t.Skip("windows does not enforce directory modes")
+		}
+		dir := filepath.Join(t.TempDir(), "Program Files", "Kube Workspaces")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// Restrict only the leaf: a read-only parent would block creating the
+		// child at all, and the point is the install directory itself.
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		// Confirm the restriction really bites, and leave nothing behind: a
+		// probe file still open here would fail the TempDir cleanup later.
+		if f, err := os.CreateTemp(dir, "probe"); err == nil {
+			name := f.Name()
+			_ = f.Close()
+			_ = os.Remove(name)
+			t.Skip("directory is writable after all")
+		}
+		prepare(t, dir)
+	})
 }
 
 func TestPrepareMSIMissingAsset(t *testing.T) {

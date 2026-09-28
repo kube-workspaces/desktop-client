@@ -63,24 +63,24 @@ func TestTakeErrorReportsAndConsumesTheMarker(t *testing.T) {
 // not writable to it and the marker must not be lost with it: a failed update
 // that cannot report itself on the next launch is indistinguishable from one
 // that never ran.
+//
+// "Cannot write there" is simulated with a path that does not exist rather
+// than with a directory mode, because a mode is not enforced on Windows —
+// chmod only toggles the read-only attribute, so a 0500 directory stays
+// writable there and the fallback would never be exercised. A missing
+// directory fails the same write on every platform, and the fallback only
+// cares that the first write returned an error. It also means the test is
+// still meaningful as root, which ignores directory permissions entirely.
 func TestRecordUpdateErrorFallsBackToTheCache(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
-	}
 	cache := isolateCache(t)
 	dir := filepath.Join(t.TempDir(), "Program Files", "Kube Workspaces")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
 	recordUpdateError(dir, errSwapFailed)
 
+	// Guard against a vacuous pass: the install dir must really have refused
+	// the marker, or the cache copy would prove nothing.
 	if _, err := os.Stat(filepath.Join(dir, errorMarker)); err == nil {
-		t.Fatal("the marker reached the unwritable install dir; the fallback was not exercised")
+		t.Fatal("the marker reached the install dir; the fallback was not exercised")
 	}
 	if b, err := os.ReadFile(filepath.Join(cache, errorMarker)); err != nil {
 		t.Fatalf("no marker in the cache fallback: %v", err)
