@@ -324,8 +324,8 @@ jobs:
       - name: Install AppImage tooling
         run: |
           set -euo pipefail
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
             squashfs-tools desktop-file-utils
 
       - name: Build Linux amd64 AppImage
