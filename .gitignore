@@ -1,6 +1,8 @@
 # Binaries
 bin/
 dist/
+# flatpak-builder state (build-flatpak.sh keeps its own under mktemp).
+.flatpak-builder/
 *.exe
 *.exe~
 *.dll
@@ -48,6 +50,8 @@ desktop.ini
 # ...but the brand icon sources and the window-icon embed are not screenshots.
 !assets/icon.png
 !internal/viewer/icon.png
+# ...nor the committed hicolor set the Linux packages install.
+!packaging/linux/icons/**/*.png
 
 # go-winres build output: the Windows .exe icon + version resources.
 cmd/kube-workspaces/*.syso
