@@ -4,6 +4,8 @@
 package update
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -71,5 +73,31 @@ func TestCheckCadenceIs24Hours(t *testing.T) {
 	}
 	if p.ShouldCheck(now.Add(time.Hour), now) {
 		t.Fatal("a check timestamped in the future is not due")
+	}
+}
+
+// TestSystemPackagedAt pins the packaged-install marker: a file means the
+// binary belongs to dpkg/rpm (updater stands down), anything else means a
+// manual install.
+func TestSystemPackagedAt(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "packaged-install")
+	if systemPackagedAt(marker) {
+		t.Fatal("absent marker reads packaged")
+	}
+	if err := os.Mkdir(marker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if systemPackagedAt(marker) {
+		t.Fatal("directory reads packaged")
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("deb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !systemPackagedAt(marker) {
+		t.Fatal("marker file does not read packaged")
 	}
 }

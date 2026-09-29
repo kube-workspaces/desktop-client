@@ -128,13 +128,17 @@ func runShell(ctx context.Context, args []string) error {
 		},
 		Updater: &update.Installer{},
 		UpdatePolicy: func() (bool, bool) {
-			p, err := config.SentinelPath()
-			if err != nil {
-				return true, false
+			managed := update.SystemPackaged()
+			if !managed {
+				p, err := config.SentinelPath()
+				if err != nil {
+					return true, false
+				}
+				_, err = os.Stat(p)
+				managed = !os.IsNotExist(err)
 			}
-			_, err = os.Stat(p)
 			v := os.Getenv(config.NoUpdateEnvVar)
-			return !os.IsNotExist(err), v != "" && v != "0" && v != "false"
+			return managed, v != "" && v != "0" && v != "false"
 		},
 		RestartUpdate: func(p *update.Prepared) error {
 			exe, err := os.Executable()

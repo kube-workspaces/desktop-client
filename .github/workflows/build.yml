@@ -499,6 +499,80 @@ jobs:
           path: out/*.msi
           if-no-files-found: error
 
+  # Native Linux system packages (.deb, .rpm, Flatpak bundle) from the
+  # assembled archives, one arch per runner: rpmbuild refuses cross-arch
+  # builds and flatpak-builder targets its host, so arm64 rides the ARM
+  # runner the web-child matrix already uses. Like the MSI and AppImage
+  # these sit outside the updater contract (sidecar checksums, SHA256SUMS
+  # untouched) and like it they are unsigned.
+  linux-packages:
+    name: Linux packages (${{ matrix.goarch }})
+    needs: [assemble]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            runs-on: ubuntu-24.04
+          - goarch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+
+      - name: Download assembled archive
+        uses: actions/download-artifact@v8
+        with:
+          name: kube-workspaces-linux-${{ matrix.goarch }}
+          path: final
+          github-token: ${{ github.token }}
+
+      - name: Build .deb
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          scripts/build-deb.sh "final/kube-workspaces-$version-linux-${{ matrix.goarch }}.tar.gz" "$version" pkgs
+
+      - name: Install rpm tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends rpm
+
+      - name: Build .rpm
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          scripts/build-rpm.sh "final/kube-workspaces-$version-linux-${{ matrix.goarch }}.tar.gz" "$version" pkgs
+
+      - name: Install Flatpak tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y flathub org.gnome.Platform//48 org.gnome.Sdk//48
+
+      - name: Build Flatpak bundle
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          scripts/build-flatpak.sh "final/kube-workspaces-$version-linux-${{ matrix.goarch }}.tar.gz" "$version" pkgs
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-packages-${{ matrix.goarch }}
+          path: pkgs/
+          if-no-files-found: error
+
   checksums:
     name: Verify final distribution
     runs-on: ubuntu-24.04
@@ -538,7 +612,7 @@ jobs:
     name: Publish release
     # Only for tag pushes. Tags are created deliberately, never by automation.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [checksums]
+    needs: [checksums, linux-packages]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -578,6 +652,16 @@ jobs:
           path: appimage
           github-token: ${{ github.token }}
 
+      # Native Linux packages (extra artifacts, outside SHA256SUMS like the
+      # AppImage and MSI-adjacent flow): debs, rpms and the Flatpak bundle
+      # with sidecar checksums, built in linux-packages from these archives.
+      - name: Download Linux packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: linux-packages-*
+          path: linuxpkgs
+          github-token: ${{ github.token }}
+
       - name: Stage MSIs and recompute checksums
         run: |
           set -euo pipefail
@@ -610,6 +694,14 @@ jobs:
         run: |
           set -euo pipefail
           base="https://github.com/$REPO/releases/download/$VERSION"
+          # Native package file names carry host-dependent bits (the rpm
+          # dist tag), so resolve them from the downloaded artifacts
+          # rather than reconstructing them from the version.
+          deb_amd64="$(basename linuxpkgs/*/*_amd64.deb)"
+          deb_arm64="$(basename linuxpkgs/*/*_arm64.deb)"
+          rpm_amd64="$(basename linuxpkgs/*/*.x86_64.rpm)"
+          rpm_arm64="$(basename linuxpkgs/*/*.aarch64.rpm)"
+          flatpak="io.github.kubeworkspaces.KubeWorkspaces-$VERSION.flatpak"
           {
             echo "Native desktop client for Kube Workspaces: sign in to an instance, browse your"
             echo "workspaces, and open a VM workspace's display in a real window."
@@ -620,7 +712,12 @@ jobs:
             echo "|---|---|---|"
             echo "| Linux | x86_64 | [\`kube-workspaces-$VERSION-linux-amd64.tar.gz\`]($base/kube-workspaces-$VERSION-linux-amd64.tar.gz) |"
             echo "| Linux | x86_64 | **AppImage** [\`kube-workspaces-$VERSION-linux-amd64.AppImage\`]($base/kube-workspaces-$VERSION-linux-amd64.AppImage) |"
+            echo "| Linux | x86_64 | **deb** [\`$deb_amd64\`]($base/$deb_amd64) |"
+            echo "| Linux | x86_64 | **rpm** [\`$rpm_amd64\`]($base/$rpm_amd64) |"
+            echo "| Linux | x86_64 | **Flatpak** [\`$flatpak\`]($base/$flatpak) |"
             echo "| Linux | arm64 | [\`kube-workspaces-$VERSION-linux-arm64.tar.gz\`]($base/kube-workspaces-$VERSION-linux-arm64.tar.gz) |"
+            echo "| Linux | arm64 | **deb** [\`$deb_arm64\`]($base/$deb_arm64) |"
+            echo "| Linux | arm64 | **rpm** [\`$rpm_arm64\`]($base/$rpm_arm64) |"
             echo "| macOS | Apple silicon | [\`kube-workspaces-$VERSION-darwin-arm64.tar.gz\`]($base/kube-workspaces-$VERSION-darwin-arm64.tar.gz) |"
             echo "| macOS | Intel | [\`kube-workspaces-$VERSION-darwin-amd64.tar.gz\`]($base/kube-workspaces-$VERSION-darwin-amd64.tar.gz) |"
             echo "| Windows | x86_64 | [\`kube-workspaces-$VERSION-windows-amd64.zip\`]($base/kube-workspaces-$VERSION-windows-amd64.zip) |"
@@ -632,6 +729,7 @@ jobs:
             echo
             echo "The AppImage is not part of \`SHA256SUMS\` (the in-app updater contract covers"
             echo "the six archives); it ships its own sidecar: \`sha256sum -c kube-workspaces-$VERSION-linux-amd64.AppImage.sha256\`."
+            echo "The same holds for the native packages below: each ships its own sidecar checksum."
             echo
             echo "## Install"
             echo
@@ -652,6 +750,27 @@ jobs:
             echo "chmod +x kube-workspaces-$VERSION-linux-amd64.AppImage"
             echo "./kube-workspaces-$VERSION-linux-amd64.AppImage"
             echo '```'
+            echo
+            echo 'or the native system packages (Debian/Ubuntu, Fedora/RHEL — unsigned,'
+            echo 'like everything above):'
+            echo
+            echo '```bash'
+            echo "sudo dpkg -i $deb_amd64        # or: sudo rpm -i $rpm_amd64"
+            echo "kube-workspaces --help"
+            echo '```'
+            echo
+            echo 'or the Flatpak bundle (needs the GNOME 48 runtime from Flathub once):'
+            echo
+            echo '```bash'
+            echo "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+            echo "flatpak install flathub org.gnome.Platform//48"
+            echo "flatpak install --user $flatpak"
+            echo "flatpak run io.github.kubeworkspaces.KubeWorkspaces"
+            echo '```'
+            echo
+            echo 'System packages disable the in-app updater (your package manager owns'
+            echo 'those files now); update them with `apt`/`dnf`/`flatpak update`. The web'
+            echo 'view needs WebKitGTK 4.1 (Debian 12+, Ubuntu 24.04+, Fedora 41+).'
             echo
             echo '**macOS** — the archive contains a `Kube Workspaces.app` bundle. Drag it to'
             echo 'Applications, or open it in place:'
@@ -738,4 +857,5 @@ jobs:
             gh release create "$TAG" --title "$TAG" --notes-file /tmp/release-notes.md
           fi
           gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/*.msi dist/SHA256SUMS \
-            appimage/*.AppImage appimage/*.sha256 --clobber
+            appimage/*.AppImage appimage/*.sha256 linuxpkgs/*/*.deb linuxpkgs/*/*.rpm linuxpkgs/*/*.flatpak \
+            linuxpkgs/*/*.sha256 --clobber

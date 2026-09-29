@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.kubeworkspaces.KubeWorkspaces</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Kube Workspaces</name>
+  <summary>Native desktop client for kube-workspaces</summary>
+  <description>
+    <p>
+      Access your kube-workspaces workspaces from a real VDI client:
+      VM desktops over Tier 1 agent video (or the agentless
+      console), container web apps in an embedded view, and integrated
+      terminals — with fluid resize, clipboard and audio playback.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.kubeworkspaces.KubeWorkspaces.desktop</launchable>
+  <url type="homepage">https://github.com/kube-workspaces/desktop-client</url>
+  <provides>
+    <binary>kube-workspaces</binary>
+  </provides>
+</component>

@@ -1,0 +1,6 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Source: https://github.com/kube-workspaces/desktop-client
+
+Files: *
+Copyright: The kube-workspaces Authors
+License: Apache-2.0

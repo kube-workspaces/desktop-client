@@ -50,7 +50,15 @@ Implemented and working:
   on the window. The Windows `.exe` links PE resources (icon + version info)
   built by go-winres, and macOS archives ship a proper `Kube Workspaces.app`
   bundle. All inputs and outputs are committed, so builds and CI never run
-  Inkscape, ImageMagick or go-winres.
+  Inkscape, ImageMagick or go-winres. Linux additionally ships native system
+  packages from `packaging/linux/` (`.deb` via `dpkg-deb`, `.rpm` via
+  `rpmbuild`, Flatpak bundle via `flatpak-builder`, all unsigned release
+  assets outside the updater contract with sidecar checksums): they share one
+  `.desktop` entry and committed hicolor icons, install a
+  `packaged-install` marker the client honours by standing its in-app
+  updater down, and depend on (or recommend) WebKitGTK 4.1 for the web
+  child. Apt/COPR repos, Flathub submission and signing are parked in
+  tracking.
 - **Automatic reconnect** — implemented: a capped-exponential-backoff
   supervisor (`internal/reconnect` + `internal/session`) swaps connections.
 - **Shared display (multi-session)** — a running VM's footer offers **Observe**:

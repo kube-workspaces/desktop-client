@@ -37,6 +37,9 @@ func runUpdate(ctx context.Context, args []string) error {
 	if _, err := os.Stat(p); !os.IsNotExist(err) {
 		return fmt.Errorf("updates disabled by %s", p)
 	}
+	if update.SystemPackaged() {
+		return fmt.Errorf("this install comes from your system package manager — update it with apt/dnf/flatpak instead")
+	}
 	in := &update.Installer{}
 	r, err := in.Check(ctx, version)
 	if err != nil {

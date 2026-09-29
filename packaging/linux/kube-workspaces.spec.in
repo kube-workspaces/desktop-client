@@ -1,0 +1,58 @@
+Name:           kube-workspaces
+Version:        @@VERSION@@
+Release:        1%{?dist}
+Summary:        Native desktop client for kube-workspaces
+License:        Apache-2.0
+URL:            https://github.com/kube-workspaces/desktop-client
+BuildArch:      @@ARCH@@
+# Weak dependency: the shell runs without it, the embedded web view needs
+# WebKitGTK 4.1 at runtime. dnf installs weak deps by default; minimal
+# spins stay lean.
+Recommends:     webkit2gtk4.1
+
+%description
+Access your kube-workspaces workspaces (VM desktops, container web apps)
+from a real VDI client: fluid resize, clipboard, audio playback.
+
+The web view needs WebKitGTK 4.1; the shell itself runs anywhere the
+archive runs.
+
+%install
+mkdir -p %{buildroot}/usr/bin \
+  %{buildroot}/usr/share/applications \
+  %{buildroot}/usr/share/icons \
+  %{buildroot}/usr/share/doc/kube-workspaces
+install -m755 %{stagedir}/kube-workspaces %{buildroot}/usr/bin/kube-workspaces
+@@WEBCHILD_INSTALL@@
+install -m644 %{sourcedir}/kube-workspaces.desktop %{buildroot}/usr/share/applications/kube-workspaces.desktop
+cp -r %{sourcedir}/icons/hicolor %{buildroot}/usr/share/icons/
+find %{buildroot}/usr/share/icons -type d -exec chmod 755 {} +
+find %{buildroot}/usr/share/icons -type f -exec chmod 644 {} +
+install -m644 %{sourcedir}/copyright %{buildroot}/usr/share/doc/kube-workspaces/copyright
+printf 'Installed by the kube-workspaces .rpm package; the in-app updater stands down for system packages.\n' > %{buildroot}/usr/share/doc/kube-workspaces/packaged-install
+chmod 644 %{buildroot}/usr/share/doc/kube-workspaces/packaged-install
+
+%files
+/usr/bin/kube-workspaces
+@@WEBCHILD_FILES@@
+/usr/share/applications/kube-workspaces.desktop
+/usr/share/icons/hicolor/*/apps/kube-workspaces.png
+/usr/share/doc/kube-workspaces/copyright
+/usr/share/doc/kube-workspaces/packaged-install
+
+%post
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
+
+%postun
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+
+%changelog
+* @@DATE@@ Kube Workspaces <https://github.com/kube-workspaces/desktop-client> - @@VERSION@@-1
+- Release @@TAG@@ (https://github.com/kube-workspaces/desktop-client/releases/tag/@@TAG@@).

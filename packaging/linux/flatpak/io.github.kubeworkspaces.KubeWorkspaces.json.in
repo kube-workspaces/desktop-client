@@ -1,0 +1,48 @@
+{
+  "app-id": "io.github.kubeworkspaces.KubeWorkspaces",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "48",
+  "sdk": "org.gnome.Sdk",
+  "command": "kube-workspaces",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=x11",
+    "--socket=wayland",
+    "--share=network",
+    "--socket=pulseaudio",
+    "--talk-name=org.freedesktop.secrets",
+    "--env=KUBE_WORKSPACES_NO_UPDATE=1"
+  ],
+  "modules": [
+    {
+      "name": "kube-workspaces",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -Dm755 kube-workspaces /app/bin/kube-workspaces",
+@@WEBCHILD_INSTALL@@
+        "install -Dm644 io.github.kubeworkspaces.KubeWorkspaces.desktop /app/share/applications/io.github.kubeworkspaces.KubeWorkspaces.desktop",
+        "install -Dm644 io.github.kubeworkspaces.KubeWorkspaces.metainfo.xml /app/share/metainfo/io.github.kubeworkspaces.KubeWorkspaces.metainfo.xml",
+        "for s in 16 24 32 48 64 128 256 512; do install -Dm644 hicolor/${s}x${s}/apps/kube-workspaces.png /app/share/icons/hicolor/${s}x${s}/apps/io.github.kubeworkspaces.KubeWorkspaces.png; done"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "path": "kube-workspaces"
+        },
+@@WEBCHILD_SOURCE@@
+        {
+          "type": "file",
+          "path": "io.github.kubeworkspaces.KubeWorkspaces.desktop"
+        },
+        {
+          "type": "file",
+          "path": "io.github.kubeworkspaces.KubeWorkspaces.metainfo.xml"
+        },
+        {
+          "type": "dir",
+          "path": "icons"
+        }
+      ]
+    }
+  ]
+}

@@ -55,7 +55,7 @@ WINRES ?= go run github.com/tc-hib/go-winres@v0.3.3
 # Passed through to `make run ARGS="..."`.
 ARGS ?=
 
-.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres winres-web clean flush build-all build-appimage install-windows-prereqs install-latest-windows-release
+.PHONY: help build build-windows build-windows-cgo build-web build-web-windows run test vet lint fmt tidy cover icons winres winres-web clean flush build-all build-appimage build-deb build-rpm build-flatpak install-windows-prereqs install-latest-windows-release
 
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -260,3 +260,24 @@ build-all: ## Cross-build and package all 6 targets into dist/
 build-appimage: ## Build a Linux amd64 AppImage into dist/ from the built archive
 	@test -f "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" || { echo "error: build $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz first (make build-all VERSION=$(VERSION))" >&2; exit 1; }
 	scripts/build-appimage.sh "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" "$(VERSION)" "$(DIST_DIR)"
+
+# Linux system packages, assembled by scripts/build-*.sh from the built
+# archives. Like the AppImage they are extra artifacts outside the
+# six-archive updater contract (sidecar .sha256 each, SHA256SUMS untouched)
+# and, like it, want the assembled archives with the web child beside the
+# shell — not bare build-all output. CI runs these from the assemble job.
+build-deb: ## Build Linux amd64+arm64 .debs into dist/ from the built archives
+	@test -f "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" || { echo "error: build $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz first (make build-all VERSION=$(VERSION))" >&2; exit 1; }
+	@test -f "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-arm64.tar.gz" || { echo "error: build $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-arm64.tar.gz first (make build-all VERSION=$(VERSION))" >&2; exit 1; }
+	scripts/build-deb.sh "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" "$(VERSION)" "$(DIST_DIR)"
+	scripts/build-deb.sh "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-arm64.tar.gz" "$(VERSION)" "$(DIST_DIR)"
+
+build-rpm: ## Build Linux x86_64+aarch64 .rpms into dist/ from the built archives (needs rpmbuild)
+	@test -f "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" || { echo "error: build $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz first (make build-all VERSION=$(VERSION))" >&2; exit 1; }
+	@test -f "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-arm64.tar.gz" || { echo "error: build $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-arm64.tar.gz first (make build-all VERSION=$(VERSION))" >&2; exit 1; }
+	scripts/build-rpm.sh "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" "$(VERSION)" "$(DIST_DIR)"
+	scripts/build-rpm.sh "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-arm64.tar.gz" "$(VERSION)" "$(DIST_DIR)"
+
+build-flatpak: ## Build a Linux x86_64 Flatpak bundle into dist/ from the built archive (needs flatpak-builder)
+	@test -f "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" || { echo "error: build $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz first (make build-all VERSION=$(VERSION))" >&2; exit 1; }
+	scripts/build-flatpak.sh "$(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64.tar.gz" "$(VERSION)" "$(DIST_DIR)"

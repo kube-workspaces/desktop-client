@@ -4,6 +4,7 @@
 package update
 
 import (
+	"os"
 	"time"
 )
 
@@ -11,6 +12,24 @@ import (
 // The timestamp lives in the settings file, so reinstalls and clock jumps
 // are the only ways to beat it, and neither matters.
 const checkInterval = 24 * time.Hour
+
+// PackagedMarkerPath is the system marker native Linux packages (deb, rpm)
+// install beside their docs. Its presence means the running binary belongs
+// to the system package manager, so the in-app binary updater must stand
+// down: swapping binaries under dpkg/rpm is how an install gets wedged.
+// Flatpak instead sets KUBE_WORKSPACES_NO_UPDATE in its manifest, which
+// needs no filesystem marker inside the sandbox.
+const PackagedMarkerPath = "/usr/share/doc/kube-workspaces/packaged-install"
+
+// SystemPackaged reports whether this binary runs from a native system
+// package. Managed installs (Policy.Managed) refuse even explicit update
+// commands; callers OR this with their own managed detection.
+func SystemPackaged() bool { return systemPackagedAt(PackagedMarkerPath) }
+
+func systemPackagedAt(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir()
+}
 
 // Policy is everything that can switch the automatic check off, in decision
 // order. The zero value checks: nothing disables anything by default.

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Kube Workspaces
+GenericName=Remote desktop client
+Comment=Access your kube-workspaces workspaces
+Exec=kube-workspaces
+Icon=kube-workspaces
+Terminal=false
+Categories=Network;RemoteAccess;
+StartupWMClass=kube-workspaces
