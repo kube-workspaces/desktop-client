@@ -37,6 +37,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 3 && os.Args[1] == "update-helper-runmsi" {
+		if err := update.RunElevatedMSI(os.Args[2]); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	// First, before anything can print. The Windows build is linked as a GUI
 	// subsystem binary so that launching it from Explorer does not open a
 	// stray console window alongside the shell; the cost is that the

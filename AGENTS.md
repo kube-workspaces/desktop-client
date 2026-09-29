@@ -587,15 +587,24 @@ time, since actions and pricing drift.
   detached helper runs it unattended (`/qn`, current scope, current
   INSTALLDIR) after the client quits, then proves the installed build
   reports the release tag. Manual Windows installs keep the in-place swap;
-  **per-machine MSI installs update unelevated** — the MSI flow stages in
-  the user cache and never writes to the install dir, because Windows
-  Installer (msiserver, LocalSystem) does the writing and raises its own
-  UAC prompt when the install context needs consent. Do not reintroduce a
+  **per-machine MSI installs elevate up front** — the MSI flow stages in
+  the user cache and never writes to the install dir, but a silent
+  unelevated msiexec cannot remove older per-machine products (MSI error
+  1730 fails every nested uninstall and the transaction rolls back; the
+  "msiserver raises its own UAC prompt" story is false for silent
+  installs, and v0.8.0 proved it live). So on "restart to update" the
+  helper relaunches itself elevated first (one UAC consent while the user
+  is watching; a dismissal cancels the update with the app still open),
+  the elevated runner executes msiexec and signals a done file, and the
+  unelevated waiter cleans the stage and relaunches the client unelevated
+  — never the reverse, or the app would inherit administrator rights.
+  Do not reintroduce a
   writability probe of the install dir in `PrepareMSI`: v0.6.2 shipped one
   and it failed every "All users" install at download time with
   `ErrNeedsElevation`, which re-running elevated cannot fix. Elevation is
   an msiexec-time story (exit 1925 is the only code that means the rights
-  were genuinely unavailable). The helper's `.update-error` marker
+  were genuinely unavailable, and 1730-in-the-log now maps to actionable
+  elevation guidance naming the staged .msi). The helper's `.update-error` marker
   therefore falls back to the user cache when the install dir is not
   writable — a per-machine helper cannot write into Program Files. `MSIAssetName` pins the
   `kube-workspaces-<tag>-windows-<arch>.msi` asset contract beside

@@ -245,12 +245,16 @@ func msiCommandLine(exe string, args []string) (string, error) {
 // archive flow applies before and after its swap (see [Apply]). A nil verify
 // means [VerifyVersion].
 //
-// Windows Installer performs the writes as LocalSystem, so a per-machine
-// install normally succeeds from an unelevated process and prompts for its own
-// UAC consent when the install context requires it. Exit 1925 is the one code
-// that means the rights genuinely were not available, and it maps to
-// [ErrNeedsElevation] so the user is told to approve the prompt (or re-run
-// elevated) instead of reading a bare exit code.
+// Silent msiexec never prompts: a per-machine install that needs rights it
+// does not have fails instead of asking. Exit 1925 is the one code that
+// means the rights genuinely were not available, and it maps to
+// [ErrNeedsElevation]. MSI error 1730 in the log means the same story one
+// level down (a nested removal of an older per-machine product attempted
+// unelevated — the fate of every silent per-machine major upgrade, seen
+// live in v0.8.0) and maps there too, naming the staged package to run by
+// hand. Per-machine updates therefore elevate before msiexec ever runs
+// (see the update-helper-runmsi leg); by the time applyMSI executes, the
+// rights question is settled and any failure here is real.
 func applyMSI(pkg *MSIPackage, verify func(binary, wantTag string) error) error {
 	log := filepath.Join(pkg.Work, "msi-update.log")
 	err := execMsiexec(msiArgs(pkg.Path, pkg.Dir, pkg.MachineScope, log))
