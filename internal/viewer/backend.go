@@ -5,13 +5,14 @@
 // framebuffer to a GPU texture, scales it to the window, and turns local input
 // into RFB events.
 //
-// The package is split so that exactly one file talks to the windowing
+// The package is split so that exactly two files talk to the windowing
 // library:
 //
 //   - backend.go (this file) declares [Backend] and the backend-neutral event
 //     types. It imports nothing but the standard library and internal/keysym.
-//   - sdl.go implements [Backend] on SDL3 and is the only file that imports an
-//     SDL binding.
+//   - sdl.go implements [Backend] on SDL3 and tray.go implements the native
+//     system-tray menu on the same binding; those two files are the only
+//     ones that import an SDL binding.
 //   - viewer.go drives the session loop against the [Backend] interface and
 //     never sees an SDL type.
 //

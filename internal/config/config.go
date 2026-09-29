@@ -62,6 +62,10 @@ type Settings struct {
 	// default, which is on. Use [Settings.AutoUpdateEnabled] to read it and
 	// [Bool] to write it.
 	AutoUpdate *bool `json:"autoUpdate,omitempty"`
+	// Tray enables the system-tray icon. It is a pointer for the same
+	// reason as AutoUpdate: absent means the default, which is on. Use
+	// [Settings.TrayEnabled] to read it and [Bool] to write it.
+	Tray *bool `json:"tray,omitempty"`
 	// LastUpdateCheck is when the client last asked GitHub Releases for a
 	// newer build, as Unix seconds. Zero means never; the shell rate-limits
 	// its startup check against it (at most once per 24 h).
@@ -88,6 +92,13 @@ func (s Settings) AutoUpdateEnabled() bool {
 // Bool returns a pointer to b, for writing tri-state settings like
 // [Settings.AutoUpdate] where absent must stay distinguishable from false.
 func Bool(b bool) *bool { return &b }
+
+// TrayEnabled reports whether the system-tray icon is on. Absent means on:
+// a user who never touched the setting gets the tray, and only an explicit
+// false opts out.
+func (s Settings) TrayEnabled() bool {
+	return s.Tray == nil || *s.Tray
+}
 
 // SentinelPath returns the path of the [NoUpdateSentinel] file, whether or
 // not it exists.

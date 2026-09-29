@@ -26,6 +26,9 @@ type Settings struct {
 	// the settings screen offers 1, 1.5 and 2, and the --ui-scale flag
 	// accepts anything in [1, 3].
 	UIScale float64
+	// Tray enables the system-tray icon (Quit + About + the running
+	// workspaces menu). The --no-tray flag overrides it per run.
+	Tray bool
 }
 
 // DefaultSettings is what a client with no recorded preferences uses. It is
@@ -37,7 +40,7 @@ type Settings struct {
 // backend that cannot say — resolves to dark, the look this client launched
 // with, so the default is only visibly different on a desktop that is light.
 func DefaultSettings() Settings {
-	return Settings{Style: ui.StyleBubbly, Mode: ui.ModeSystem}
+	return Settings{Style: ui.StyleBubbly, Mode: ui.ModeSystem, Tray: true}
 }
 
 // uiScaleSteps are the pinned scales the settings screen offers, in row
@@ -70,12 +73,15 @@ func settingsFromConfig(c config.Settings) Settings {
 	if c.UIScale > 0 && c.UIScale <= 3 {
 		s.UIScale = c.UIScale
 	}
+	if c.Tray != nil {
+		s.Tray = *c.Tray
+	}
 	return s
 }
 
 // toConfig flattens the typed settings to what the store persists.
 func (s Settings) toConfig() config.Settings {
-	return config.Settings{Style: s.Style.String(), Mode: s.Mode.String(), UIScale: s.UIScale}
+	return config.Settings{Style: s.Style.String(), Mode: s.Mode.String(), UIScale: s.UIScale, Tray: config.Bool(s.Tray)}
 }
 
 // interfaceScale resolves the theme multiplier: the launch flag first, then

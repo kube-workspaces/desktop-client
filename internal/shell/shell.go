@@ -41,6 +41,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
+	"github.com/kube-workspaces/desktop-client/internal/tray"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"github.com/kube-workspaces/desktop-client/internal/update"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
@@ -133,6 +134,15 @@ type Options struct {
 	// value pins the shell to it, which is how a user on an odd panel — or a
 	// test — gets a predictable size. Valid range is 1 to 3.
 	UIScale float64
+
+	// NoTray disables the system-tray icon for this run, overriding the
+	// stored setting. It is the --no-tray flag.
+	NoTray bool
+
+	// TrayNew builds the tray backend behind the menu. Nil means the real
+	// SDL tray when the shell's own window is an SDL one, and no tray
+	// otherwise. Tests inject a fake here.
+	TrayNew func(tray.Handler) tray.Backend
 
 	// Title is the window title. Empty means "Kube Workspaces".
 	Title string
@@ -238,6 +248,14 @@ type App struct {
 	sshUserField    ui.TextInput
 	sshKeyFileField ui.TextInput
 
+	// The system tray: its backend, the click queue from the tray's
+	// thread, the signature of the last menu built (to skip rebuilds),
+	// and when a failed creation may be retried.
+	tray        tray.Backend
+	trayCh      chan tray.Action
+	traySig     string
+	trayRetryAt time.Time
+
 	// The surface. img is reallocated on resize; canvas wraps it.
 	img           *image.RGBA
 	canvas        *ui.Canvas
@@ -274,6 +292,7 @@ func New(opts Options) (*App, error) {
 		ctx:      ui.NewContext(opts.Theme),
 		results:  make(chan func(), resultQueue),
 		done:     make(chan struct{}),
+		trayCh:   make(chan tray.Action, 16),
 		sessions: make(map[string]*sessionRecord),
 		live:     make(map[string]*liveEntry),
 		// A state the machine can never be in, so that the first frame counts
@@ -330,6 +349,9 @@ func (a *App) Run(ctx context.Context) error {
 		return fmt.Errorf("shell: open window: %w", err)
 	}
 	defer a.be.Close()
+	// The tray icon goes with the window: destroy it before the backend
+	// closes, while the SDL library is still up.
+	defer a.closeTray()
 	// Held sessions never outlive the process: the windows going away is
 	// the last chance to hand the server's single-seat slots back.
 	// closeAllSessions closes the open session windows first (so the
@@ -498,6 +520,9 @@ func (a *App) Start(ctx context.Context) {
 // are not racing it.
 func (a *App) Step(ctx context.Context, now time.Time) error {
 	a.drainResults()
+	// Tray menu clicks land here, on the loop's goroutine, before the
+	// frame: a click's window, panel or notice is part of the next draw.
+	a.drainTray(ctx)
 
 	// a.events arrives holding whatever the wait at the bottom of [App.Run]
 	// harvested — that wait consumes events, it does not merely observe them —
@@ -547,6 +572,9 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 	}
 
 	a.tick(ctx, now)
+	// The tray follows the list: its submenu rebuilds when the running
+	// set changed, and its driver pumps once per iteration.
+	a.reconcileTray(now)
 	if !a.dirty {
 		return nil
 	}
@@ -596,7 +624,7 @@ func (a *App) draw(ctx context.Context) error {
 	// A modal keeps the previous frame as a frozen, dimmed backdrop. The
 	// background is deliberately not cleared and the list is not drawn, so the
 	// buffer still holds the frame the user last saw and the modal dims it.
-	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList || a.m.SSH != nil)
+	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList || a.m.SSH != nil || a.m.Picker != nil)
 	if !modal {
 		a.canvas.Fill(a.canvas.Bounds(), a.opts.Theme.Background)
 	}
@@ -617,6 +645,8 @@ func (a *App) draw(ctx context.Context) error {
 			intent = a.drawCreateModal(a.canvas.Bounds())
 		case a.m.SSH != nil:
 			intent = a.drawSSHModal(a.canvas.Bounds())
+		case a.m.Picker != nil:
+			intent = a.drawQuickPickModal(a.canvas.Bounds())
 		case modal:
 			intent = a.drawWorkspaceInfoModal(a.canvas.Bounds())
 		default:
@@ -631,6 +661,12 @@ func (a *App) draw(ctx context.Context) error {
 		if kind := a.drawStandaloneSettings(a.canvas.Bounds()); kind != intentNone {
 			intent.kind = kind
 		}
+	}
+	// The About panel overlays any screen — tray clicks work before
+	// sign-in too — and captures the frame's intent while it is up, so a
+	// click cannot fall through the scrim onto the screen beneath.
+	if a.m.About {
+		intent = a.drawAboutModal(a.canvas.Bounds())
 	}
 	a.ctx.End()
 

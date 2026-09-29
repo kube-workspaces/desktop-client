@@ -44,6 +44,7 @@ func runShell(ctx context.Context, args []string) error {
 	width := fs.Int("width", 0, "initial window width in pixels (0 restores the last size)")
 	height := fs.Int("height", 0, "initial window height in pixels (0 restores the last size)")
 	uiScale := fs.Float64("ui-scale", 0, "interface scale factor 1-3 (0 follows the display)")
+	noTray := fs.Bool("no-tray", false, "disable the system-tray icon for this run (overrides the stored setting)")
 	verbose := fs.Bool("v", false, "log diagnostics to stderr")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces shell [flags]\n\n")
@@ -169,6 +170,7 @@ func runShell(ctx context.Context, args []string) error {
 		Width:           *width,
 		Height:          *height,
 		UIScale:         *uiScale,
+		NoTray:          *noTray,
 		Title:           windowTitle,
 		Logf:            logf,
 	})

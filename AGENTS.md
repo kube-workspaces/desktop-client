@@ -546,7 +546,7 @@ time, since actions and pricing drift.
 - Keep `internal/rfb`, `internal/kwclient`, `internal/keysym`, `internal/wsio`
   and `internal/reconnect` free of UI dependencies so they stay testable
   without a display.
-- `internal/viewer/sdl.go` is the only file permitted to import an SDL binding.
+- `internal/viewer/sdl.go` and `internal/viewer/tray.go` are the only files permitted to import an SDL binding.
   Keep it that way: the binding is a young, single-maintainer project and
   replacing it must remain a days-not-months job.
 

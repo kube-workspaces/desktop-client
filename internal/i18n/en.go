@@ -214,6 +214,35 @@ var english = map[string]string{
 	"settings.flagNote":     "The --ui-scale flag overrides this choice for this run.",
 	"settings.done":         "Done",
 	"settings.hint":         "Changes save as you pick  ·  Escape closes",
+	"settings.tray":         "SYSTEM TRAY",
+	"settings.trayOn":       "On",
+	"settings.trayOff":      "Off",
+	"settings.trayFlagNote": "The --no-tray flag disables this for this run.",
+
+	// Tray quick-pick window: one tile per way of opening the workspace.
+	"pick.subtitle":         "Choose how to open this workspace.",
+	"pick.display":          "Display",
+	"pick.serial":           "Serial",
+	"pick.ssh":              "SSH",
+	"pick.web":              "Web",
+	"pick.terminal":         "Terminal",
+	"pick.browser":          "Browser",
+	"pick.hintDisplayTier1": "Tier 1 agent video + audio",
+	"pick.hintDisplayTier0": "Tier 0 console (agentless)",
+	"pick.hintSerial":       "Serial console",
+	"pick.hintSSH":          "SSH console (key file)",
+	"pick.hintWeb":          "Embedded web view",
+	"pick.hintTerminal":     "Terminal over /exec",
+	"pick.hintBrowser":      "System browser, signed in",
+	"pick.hint":             "Click an option or press 1-%d  ·  Esc closes",
+	"pick.gone":             "That workspace is no longer running.",
+
+	// About panel.
+	"about.title":   "About Kube Workspaces",
+	"about.version": "Version %s",
+	"about.blurb":   "A native desktop client for kube-workspaces: Tier 1 agent video where the image carries one, agentless console everywhere else.",
+	"about.repo":    "github.com/kube-workspaces/desktop-client",
+	"about.docs":    "Desktop-client docs ship with the platform site under /docs/desktop-client/.",
 
 	// Failure sentences (Describe and friends).
 	"errors.cancelled":      "Cancelled.",

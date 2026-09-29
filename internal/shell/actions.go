@@ -19,6 +19,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
+	"github.com/kube-workspaces/desktop-client/internal/tray"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
@@ -81,6 +82,10 @@ const (
 	intentRestartUpdate
 	intentToggleUpdate
 	intentQuit
+	intentAbout
+	intentAboutClose
+	intentPickMode
+	intentPickClose
 )
 
 // intent is one frame's outcome.
@@ -91,6 +96,8 @@ type intent struct {
 	workspace kwclient.Workspace
 	// observer indicates that intentActivate should open as an observer.
 	observer bool
+	// mode is the quick-pick tile of intentPickMode.
+	mode tray.Mode
 	// profile is the name of the subject of intentSwitchProfile.
 	profile string
 	// sessionKey is the workspace key of the subject of intentSwitchSession
@@ -247,6 +254,14 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.saveSettings()
 	case intentQuit:
 		a.quit = true
+	case intentAbout:
+		a.m.ShowAbout()
+	case intentAboutClose:
+		a.m.CloseAbout()
+	case intentPickMode:
+		a.pickMode(ctx, in.mode)
+	case intentPickClose:
+		a.m.ClosePicker()
 	}
 	a.dirty = true
 }
@@ -1274,6 +1289,13 @@ const (
 	idScale150         ui.FocusID = "scale-150"
 	idScale200         ui.FocusID = "scale-200"
 	idSettingsDone     ui.FocusID = "settings-done"
+	idTrayOn           ui.FocusID = "tray-on"
+	idTrayOff          ui.FocusID = "tray-off"
+
+	idAbout      ui.FocusID = "about"
+	idAboutClose ui.FocusID = "about-close"
+
+	idPickClose ui.FocusID = "pick-close"
 
 	idMsgSel  ui.FocusID = "message"
 	idURLSel  ui.FocusID = "auth-url"

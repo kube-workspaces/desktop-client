@@ -12,6 +12,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
+	"github.com/kube-workspaces/desktop-client/internal/tray"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 )
 
@@ -417,7 +418,7 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 		{id: idStyleRetro, label: i18n.Get("settings.retro")},
 		{id: idStyleClean, label: i18n.Get("settings.clean")},
 	}); picked != styleIndex(a.settings.Style) {
-		a.applySettings(Settings{Style: styleFromIndex(picked), Mode: a.settings.Mode, UIScale: a.settings.UIScale})
+		a.applySettings(Settings{Style: styleFromIndex(picked), Mode: a.settings.Mode, UIScale: a.settings.UIScale, Tray: a.settings.Tray})
 		a.saveSettings()
 	}
 
@@ -434,7 +435,7 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	}
 	modeIdx := modeIndex(a.settings.Mode)
 	if picked := a.drawChoice(ctx, modeRow, modeIdx, modeOpts); picked != modeIdx {
-		a.applySettings(Settings{Style: a.settings.Style, Mode: modeFromIndex(picked), UIScale: a.settings.UIScale})
+		a.applySettings(Settings{Style: a.settings.Style, Mode: modeFromIndex(picked), UIScale: a.settings.UIScale, Tray: a.settings.Tray})
 		a.saveSettings()
 	}
 
@@ -450,7 +451,7 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 		{id: idScale200, label: i18n.Get("settings.scale200")},
 	}
 	if picked := a.drawChoice(ctx, scaleRow, uiScaleIndex(a.settings.UIScale), scaleOpts); picked != uiScaleIndex(a.settings.UIScale) {
-		a.applySettings(Settings{Style: a.settings.Style, Mode: a.settings.Mode, UIScale: uiScaleSteps()[picked]})
+		a.applySettings(Settings{Style: a.settings.Style, Mode: a.settings.Mode, UIScale: uiScaleSteps()[picked], Tray: a.settings.Tray})
 		a.saveSettings()
 	}
 	// A launch flag wins over the stored choice and the screen shows what is
@@ -458,6 +459,31 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	if a.opts.UIScale > 0 && a.opts.UIScale != a.settings.UIScale {
 		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)),
 			i18n.Get("settings.flagNote"), ui.LabelStyle{Color: th.TextMuted})
+	}
+
+	body.Skip(th.Pad)
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("settings.tray"), ui.LabelStyle{
+		Color: th.TextMuted, Scale: th.Small,
+	})
+	trayRow := body.Next(th.ControlHeight)
+	trayIdx := 0
+	if !a.settings.Tray {
+		trayIdx = 1
+	}
+	if picked := a.drawChoice(ctx, trayRow, trayIdx, []styleOption{
+		{id: idTrayOn, label: i18n.Get("settings.trayOn")},
+		{id: idTrayOff, label: i18n.Get("settings.trayOff")},
+	}); picked != trayIdx {
+		a.applySettings(Settings{Style: a.settings.Style, Mode: a.settings.Mode, UIScale: a.settings.UIScale, Tray: picked == 0})
+		a.saveSettings()
+		// The tray follows the setting on the next frame: reconcileTray
+		// creates or destroys it in Step, on the loop's goroutine.
+	}
+	// --no-tray wins over the stored choice for this run, so say so when
+	// the row claims an icon that will not appear.
+	if a.opts.NoTray && a.settings.Tray {
+		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)),
+			i18n.Get("settings.trayFlagNote"), ui.LabelStyle{Color: th.TextMuted})
 	}
 
 	body.Skip(th.Pad)
@@ -1668,5 +1694,256 @@ func since(then, now time.Time) string {
 		return i18n.Sprintf("since.mins", int(d.Minutes()))
 	default:
 		return i18n.Sprintf("since.hours", int(d.Hours()))
+	}
+}
+
+// drawAboutModal shows the About panel over whatever screen is showing. It
+// is reached from the tray menu, which works before sign-in too, so it
+// cannot assume any screen behind it — only that the frame it dims belongs
+// to this shell.
+func (a *App) drawAboutModal(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	var out intent
+
+	ctx.Canvas.Fill(bounds, modalScrim)
+
+	blurbH := ui.LineHeight(th.Body, th.Font) * 3
+	rows := []int{
+		ui.TextHeight(th.Title, th.Font), // title
+		ui.LineHeight(th.Body, th.Font),  // version
+		blurbH,                           // blurb
+		ui.LineHeight(th.Body, th.Font),  // repo
+		ui.LineHeight(th.Body, th.Font),  // docs
+		th.ControlHeight,                 // close row
+	}
+	content := 2 * th.Pad
+	for i, h := range rows {
+		if i > 0 {
+			content += th.Gap
+		}
+		content += h
+	}
+
+	width := min(bounds.W-2*th.Pad, infoCardWidth)
+	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
+	if card.W <= 0 || card.H <= 0 {
+		return out
+	}
+	card.Y = max(card.Y, th.Gap)
+
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+
+	ui.Label(ctx, body.Next(rows[0]), i18n.Get("about.title"), ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(rows[1]), i18n.Sprintf("about.version", a.opts.Version), ui.LabelStyle{Color: th.TextMuted})
+	ui.Label(ctx, body.Next(rows[2]), i18n.Get("about.blurb"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	ui.Label(ctx, body.Next(rows[3]), i18n.Get("about.repo"), ui.LabelStyle{Color: th.TextMuted})
+	ui.Label(ctx, body.Next(rows[4]), i18n.Get("about.docs"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+
+	foot := body.Next(rows[5])
+	closeBtn := ui.Button{ID: idAboutClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
+	closeRect, _ := ui.CutRight(foot, closeBtn.Width(ctx))
+	if closeBtn.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentAboutClose}
+	}
+	return out
+}
+
+// drawQuickPickModal offers the tray click's workspace as one large tile per
+// open mode. It is a chooser, not a session: picking a tile runs the exact
+// shell path for that mode (display, console seat, web view, terminal,
+// browser) and closes the picker, while a synchronously failing pick stays
+// open with the error inside for a retry or another choice.
+func (a *App) drawQuickPickModal(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	var out intent
+
+	ws := a.m.Picker
+	if ws == nil {
+		return out
+	}
+	modes := tray.ModesFor(trayKindOf(*ws))
+	if len(modes) == 0 {
+		return out
+	}
+
+	ctx.Canvas.Fill(bounds, modalScrim)
+
+	glyphH := 56
+	tileH := glyphH + th.Gap + th.ControlHeight + th.Gap/2 + ui.LineHeight(th.Small, th.Font)
+	rows := []int{
+		ui.TextHeight(th.Title, th.Font), // title (workspace key)
+		ui.LineHeight(th.Body, th.Font),  // subtitle
+		tileH,                            // tiles
+		ui.LineHeight(th.Small, th.Font), // hint
+		th.ControlHeight,                 // close row
+	}
+	errH := 0
+	if a.m.PickerErr != "" {
+		errH = ui.LineHeight(th.Body, th.Font)
+	}
+	content := 2*th.Pad + errH
+	for i, h := range rows {
+		if i > 0 || errH > 0 {
+			content += th.Gap
+		}
+		content += h
+	}
+
+	width := min(bounds.W-2*th.Pad, infoCardWidth)
+	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
+	if card.W <= 0 || card.H <= 0 {
+		return out
+	}
+	card.Y = max(card.Y, th.Gap)
+
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+
+	ui.Label(ctx, body.Next(rows[0]), ws.Key(), ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(rows[1]), i18n.Get("pick.subtitle"), ui.LabelStyle{Color: th.TextMuted})
+
+	tiles := body.Next(rows[2])
+	widths := make([]int, len(modes))
+	cols := ui.Row(tiles, th.Gap, widths...)
+	for i, mode := range modes {
+		if a.drawPickTile(cols[i], glyphH, ws, mode) ||
+			ctx.Input.RuneChord(keysym.ModNone, '1'+rune(i)) {
+			out = intent{kind: intentPickMode, mode: mode}
+		}
+	}
+
+	if a.m.PickerErr != "" {
+		ui.Label(ctx, body.Next(errH), a.m.PickerErr, ui.LabelStyle{Color: th.Danger, Wrap: true})
+	}
+	ui.Label(ctx, body.Next(rows[3]), i18n.Sprintf("pick.hint", len(modes)), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+
+	foot := body.Next(rows[4])
+	closeBtn := ui.Button{ID: idPickClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
+	closeRect, _ := ui.CutRight(foot, closeBtn.Width(ctx))
+	if closeBtn.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentPickClose}
+	}
+	return out
+}
+
+// drawPickTile draws one quick-pick tile — a vector glyph, the mode button
+// and its hint — and reports whether it was chosen. The button carries the
+// focus-ring identity, so tiles are Tab-navigable like every other control.
+func (a *App) drawPickTile(r ui.Rect, glyphH int, ws *kwclient.Workspace, mode tray.Mode) bool {
+	th := a.opts.Theme
+	ctx := a.ctx
+
+	ctx.Canvas.FillRounded(r, th.Radius, th.SurfaceAlt)
+	ctx.Canvas.StrokeRounded(r, th.Radius, th.BorderWidth, th.Border)
+
+	inner := ui.Inset(r, th.Gap)
+	glyph := ui.Rect{X: inner.X, Y: inner.Y, W: inner.W, H: glyphH}
+	drawPickGlyph(ctx, glyph, mode)
+
+	rest := ui.Rect{X: inner.X, Y: inner.Y + glyphH + th.Gap, W: inner.W, H: inner.H - glyphH - th.Gap}
+	nameH := th.ControlHeight
+	nameRect := ui.Rect{X: rest.X, Y: rest.Y, W: rest.W, H: min(nameH, rest.H)}
+	chosen := false
+	if nameRect.H > 0 {
+		b := ui.Button{
+			ID:      ui.FocusID(fmt.Sprintf("pick-mode-%d", mode)),
+			Text:    pickModeLabel(ws, mode),
+			Variant: ui.ButtonSecondary,
+		}
+		chosen = b.Layout(ctx, nameRect)
+	}
+	hintRect := ui.Rect{X: rest.X, Y: rest.Y + nameH + th.Gap/2, W: rest.W, H: rest.H - nameH - th.Gap/2}
+	if hintRect.H > 0 {
+		ui.Label(ctx, hintRect, pickModeHint(ws, mode), ui.LabelStyle{
+			Color: th.TextMuted, Scale: th.Small, Align: ui.AlignCenter, Wrap: true,
+		})
+	}
+	return chosen
+}
+
+// pickModeLabel names an open mode the way the picker shows it.
+func pickModeLabel(ws *kwclient.Workspace, mode tray.Mode) string {
+	switch mode {
+	case tray.ModeDisplay:
+		return i18n.Get("pick.display")
+	case tray.ModeSerial:
+		return i18n.Get("pick.serial")
+	case tray.ModeSSH:
+		return i18n.Get("pick.ssh")
+	case tray.ModeWeb:
+		return i18n.Get("pick.web")
+	case tray.ModeTerminal:
+		return i18n.Get("pick.terminal")
+	default:
+		return i18n.Get("pick.browser")
+	}
+}
+
+// pickModeHint says what a mode does, including which display transport a
+// VM will get — the capability advert the session dialler decides on.
+func pickModeHint(ws *kwclient.Workspace, mode tray.Mode) string {
+	switch mode {
+	case tray.ModeDisplay:
+		if ws != nil && ws.HasTier1() {
+			return i18n.Get("pick.hintDisplayTier1")
+		}
+		return i18n.Get("pick.hintDisplayTier0")
+	case tray.ModeSerial:
+		return i18n.Get("pick.hintSerial")
+	case tray.ModeSSH:
+		return i18n.Get("pick.hintSSH")
+	case tray.ModeWeb:
+		return i18n.Get("pick.hintWeb")
+	case tray.ModeTerminal:
+		return i18n.Get("pick.hintTerminal")
+	default:
+		return i18n.Get("pick.hintBrowser")
+	}
+}
+
+// drawPickGlyph draws a tile's vector icon from canvas primitives: a
+// monitor for the display, log lines for the serial console, a key for
+// SSH, a globe for the embedded web view, ">_" for the terminal, and a
+// browser window for the system-browser grant.
+func drawPickGlyph(ctx *ui.Context, r ui.Rect, mode tray.Mode) {
+	th := ctx.Theme
+	ink := th.Accent
+	cx := r.X + r.W/2
+	switch mode {
+	case tray.ModeDisplay:
+		w, h := min(r.W*3/4, 64), r.H*3/5
+		box := ui.Rect{X: cx - w/2, Y: r.Y + 2, W: w, H: h}
+		ctx.Canvas.StrokeRounded(box, 3, 2, ink)
+		ctx.Canvas.Line(cx, box.Y+box.H, cx, r.Y+r.H-5, 2, ink)
+		ctx.Canvas.Line(cx-9, r.Y+r.H-3, cx+9, r.Y+r.H-3, 2, ink)
+	case tray.ModeSerial:
+		w := min(r.W/2, 44)
+		for i := 0; i < 3; i++ {
+			y := r.Y + 10 + i*12
+			ctx.Canvas.Line(cx-w/2, y, cx-w/2+(w*(3-i))/3, y, 2, ink)
+		}
+	case tray.ModeSSH:
+		bow := ui.Rect{X: cx - 20, Y: r.Y + 8, W: 16, H: 16}
+		ui.Dot(ctx, bow, ink)
+		ctx.Canvas.Line(cx-4, r.Y+16, cx+20, r.Y+16, 2, ink)
+		ctx.Canvas.Line(cx+12, r.Y+16, cx+12, r.Y+24, 2, ink)
+		ctx.Canvas.Line(cx+19, r.Y+16, cx+19, r.Y+24, 2, ink)
+	case tray.ModeWeb:
+		d := min(r.W, r.H) - 12
+		globe := ui.Rect{X: cx - d/2, Y: r.Y + 6, W: d, H: d}
+		ctx.Canvas.StrokeRounded(globe, d/2, 2, ink)
+		ctx.Canvas.Line(globe.X, globe.Y+d/2, globe.X+d, globe.Y+d/2, 2, ink)
+	case tray.ModeTerminal:
+		ui.Label(ctx, r, ">_", ui.LabelStyle{Color: ink, Scale: th.Title, Align: ui.AlignCenter, Middle: true})
+	default:
+		w, h := min(r.W*3/4, 64), r.H*3/5
+		box := ui.Rect{X: cx - w/2, Y: r.Y + 2, W: w, H: h}
+		ctx.Canvas.StrokeRounded(box, 3, 2, ink)
+		ctx.Canvas.Line(box.X, box.Y+10, box.X+w, box.Y+10, 2, ink)
 	}
 }
