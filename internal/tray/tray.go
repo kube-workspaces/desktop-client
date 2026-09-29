@@ -87,6 +87,9 @@ const (
 	// its live window, open it directly, or offer the quick-pick window,
 	// per the shell's policy.
 	ActionOpen ActionKind = iota
+	// ActionShow asks for the shell's main window: show it if minimized
+	// to the tray, and raise it either way.
+	ActionShow
 	// ActionAbout asks for the About panel.
 	ActionAbout
 	// ActionQuit asks the application to quit.

@@ -255,6 +255,10 @@ type App struct {
 	trayCh      chan tray.Action
 	traySig     string
 	trayRetryAt time.Time
+	// shellHidden reports that the main window is minimized into the
+	// tray. Sessions keep stepping while it is set; the tray's opener
+	// clears it.
+	shellHidden bool
 
 	// The surface. img is reallocated on resize; canvas wraps it.
 	img           *image.RGBA
@@ -533,11 +537,30 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 	a.pollFresh()
 	events := a.events
 	a.events = events[:0]
+	closeRequested, globalQuit := scanQuit(events)
 	a.in = a.in.Fold(now, events)
 	if len(events) > 0 {
 		a.dirty = true
 	}
-	if a.in.Quit {
+	if globalQuit {
+		a.quit = true
+		return nil
+	}
+	if closeRequested {
+		// The main window's close button arrived. With a live tray this
+		// asks first — quit, or minimize into the tray and keep
+		// running — instead of quitting outright. in.Quit is sticky,
+		// so diverting consumes it here; the dialog's answer is what
+		// finally quits or hides. A repeat close while the question is
+		// open is swallowed: the answer is already being asked for.
+		a.in.Quit = false
+		if a.tray != nil && !a.m.CloseConfirm {
+			a.m.ShowCloseConfirm()
+		} else if a.tray == nil {
+			a.quit = true
+			return nil
+		}
+	} else if a.in.Quit {
 		a.quit = true
 		return nil
 	}
@@ -667,6 +690,11 @@ func (a *App) draw(ctx context.Context) error {
 	// click cannot fall through the scrim onto the screen beneath.
 	if a.m.About {
 		intent = a.drawAboutModal(a.canvas.Bounds())
+	}
+	// The close question overlays like About, and wins over it: it answers
+	// whether the application keeps running at all.
+	if a.m.CloseConfirm {
+		intent = a.drawCloseConfirmModal(a.canvas.Bounds())
 	}
 	a.ctx.End()
 

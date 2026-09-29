@@ -53,3 +53,19 @@ func TestNewSDLTrayNeverPanics(t *testing.T) {
 type discardHandler struct{}
 
 func (discardHandler) Handle(tray.Action) {}
+
+// TestStaticTrayEntriesOrder pins the fixed menu: the main-window opener
+// leads (it is the entry a minimized window is reopened from), then the
+// Workspaces submenu's neighbours About and Quit.
+func TestStaticTrayEntriesOrder(t *testing.T) {
+	entries := staticTrayEntries()
+	if len(entries) != 3 {
+		t.Fatalf("static entries = %d, want 3", len(entries))
+	}
+	if entries[0].label != "Open Kube Workspaces" || entries[0].action.Kind != tray.ActionShow {
+		t.Fatalf("first entry = %+v, want the main-window opener", entries[0])
+	}
+	if entries[1].action.Kind != tray.ActionAbout || entries[2].action.Kind != tray.ActionQuit {
+		t.Fatalf("entries = %+v, want About then Quit", entries)
+	}
+}

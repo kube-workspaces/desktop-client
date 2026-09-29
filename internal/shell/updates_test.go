@@ -230,9 +230,9 @@ func TestRestartUpdatePreservesHeldSessions(t *testing.T) {
 		t.Fatal("update interrupted a parked session")
 	}
 	delete(r.app.sessions, "held")
-	webProcesses.Add(1)
+	webChildStarted("test/web-blocker")
 	r.app.restartUpdate()
-	webProcesses.Add(-1)
+	webChildExited("test/web-blocker")
 	if restarted || r.app.quit {
 		t.Fatal("update interrupted a web child")
 	}

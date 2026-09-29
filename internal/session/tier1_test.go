@@ -281,6 +281,8 @@ func (f *fakeTier1Backend) SetTitle(string) error                     { return n
 func (f *fakeTier1Backend) SetFullscreen(bool) error                  { return nil }
 func (f *fakeTier1Backend) Fullscreen() bool                          { return false }
 func (f *fakeTier1Backend) Raise() error                              { return nil }
+func (f *fakeTier1Backend) Hide() error                               { return nil }
+func (f *fakeTier1Backend) Show() error                               { return nil }
 func (f *fakeTier1Backend) WindowID() uint32                          { return 0 }
 func (f *fakeTier1Backend) SetCursor(shape *viewer.CursorShape) error {
 	f.mu.Lock()

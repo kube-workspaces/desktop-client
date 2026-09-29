@@ -110,6 +110,7 @@ var english = map[string]string{
 	"workspaces.noSave":        "Signed in, but the session could not be saved: %s",
 	"workspaces.mustChange":    "This account must change its password in the web UI.",
 	"workspaces.openedView":    "Opened %s in the web view.",
+	"workspaces.alreadyOpen":   "%s is already open.",
 	"workspaces.opened":        "Opened %s in your browser.",
 	"workspaces.noBrowser":     "No browser could be opened. Visit %s",
 	"workspaces.viewFailed":    "Web view could not be started (%v). The browser path still works.",
@@ -243,6 +244,13 @@ var english = map[string]string{
 	"about.blurb":   "A native desktop client for kube-workspaces: Tier 1 agent video where the image carries one, agentless console everywhere else.",
 	"about.repo":    "github.com/kube-workspaces/desktop-client",
 	"about.docs":    "Desktop-client docs ship with the platform site under /docs/desktop-client/.",
+
+	// Main-window close question (minimize to tray vs quit).
+	"close.title":    "Close the main window?",
+	"close.message":  "Sessions stay connected either way. Minimizing keeps Kube Workspaces in the system tray — reopen it from the tray menu. Quitting disconnects everything.",
+	"close.quit":     "Quit",
+	"close.minimize": "Minimize to tray",
+	"close.cancel":   "Cancel",
 
 	// Failure sentences (Describe and friends).
 	"errors.cancelled":      "Cancelled.",

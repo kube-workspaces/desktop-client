@@ -11,6 +11,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/tray"
+	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
@@ -78,8 +79,7 @@ func (a *App) reconcileTray(now time.Time) {
 		a.traySig = ""
 	}
 	if a.tray != nil && !enabled {
-		a.tray.Close()
-		a.tray = nil
+		a.closeTray()
 		a.traySig = ""
 		return
 	}
@@ -93,9 +93,57 @@ func (a *App) reconcileTray(now time.Time) {
 	a.tray.Pump()
 }
 
-// closeTray destroys the tray on the way out. Held sessions are handed
-// back separately (see [App.Run]); this only removes the icon.
+// scanQuit separates a main-window close request from a global quit in one
+// event batch. a.events holds only the shell window's routed events, so a
+// close here is the main window's close button; session windows consume
+// their own closes before the pump ever sees them.
+func scanQuit(events []ui.Event) (closeRequested, globalQuit bool) {
+	for _, e := range events {
+		switch e.(type) {
+		case viewer.EventWindowClose:
+			closeRequested = true
+		case viewer.EventQuit:
+			globalQuit = true
+		}
+	}
+	return closeRequested, globalQuit
+}
+
+// hideShellToTray minimizes the main window into the tray: the window
+// leaves the screen, taskbar and window list while sessions keep stepping
+// beside the tray icon. The window, its textures and the event queue all
+// survive, so showing it later restores exactly what was there.
+func (a *App) hideShellToTray() {
+	if err := a.be.Hide(); err != nil {
+		a.logf("tray: hide window: %v", err)
+		return
+	}
+	a.shellHidden = true
+	a.dirty = true
+}
+
+// showShell restores a minimized main window and raises it. Showing an
+// already-visible window only raises, so the tray's opener needs no state
+// of its own.
+func (a *App) showShell() {
+	if a.shellHidden {
+		if err := a.be.Show(); err != nil {
+			a.logf("tray: show window: %v", err)
+			return
+		}
+		a.shellHidden = false
+	}
+	_ = a.be.Raise()
+	a.dirty = true
+}
+
+// closeTray destroys the tray on the way out. A hidden main window is
+// shown first: destroying the tray while the window is hidden would strand
+// the process with no way back in except the task manager.
 func (a *App) closeTray() {
+	if a.shellHidden {
+		a.showShell()
+	}
 	if a.tray != nil {
 		a.tray.Close()
 		a.tray = nil
@@ -158,11 +206,13 @@ func (a *App) drainTray(ctx context.Context) {
 	}
 }
 
-// applyTrayAction performs one menu click: About opens the panel, Quit
-// quits through the same flag the window-close path sets, and Open
-// focuses, picks or opens the workspace.
+// applyTrayAction performs one menu click: Show restores the main window,
+// About opens the panel, Quit quits through the same flag the window-close
+// path sets, and Open focuses, picks or opens the workspace.
 func (a *App) applyTrayAction(ctx context.Context, action tray.Action) {
 	switch action.Kind {
+	case tray.ActionShow:
+		a.showShell()
 	case tray.ActionAbout:
 		a.m.ShowAbout()
 	case tray.ActionQuit:

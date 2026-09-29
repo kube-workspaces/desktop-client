@@ -194,7 +194,7 @@ func (a *App) restartUpdate() {
 			a.updates.status = i18n.Sprintf("updates.failed", "installer restart unavailable")
 			return
 		}
-		if len(a.sessions) != 0 || webProcesses.Load() != 0 || a.m.State == StateSession {
+		if len(a.sessions) != 0 || webChildCount() != 0 || a.m.State == StateSession {
 			a.updates.status = i18n.Get("updates.sessions")
 			a.updates.upToDate = false
 			return
@@ -213,7 +213,7 @@ func (a *App) restartUpdate() {
 	if a.updates.prepared == nil || a.opts.RestartUpdate == nil {
 		return
 	}
-	if len(a.sessions) != 0 || webProcesses.Load() != 0 || a.m.State == StateSession {
+	if len(a.sessions) != 0 || webChildCount() != 0 || a.m.State == StateSession {
 		a.updates.status = i18n.Get("updates.sessions")
 		a.updates.upToDate = false
 		return
@@ -381,7 +381,7 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 		{"update-auto", i18n.Get(label), intentToggleUpdate, managed},
 		{"update-check", i18n.Get("updates.check"), intentCheckUpdate, managed || a.updates.busy || a.updates.prepared != nil || a.updates.msi != nil},
 		{"update-download", i18n.Get("updates.download"), intentDownloadUpdate, managed || a.updates.busy || !a.updates.result.Available || a.updates.prepared != nil || a.updates.msi != nil},
-		{"update-restart", i18n.Get("updates.restart"), intentRestartUpdate, managed || (a.updates.prepared == nil && a.updates.msi == nil) || len(a.sessions) != 0 || webProcesses.Load() != 0},
+		{"update-restart", i18n.Get("updates.restart"), intentRestartUpdate, managed || (a.updates.prepared == nil && a.updates.msi == nil) || len(a.sessions) != 0 || webChildCount() != 0},
 		{"update-back", i18n.Get("settings.done"), intentSettingsDone, false},
 	} {
 		button := ui.Button{ID: ui.FocusID(b.id), Text: b.text, Disabled: b.disabled}
@@ -389,7 +389,7 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 			out = intent{kind: b.kind}
 		}
 	}
-	if len(a.sessions) != 0 || webProcesses.Load() != 0 {
+	if len(a.sessions) != 0 || webChildCount() != 0 {
 		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2), i18n.Get("updates.sessions"), ui.LabelStyle{Wrap: true})
 	}
 	if ctx.Input.KeyPressed(keysym.KeyEscape) {

@@ -40,6 +40,10 @@ type fakeBackend struct {
 	texW, texH  int
 	title       string
 	fullscreen  bool
+	hidden      bool
+	hides       int
+	shows       int
+	raises      int
 	queue       []viewer.Event
 	uploads     int
 	presents    int
@@ -136,8 +140,32 @@ func (f *fakeBackend) PollEvents(dst []viewer.Event) []viewer.Event { return f.d
 func (f *fakeBackend) Size() (int, int)                             { return f.size() }
 func (f *fakeBackend) ScaleFactor() float64                         { return f.scale() }
 func (f *fakeBackend) Fullscreen() bool                             { return f.isFullscreen() }
-func (f *fakeBackend) Raise() error                                 { return nil }
-func (f *fakeBackend) WindowID() uint32                             { return 0 }
+func (f *fakeBackend) Raise() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.raises++
+	return nil
+}
+func (f *fakeBackend) Hide() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hidden = true
+	f.hides++
+	return nil
+}
+func (f *fakeBackend) Show() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hidden = false
+	f.shows++
+	return nil
+}
+func (f *fakeBackend) isHidden() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hidden
+}
+func (f *fakeBackend) WindowID() uint32 { return 0 }
 
 func (f *fakeBackend) OpenAudio(format viewer.AudioFormat) error {
 	f.mu.Lock()

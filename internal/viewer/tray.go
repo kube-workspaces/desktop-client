@@ -39,6 +39,24 @@ const (
 // the result exists even though SDL ignores it. See TestTrayCallbackShape.
 type trayCallbackFunc func(userdata, entry uintptr) uintptr
 
+// staticTrayEntries is the fixed menu around the Workspaces submenu, in
+// order: the main-window opener first (it is the reason the tray exists
+// once the window can hide into it), then About and Quit. Pure data, so
+// the order is pinned by test without a display.
+func staticTrayEntries() []struct {
+	label  string
+	action tray.Action
+} {
+	return []struct {
+		label  string
+		action tray.Action
+	}{
+		{"Open Kube Workspaces", tray.Action{Kind: tray.ActionShow}},
+		{"About", tray.Action{Kind: tray.ActionAbout}},
+		{"Quit", tray.Action{Kind: tray.ActionQuit}},
+	}
+}
+
 // trayIconSize is the tray icon's pixel size. Notification areas render
 // small; handing SDL the 256 px window icon and hoping the platform
 // downscales it well is how tray icons end up a blurry cube.
@@ -113,6 +131,17 @@ func NewSDLTray(handler tray.Handler) (t *SDLTray, err error) {
 	}
 	t.cbFunc = func(_, entry uintptr) uintptr { t.dispatch(entry); return 0 }
 	t.cb = sdl.TrayCallback(purego.NewCallback(t.cbFunc))
+	// The main-window opener leads the menu, before the Workspaces
+	// submenu: it is the entry the user reaches for when the window is
+	// hidden in the tray.
+	for _, s := range staticTrayEntries() {
+		if s.action.Kind == tray.ActionShow {
+			if !t.insertStatic(menu, s.label, s.action) {
+				t.Close()
+				return nil, errors.New("viewer: tray entry creation failed")
+			}
+		}
+	}
 	wsHolder := menu.InsertEntryAt(-1, "Workspaces", trayEntrySubmenu)
 	if wsHolder == nil {
 		t.Close()
@@ -123,23 +152,27 @@ func NewSDLTray(handler tray.Handler) (t *SDLTray, err error) {
 		t.Close()
 		return nil, errors.New("viewer: tray submenu creation failed")
 	}
-	static := []struct {
-		label  string
-		action tray.Action
-	}{
-		{"About", tray.Action{Kind: tray.ActionAbout}},
-		{"Quit", tray.Action{Kind: tray.ActionQuit}},
-	}
-	for _, s := range static {
-		e := menu.InsertEntryAt(-1, s.label, trayEntryButton)
-		if e == nil {
-			t.Close()
-			return nil, errors.New("viewer: tray entry creation failed")
+	for _, s := range staticTrayEntries() {
+		if s.action.Kind != tray.ActionShow {
+			if !t.insertStatic(menu, s.label, s.action) {
+				t.Close()
+				return nil, errors.New("viewer: tray entry creation failed")
+			}
 		}
-		e.SetCallback(t.cb)
-		t.byEntry[entryID(e)] = s.action
 	}
 	return t, nil
+}
+
+// insertStatic appends one fixed menu entry and wires its click action,
+// reporting whether the platform accepted it.
+func (t *SDLTray) insertStatic(menu *sdl.TrayMenu, label string, action tray.Action) bool {
+	e := menu.InsertEntryAt(-1, label, trayEntryButton)
+	if e == nil {
+		return false
+	}
+	e.SetCallback(t.cb)
+	t.byEntry[entryID(e)] = action
+	return true
 }
 
 // Update implements [tray.Backend]: it rebuilds the Workspaces submenu from

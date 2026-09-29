@@ -355,6 +355,14 @@ type Backend interface {
 	// that cannot raise reports nil and does nothing observable.
 	Raise() error
 
+	// Hide removes the window from the screen, taskbar and window list
+	// without destroying it, for the minimize-to-tray flow: the shell
+	// window goes away while sessions stay live beside the tray icon.
+	// Show reverses it. Both are best-effort like [Backend.Raise]: a
+	// backend that cannot hide reports nil and does nothing observable.
+	Hide() error
+	Show() error
+
 	// WindowID identifies the window for event routing. The single pump
 	// of a multi-window process drains the platform queue once and hands
 	// each event to the window it names; this is the identity it routes

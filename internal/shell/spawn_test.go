@@ -190,3 +190,60 @@ func TestSpawnWebForwardsLaunchDisplay(t *testing.T) {
 		}
 	})
 }
+
+// TestSpawnWebTracksChildWhileAlive checks the registry end to end: a spawn
+// marks the workspace open until the child process actually exits, so a
+// repeat open in between reports instead of duplicating the window, and the
+// next open after the exit spawns again. The blocker script stays alive
+// until the test releases it, so neither direction races the reaper.
+func TestSpawnWebTracksChildWhileAlive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("spawn tests exec /bin/sh shell scripts; verify on linux/darwin")
+	}
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	stop := filepath.Join(dir, "stop")
+
+	exe := filepath.Join(dir, "kube-workspaces")
+	body := "#!/bin/sh\ntouch \"" + started + "\"\nwhile [ ! -e \"" + stop + "\" ]; do sleep 0.05; done\n"
+	if err := os.WriteFile(exe, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const key = "team/tracked"
+	t.Cleanup(func() {
+		for webChildOpen(key) {
+			webChildExited(key)
+		}
+	})
+	if err := spawnWebExe(exe, "", "team", "tracked", ""); err != nil {
+		t.Fatalf("spawnWebExe: %v", err)
+	}
+	waitForFile(t, started)
+	if !webChildOpen(key) {
+		t.Fatal("spawned child does not read open while alive")
+	}
+	if err := os.WriteFile(stop, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for webChildOpen(key) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if webChildOpen(key) {
+		t.Fatal("child still reads open after its process exited")
+	}
+}
+
+// waitForFile waits for path to appear, failing the test on timeout.
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s never appeared", path)
+}

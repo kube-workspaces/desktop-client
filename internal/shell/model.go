@@ -162,6 +162,11 @@ type Model struct {
 	// picker is already closed by then.
 	PickerErr string
 
+	// CloseConfirm reports whether the main-window close question is open:
+	// quit the application, or minimize to the tray and keep running. It
+	// overlays whatever screen is showing, like About.
+	CloseConfirm bool
+
 	// SessionList reports whether the sessions modal is open.
 	SessionList bool
 
@@ -194,6 +199,7 @@ func (m *Model) NeedServer(reason string) {
 	m.About = false
 	m.Picker = nil
 	m.PickerErr = ""
+	m.CloseConfirm = false
 	m.OpenTerminal = ""
 	m.OpenSSHUser = ""
 	m.OpenSSHKeyPEM = nil
@@ -245,6 +251,7 @@ func (m *Model) SignOut(reason string) {
 	m.About = false
 	m.Picker = nil
 	m.PickerErr = ""
+	m.CloseConfirm = false
 	m.OpenTerminal = ""
 	m.OpenSSHUser = ""
 	m.OpenSSHKeyPEM = nil
@@ -444,6 +451,15 @@ func (m *Model) ClosePicker() {
 	m.Picker = nil
 	m.PickerErr = ""
 }
+
+// ShowCloseConfirm opens the main-window close question.
+func (m *Model) ShowCloseConfirm() {
+	m.Err, m.Notice = "", ""
+	m.CloseConfirm = true
+}
+
+// CloseCloseConfirm dismisses the main-window close question.
+func (m *Model) CloseCloseConfirm() { m.CloseConfirm = false }
 
 // CloseSessionList dismisses the sessions modal.
 func (m *Model) CloseSessionList() { m.SessionList = false }

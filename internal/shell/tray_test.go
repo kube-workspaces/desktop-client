@@ -14,6 +14,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/tray"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
 // fakeTray is a [tray.Backend] that records menus instead of showing one.
@@ -444,4 +445,233 @@ func lookupMust(t *testing.T, r *rig, key string) kwclient.Workspace {
 		t.Fatalf("workspace %s not in list", key)
 	}
 	return ws
+}
+
+// TestWebChildRegistry pins the per-workspace child tracking: starts and
+// exits pair up, double starts refcount, and a stray exit changes nothing.
+func TestWebChildRegistry(t *testing.T) {
+	const key = "test/registry-ws"
+	t.Cleanup(func() {
+		for webChildOpen(key) {
+			webChildExited(key)
+		}
+	})
+	if webChildOpen(key) {
+		t.Fatal("fresh key reads open")
+	}
+	webChildExited(key)
+	if got := webChildCount(); got < 0 {
+		t.Fatalf("stray exit drove the count to %d", got)
+	}
+	webChildStarted(key)
+	webChildStarted(key)
+	if !webChildOpen(key) {
+		t.Fatal("started key does not read open")
+	}
+	webChildExited(key)
+	if !webChildOpen(key) {
+		t.Fatal("double start collapsed after one exit")
+	}
+	webChildExited(key)
+	if webChildOpen(key) {
+		t.Fatal("key still open after paired exits")
+	}
+}
+
+// TestOpenWebSkipsDuplicate: opening the web view while its child is alive
+// reports instead of spawning a second window; after the child exits the
+// next open spawns again.
+func TestOpenWebSkipsDuplicate(t *testing.T) {
+	r, _ := trayRig(t)
+	ws := lookupMust(t, r, "team/web-a")
+	const key = "team/web-a"
+	t.Cleanup(func() {
+		for webChildOpen(key) {
+			webChildExited(key)
+		}
+	})
+	webChildStarted(key)
+	r.app.openWeb(context.Background(), ws)
+	if len(r.webbed) != 0 {
+		t.Fatalf("duplicate web child spawned: %+v", r.webbed)
+	}
+	if r.app.m.Notice == "" || r.app.m.Err != "" {
+		t.Fatalf("duplicate open should notice, got err %q notice %q", r.app.m.Err, r.app.m.Notice)
+	}
+	webChildExited(key)
+	r.app.openWeb(context.Background(), ws)
+	if len(r.webbed) != 1 {
+		t.Fatalf("webbed = %+v, want one spawn after the child exited", r.webbed)
+	}
+}
+
+// TestPickWebSkipsDuplicate: the picker's Web tile on an already-open web
+// view closes the picker with a notice and spawns nothing.
+func TestPickWebSkipsDuplicate(t *testing.T) {
+	r, _ := trayRig(t)
+	const key = "team/web-a"
+	t.Cleanup(func() {
+		for webChildOpen(key) {
+			webChildExited(key)
+		}
+	})
+	webChildStarted(key)
+	r.app.m.ShowPicker(lookupMust(t, r, key))
+	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeWeb})
+	if r.app.m.Picker != nil {
+		t.Fatal("picker stayed open on a duplicate Web pick")
+	}
+	if len(r.webbed) != 0 {
+		t.Fatalf("duplicate web child spawned: %+v", r.webbed)
+	}
+	if r.app.m.Notice == "" {
+		t.Fatal("duplicate Web pick reported nothing")
+	}
+}
+
+// TestCloseWithTrayAsksFirst: the main window's close button opens the
+// quit-or-minimize question instead of quitting when a tray is live.
+func TestCloseWithTrayAsksFirst(t *testing.T) {
+	r, _ := trayRig(t)
+	if r.app.tray == nil {
+		t.Fatal("no tray backend after start")
+	}
+	r.be.send(viewer.EventWindowClose{})
+	r.step()
+	if r.app.quit {
+		t.Fatal("window close quit outright with a live tray")
+	}
+	if !r.app.m.CloseConfirm {
+		t.Fatal("window close did not open the close question")
+	}
+}
+
+// TestCloseWithoutTrayQuits: with no tray there is nothing to minimize
+// into, so the close quits exactly as before.
+func TestCloseWithoutTrayQuits(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.start()
+	r.settle()
+	if r.app.tray != nil {
+		t.Fatal("fake backend should get no tray")
+	}
+	r.be.send(viewer.EventWindowClose{})
+	r.step()
+	if !r.app.quit {
+		t.Fatal("window close did not quit with no tray")
+	}
+	if r.app.m.CloseConfirm {
+		t.Fatal("close question opened with no tray")
+	}
+}
+
+// TestCloseConfirmQuit: answering Quit quits and closes the question.
+func TestCloseConfirmQuit(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.m.ShowCloseConfirm()
+	r.app.act(context.Background(), intent{kind: intentCloseQuit})
+	if !r.app.quit {
+		t.Fatal("Quit answer did not quit")
+	}
+	if r.app.m.CloseConfirm {
+		t.Fatal("question stayed open after Quit")
+	}
+}
+
+// TestCloseConfirmCancel: Esc dismisses the question; the app keeps running
+// with its window.
+func TestCloseConfirmCancel(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.m.ShowCloseConfirm()
+	r.press(keysym.KeyEscape, keysym.ModNone)
+	if r.app.m.CloseConfirm {
+		t.Fatal("Esc did not dismiss the close question")
+	}
+	if r.app.quit || r.app.shellHidden || r.be.isHidden() {
+		t.Fatal("cancel changed more than the question")
+	}
+}
+
+// TestCloseConfirmMinimizeHides: answering Minimize hides the main window
+// without quitting, and live sessions keep stepping beside the tray.
+func TestCloseConfirmMinimizeHides(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.m.Open(lookupMust(t, r, "team/vm-a"))
+	r.settle()
+	if !r.app.isLive("team/vm-a") {
+		t.Fatalf("no live display (state %v, err %q)", r.app.m.State, r.app.m.Err)
+	}
+	w := r.app.live["team/vm-a"].window.(*fakeLiveWindow)
+	r.app.m.ShowCloseConfirm()
+	r.app.act(context.Background(), intent{kind: intentCloseMinimize})
+	if r.app.quit {
+		t.Fatal("minimize quit the app")
+	}
+	if r.app.m.CloseConfirm {
+		t.Fatal("question stayed open after Minimize")
+	}
+	if !r.app.shellHidden || !r.be.isHidden() {
+		t.Fatal("main window did not hide")
+	}
+	steps := w.steps
+	for i := 0; i < 3; i++ {
+		r.step()
+	}
+	if !r.app.isLive("team/vm-a") {
+		t.Fatal("session parked when the main window hid")
+	}
+	if w.steps <= steps {
+		t.Fatal("session stopped stepping while the main window hid")
+	}
+}
+
+// TestCloseRepeatWhileModalStays: hammering the close button with the
+// question open neither quits nor stacks questions.
+func TestCloseRepeatWhileModalStays(t *testing.T) {
+	r, _ := trayRig(t)
+	r.be.send(viewer.EventWindowClose{})
+	r.step()
+	r.be.send(viewer.EventWindowClose{})
+	r.step()
+	if r.app.quit {
+		t.Fatal("repeat close quit with the question open")
+	}
+	if !r.app.m.CloseConfirm {
+		t.Fatal("question closed without an answer")
+	}
+}
+
+// TestTrayShowRestoresHiddenWindow: the tray's opener shows a minimized
+// main window; on a visible one it only raises.
+func TestTrayShowRestoresHiddenWindow(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.hideShellToTray()
+	if !r.be.isHidden() {
+		t.Fatal("hide did not hide")
+	}
+	raises := r.be.raises
+	r.app.trayCh <- tray.Action{Kind: tray.ActionShow}
+	r.step()
+	if r.be.isHidden() || r.app.shellHidden {
+		t.Fatal("Show action did not restore the window")
+	}
+	if r.be.raises != raises+1 {
+		t.Fatal("Show action did not raise the window")
+	}
+}
+
+// TestDisableTrayWhileHiddenRestores: switching the tray off while the
+// window is hidden in it shows the window first — otherwise the process
+// would run on with no way back in.
+func TestDisableTrayWhileHiddenRestores(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.hideShellToTray()
+	r.app.applySettings(Settings{Style: r.app.settings.Style, Mode: r.app.settings.Mode, UIScale: r.app.settings.UIScale, Tray: false})
+	r.step()
+	if r.app.tray != nil {
+		t.Fatal("tray survives being switched off")
+	}
+	if r.be.isHidden() || r.app.shellHidden {
+		t.Fatal("window stayed hidden with the tray gone")
+	}
 }

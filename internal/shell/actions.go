@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
@@ -86,6 +86,9 @@ const (
 	intentAboutClose
 	intentPickMode
 	intentPickClose
+	intentCloseQuit
+	intentCloseMinimize
+	intentCloseCancel
 )
 
 // intent is one frame's outcome.
@@ -262,6 +265,14 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.pickMode(ctx, in.mode)
 	case intentPickClose:
 		a.m.ClosePicker()
+	case intentCloseQuit:
+		a.m.CloseCloseConfirm()
+		a.quit = true
+	case intentCloseMinimize:
+		a.m.CloseCloseConfirm()
+		a.hideShellToTray()
+	case intentCloseCancel:
+		a.m.CloseCloseConfirm()
 	}
 	a.dirty = true
 }
@@ -670,6 +681,14 @@ func (a *App) openWeb(ctx context.Context, ws kwclient.Workspace) {
 	if !ws.Running() {
 		a.m.Notice = ""
 		a.m.Err = i18n.Sprintf("workspaces.notOpenable", ws.Name, StatusText(ws))
+		return
+	}
+	// A webview child is an OS process outside the pump: it cannot be
+	// raised like a session window, so opening again while one is alive
+	// would only duplicate the window. Report it instead of spawning.
+	if webChildOpen(ws.Key()) {
+		a.m.Err = ""
+		a.m.Notice = i18n.Sprintf("workspaces.alreadyOpen", ws.Name)
 		return
 	}
 	profile := ""
@@ -1156,12 +1175,65 @@ func spawnWebExe(exe, profile, namespace, name, launchDisplay string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", what, err)
 	}
-	webProcesses.Add(1)
-	go func() { defer webProcesses.Add(-1); _ = cmd.Wait() }()
+	key := namespace + "/" + name
+	webChildStarted(key)
+	go func() { defer webChildExited(key); _ = cmd.Wait() }()
 	return nil
 }
 
-var webProcesses atomic.Int64
+// webLive tracks the embedded-webview children currently alive, by
+// workspace key ("namespace/name"). Entries are added when the child
+// process starts and removed exactly when it exits (the reaper above), so
+// "open" means the window is up: never a stale entry that would block
+// reopening after the user closed the window, and never a second spawn
+// while one is alive. A child is an OS process outside the SDL pump, so
+// unlike a session window it cannot be raised — callers report it instead
+// of duplicating it.
+var webLive = struct {
+	sync.Mutex
+	keys map[string]int
+	n    int
+}{keys: make(map[string]int)}
+
+// webChildStarted records a spawned child for key.
+func webChildStarted(key string) {
+	webLive.Lock()
+	defer webLive.Unlock()
+	webLive.keys[key]++
+	webLive.n++
+}
+
+// webChildExited forgets one child for key when its process exits. An
+// exit with no recorded start is ignored rather than counted: the count
+// gates restarts, and a negative count would wedge it.
+func webChildExited(key string) {
+	webLive.Lock()
+	defer webLive.Unlock()
+	if webLive.keys[key] <= 0 {
+		return
+	}
+	if webLive.keys[key] == 1 {
+		delete(webLive.keys, key)
+	} else {
+		webLive.keys[key]--
+	}
+	webLive.n--
+}
+
+// webChildOpen reports whether a webview child for key is alive.
+func webChildOpen(key string) bool {
+	webLive.Lock()
+	defer webLive.Unlock()
+	return webLive.keys[key] > 0
+}
+
+// webChildCount reports how many webview children are alive, for the
+// updater's restart gate.
+func webChildCount() int {
+	webLive.Lock()
+	defer webLive.Unlock()
+	return webLive.n
+}
 
 // launchDisplayEnv is the environment variable the shell sets on the spawned
 // web child with the usable bounds, "x,y,w,h", of the display the shell's own
@@ -1296,6 +1368,10 @@ const (
 	idAboutClose ui.FocusID = "about-close"
 
 	idPickClose ui.FocusID = "pick-close"
+
+	idCloseQuit     ui.FocusID = "close-quit"
+	idCloseMinimize ui.FocusID = "close-minimize"
+	idCloseCancel   ui.FocusID = "close-cancel"
 
 	idMsgSel  ui.FocusID = "message"
 	idURLSel  ui.FocusID = "auth-url"

@@ -668,6 +668,31 @@ func (b *SDLBackend) Raise() error {
 	return nil
 }
 
+// Hide removes the shell window from the screen for the minimize-to-tray
+// flow; Show brings it back. The window, its textures and the event queue
+// all survive either call, so sessions keep stepping beside a hidden
+// shell and the tray menu restores exactly what was there.
+func (b *SDLBackend) Hide() error {
+	if b.window == nil {
+		return nil
+	}
+	if err := b.window.Hide(); err != nil {
+		return fmt.Errorf("sdl hide window: %w", err)
+	}
+	return nil
+}
+
+func (b *SDLBackend) Show() error {
+	if b.window == nil {
+		return nil
+	}
+	if err := b.window.Show(); err != nil {
+		return fmt.Errorf("sdl show window: %w", err)
+	}
+	_ = b.window.Sync()
+	return nil
+}
+
 // StartTextInput asks the platform to compose keystrokes into text and deliver
 // the result as [EventText]. [SDLBackend.Open] calls it, because SDL3 starts
 // with text input switched off and a window that never calls it never sees a

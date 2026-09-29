@@ -1947,3 +1947,63 @@ func drawPickGlyph(ctx *ui.Context, r ui.Rect, mode tray.Mode) {
 		ctx.Canvas.Line(box.X, box.Y+10, box.X+w, box.Y+10, 2, ink)
 	}
 }
+
+// drawCloseConfirmModal asks what closing the main window means: quit the
+// application, or minimize into the system tray and keep running. It only
+// ever opens while a tray is live — without one there is nothing to
+// minimize into, and the close quits outright — so the minimize answer is
+// always available when this is drawn.
+func (a *App) drawCloseConfirmModal(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	var out intent
+
+	ctx.Canvas.Fill(bounds, modalScrim)
+
+	rows := []int{
+		ui.TextHeight(th.Title, th.Font),    // title
+		ui.LineHeight(th.Body, th.Font) * 3, // message
+		th.ControlHeight,                    // buttons
+	}
+	content := 2 * th.Pad
+	for i, h := range rows {
+		if i > 0 {
+			content += th.Gap
+		}
+		content += h
+	}
+
+	width := min(bounds.W-2*th.Pad, infoCardWidth)
+	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
+	if card.W <= 0 || card.H <= 0 {
+		return out
+	}
+	card.Y = max(card.Y, th.Gap)
+
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+
+	ui.Label(ctx, body.Next(rows[0]), i18n.Get("close.title"), ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(rows[1]), i18n.Get("close.message"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+
+	foot := body.Next(rows[2])
+	quit := ui.Button{ID: idCloseQuit, Text: i18n.Get("close.quit"), Variant: ui.ButtonDanger}
+	minimize := ui.Button{ID: idCloseMinimize, Text: i18n.Get("close.minimize"), Variant: ui.ButtonPrimary}
+	cancel := ui.Button{ID: idCloseCancel, Text: i18n.Get("close.cancel"), Variant: ui.ButtonQuiet}
+	quitRect, rest := ui.CutLeft(foot, quit.Width(ctx))
+	_, rest = ui.CutLeft(rest, th.Gap)
+	minRect, rest := ui.CutLeft(rest, minimize.Width(ctx))
+	_, rest = ui.CutLeft(rest, th.Gap)
+	cancelRect, _ := ui.CutLeft(rest, cancel.Width(ctx))
+	if quit.Layout(ctx, quitRect) {
+		out = intent{kind: intentCloseQuit}
+	}
+	if minimize.Layout(ctx, minRect) {
+		out = intent{kind: intentCloseMinimize}
+	}
+	if cancel.Layout(ctx, cancelRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentCloseCancel}
+	}
+	return out
+}
