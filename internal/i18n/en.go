@@ -237,6 +237,7 @@ var english = map[string]string{
 	"pick.hintBrowser":      "System browser, signed in",
 	"pick.hint":             "Click an option or press 1-%d  ·  Esc closes",
 	"pick.gone":             "That workspace is no longer running.",
+	"pick.openFailed":       "The window could not be opened: %v.",
 
 	// About panel.
 	"about.title":   "About Kube Workspaces",

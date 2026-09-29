@@ -144,6 +144,10 @@ type Options struct {
 	// otherwise. Tests inject a fake here.
 	TrayNew func(tray.Handler) tray.Backend
 
+	// PopupNew builds a popup window's backend. Nil means a real SDL
+	// window. Tests inject a fake here.
+	PopupNew func() viewer.Backend
+
 	// Title is the window title. Empty means "Kube Workspaces".
 	Title string
 
@@ -261,6 +265,11 @@ type App struct {
 	// tray. Sessions keep stepping while it is set; the tray's opener
 	// clears it.
 	shellHidden bool
+
+	// popup is the single About/quick-pick window, or nil. Tray clicks
+	// open it instead of touching the main window, so a hidden shell
+	// stays hidden throughout.
+	popup *popupWindow
 
 	// The surface. img is reallocated on resize; canvas wraps it.
 	img           *image.RGBA
@@ -432,6 +441,10 @@ func (a *App) idleTimeout(now time.Time) time.Duration {
 			return 0
 		}
 	}
+	// The popup's input joins the same union: a click on it steps now.
+	if a.popup != nil && len(a.popup.events) > 0 {
+		return 0
+	}
 
 	var due time.Time
 	earlier := func(t time.Time) {
@@ -446,6 +459,9 @@ func (a *App) idleTimeout(now time.Time) time.Duration {
 	// for whichever window needs it first.
 	for _, e := range a.liveSorted() {
 		earlier(now.Add(e.window.IdleWait(now)))
+	}
+	if a.popup != nil {
+		earlier(now.Add(a.popup.IdleWait(now)))
 	}
 	if a.m.State == StateWorkspaces && a.opts.RefreshInterval > 0 {
 		if a.nextRefresh.IsZero() {
@@ -596,6 +612,8 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 	if err := a.stepLive(ctx, now); err != nil {
 		return err
 	}
+	// The popup window, if any, steps beside them on the same thread.
+	a.stepPopups(ctx, now)
 
 	a.tick(ctx, now)
 	// The tray follows the list: its submenu rebuilds when the running
@@ -650,7 +668,7 @@ func (a *App) draw(ctx context.Context) error {
 	// A modal keeps the previous frame as a frozen, dimmed backdrop. The
 	// background is deliberately not cleared and the list is not drawn, so the
 	// buffer still holds the frame the user last saw and the modal dims it.
-	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList || a.m.SSH != nil || a.m.Picker != nil)
+	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList || a.m.SSH != nil)
 	if !modal {
 		a.canvas.Fill(a.canvas.Bounds(), a.opts.Theme.Background)
 	}
@@ -671,8 +689,6 @@ func (a *App) draw(ctx context.Context) error {
 			intent = a.drawCreateModal(a.canvas.Bounds())
 		case a.m.SSH != nil:
 			intent = a.drawSSHModal(a.canvas.Bounds())
-		case a.m.Picker != nil:
-			intent = a.drawQuickPickModal(a.canvas.Bounds())
 		case modal:
 			intent = a.drawWorkspaceInfoModal(a.canvas.Bounds())
 		default:
@@ -688,14 +704,10 @@ func (a *App) draw(ctx context.Context) error {
 			intent.kind = kind
 		}
 	}
-	// The About panel overlays any screen — tray clicks work before
-	// sign-in too — and captures the frame's intent while it is up, so a
-	// click cannot fall through the scrim onto the screen beneath.
-	if a.m.About {
-		intent = a.drawAboutModal(a.canvas.Bounds())
-	}
-	// The close question overlays like About, and wins over it: it answers
-	// whether the application keeps running at all.
+	// The close question overlays any screen, and wins over other
+	// intents: it answers whether the application keeps running at all.
+	// (About and the quick-pick chooser are popup windows of their own,
+	// so they never appear here.)
 	if a.m.CloseConfirm {
 		intent = a.drawCloseConfirmModal(a.canvas.Bounds())
 	}

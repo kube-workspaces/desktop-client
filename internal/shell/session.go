@@ -101,6 +101,7 @@ func (a *App) closeSession(key string) {
 // guests are told their keys are up while the connections are still open.
 func (a *App) closeAllSessions() {
 	a.closeAllLiveWindows()
+	a.closePopup()
 	for key, rec := range a.sessions {
 		delete(a.sessions, key)
 		rec.handle.Close()

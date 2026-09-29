@@ -207,10 +207,10 @@ func (a *App) drainTray(ctx context.Context) {
 }
 
 // ensureShellVisible restores a minimized main window before presenting
-// shell UI for a tray action. A picker, notice or panel opening in a
-// hidden window looks exactly like the click doing nothing — which is the
-// failure this guards. Session windows need no such help: they open and
-// raise on their own, so a direct open leaves a hidden shell hidden.
+// shell UI for a tray action. A notice opening in a hidden window looks
+// exactly like the click doing nothing — which is the failure this
+// guards. Popups and sessions need no such help: they open in windows of
+// their own.
 func (a *App) ensureShellVisible() {
 	if a.shellHidden {
 		a.showShell()
@@ -218,15 +218,14 @@ func (a *App) ensureShellVisible() {
 }
 
 // applyTrayAction performs one menu click: Show restores the main window,
-// About opens the panel, Quit quits through the same flag the window-close
+// About opens its popup, Quit quits through the same flag the window-close
 // path sets, and Open focuses, picks or opens the workspace.
 func (a *App) applyTrayAction(ctx context.Context, action tray.Action) {
 	switch action.Kind {
 	case tray.ActionShow:
 		a.showShell()
 	case tray.ActionAbout:
-		a.ensureShellVisible()
-		a.m.ShowAbout()
+		a.openAboutPopup()
 	case tray.ActionQuit:
 		a.quit = true
 	case tray.ActionOpen:
@@ -236,14 +235,16 @@ func (a *App) applyTrayAction(ctx context.Context, action tray.Action) {
 
 // trayOpenWorkspace handles a Workspaces-submenu click for key: focus the
 // live window, open directly when exactly one mode applies, or offer the
-// quick-pick window. The key is re-resolved against the current list at
+// quick-pick popup. The key is re-resolved against the current list at
 // click time: the menu may predate a refresh that stopped or removed the
 // workspace.
+//
+// Neither the popup nor the direct open touches the main window: a hidden
+// shell stays hidden throughout. A stale click's only outcome is a notice,
+// which does need a visible window to be seen.
 func (a *App) trayOpenWorkspace(ctx context.Context, key string) {
 	ws, ok := lookupWorkspace(a.m.Workspaces, key)
 	if !ok || !ws.Running() {
-		// Stale click: the only outcome is a notice, which needs a
-		// visible window to be seen.
 		a.ensureShellVisible()
 		a.m.Err = ""
 		a.m.Notice = i18n.Get("pick.gone")
@@ -261,97 +262,16 @@ func (a *App) trayOpenWorkspace(ctx context.Context, key string) {
 	}
 	modes := tray.ModesFor(trayKindOf(ws))
 	if len(modes) == 1 {
-		a.openTrayMode(ctx, ws, modes[0])
-		// A direct open speaks through the new window — except when it
-		// fails into shell UI (a stayed-open picker, the SSH form, an
-		// error), which must be seen to be answered.
-		if a.shellHidden && (a.m.Err != "" || a.m.Picker != nil || a.m.SSH != nil) {
-			a.showShell()
-		}
+		// A single mode opens straight into its session. The only
+		// observable shell UI is a synchronous failure, which must be
+		// seen to be answered.
+		a.openPickedMode(ctx, ws, modes[0], func() {}, func(msg string) {
+			a.m.Err = msg
+			a.ensureShellVisible()
+		})
 		return
 	}
-	a.ensureShellVisible()
-	a.m.ShowPicker(ws)
-}
-
-// pickMode performs one quick-pick tile. Synchronous failures (a stale
-// workspace, a web child that will not spawn) stay in the picker as
-// PickerErr for a retry or another choice; a display or console open moves
-// to the session screen and closes the picker, with any later failure
-// surfacing on the list through the normal session path.
-func (a *App) pickMode(ctx context.Context, mode tray.Mode) {
-	sub := a.m.Picker
-	if sub == nil {
-		return
-	}
-	ws, ok := lookupWorkspace(a.m.Workspaces, sub.Key())
-	if !ok || !ws.Running() {
-		a.m.PickerErr = i18n.Get("pick.gone")
-		return
-	}
-	offered := false
-	for _, m := range tray.ModesFor(trayKindOf(ws)) {
-		if m == mode {
-			offered = true
-			break
-		}
-	}
-	if !offered {
-		a.m.PickerErr = i18n.Get("pick.gone")
-		return
-	}
-	a.openTrayMode(ctx, ws, mode)
-	// A pick that keeps the picker open (a synchronously failing Web
-	// open) must be seen to be retried — e.g. after minimizing with the
-	// picker already up.
-	if a.m.Picker != nil && a.shellHidden {
-		a.showShell()
-	}
-}
-
-// openTrayMode opens ws through one mode, closing the picker on the paths
-// that leave it (a session screen, the SSH form, the browser flow) and
-// keeping it with PickerErr on the paths that fail synchronously.
-func (a *App) openTrayMode(ctx context.Context, ws kwclient.Workspace, mode tray.Mode) {
-	switch mode {
-	case tray.ModeDisplay:
-		a.m.ClosePicker()
-		a.activate(ctx, ws, false)
-	case tray.ModeSerial:
-		if e, ok := a.live[sessionKey(ws, "serial")]; ok {
-			a.m.ClosePicker()
-			_ = e.window.Raise()
-			a.m.Err = ""
-			a.m.Notice = i18n.Sprintf("sessions.opened", sessionKey(ws, "serial"))
-			return
-		}
-		a.m.ClosePicker()
-		a.m.OpenConsole(ws, "serial", "", nil)
-	case tray.ModeSSH:
-		if e, ok := a.live[sessionKey(ws, "ssh")]; ok {
-			a.m.ClosePicker()
-			_ = e.window.Raise()
-			a.m.Err = ""
-			a.m.Notice = i18n.Sprintf("sessions.opened", sessionKey(ws, "ssh"))
-			return
-		}
-		a.m.ClosePicker()
-		a.openSSH(ws)
-	case tray.ModeWeb:
-		a.openWeb(ctx, ws)
-		if a.m.Err != "" {
-			a.m.PickerErr = a.m.Err
-			a.m.Err = ""
-		} else {
-			a.m.ClosePicker()
-		}
-	case tray.ModeTerminal:
-		a.m.ClosePicker()
-		a.activate(ctx, ws, false)
-	case tray.ModeBrowser:
-		a.m.ClosePicker()
-		a.openInBrowser(ctx, ws)
-	}
+	a.openPickerPopup(ws)
 }
 
 // lookupWorkspace finds key ("namespace/name") in the current list.

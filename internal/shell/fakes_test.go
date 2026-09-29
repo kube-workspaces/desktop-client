@@ -33,6 +33,7 @@ type fakeBackend struct {
 	mu sync.Mutex
 
 	opened, closed int
+	openErr        error
 	w, h           int
 	// scaleFactor simulates a high-density display: Size reports w,h scaled
 	// by it, the way a real backend reports drawable pixels. Zero means 1.
@@ -85,6 +86,9 @@ func newFakeBackend(w, h int) *fakeBackend {
 func (f *fakeBackend) Open(opts viewer.WindowOptions) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.openErr != nil {
+		return f.openErr
+	}
 	f.opened++
 	f.title = opts.Title
 	if opts.Width > 0 && opts.Height > 0 {

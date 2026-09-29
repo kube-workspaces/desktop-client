@@ -147,24 +147,9 @@ type Model struct {
 	// windows are closed but whose connections are still up.
 	Sessions []SessionEntry
 
-	// About reports whether the About panel is open. It overlays whatever
-	// screen is showing (tray clicks work before sign-in too), so it is a
-	// flag rather than a state.
-	About bool
-
-	// Picker is the workspace the tray quick-pick window offers open modes
-	// for, or nil when the picker is closed. It is a snapshot like Info,
-	// so a list refresh under the picker cannot change what it offers.
-	Picker *kwclient.Workspace
-	// PickerErr is a failed pick's error, shown inside the picker so the
-	// user can retry or choose another mode. Asynchronous open failures
-	// (a display that dials then drops) surface on the list instead: the
-	// picker is already closed by then.
-	PickerErr string
-
 	// CloseConfirm reports whether the main-window close question is open:
 	// quit the application, or minimize to the tray and keep running. It
-	// overlays whatever screen is showing, like About.
+	// overlays whatever screen is showing.
 	CloseConfirm bool
 
 	// SessionList reports whether the sessions modal is open.
@@ -196,9 +181,6 @@ func (m *Model) NeedServer(reason string) {
 	m.Creating = false
 	m.Profiles = false
 	m.SSH = nil
-	m.About = false
-	m.Picker = nil
-	m.PickerErr = ""
 	m.CloseConfirm = false
 	m.OpenTerminal = ""
 	m.OpenSSHUser = ""
@@ -248,9 +230,6 @@ func (m *Model) SignOut(reason string) {
 	m.Creating = false
 	m.Profiles = false
 	m.SSH = nil
-	m.About = false
-	m.Picker = nil
-	m.PickerErr = ""
 	m.CloseConfirm = false
 	m.OpenTerminal = ""
 	m.OpenSSHUser = ""
@@ -426,30 +405,6 @@ func (m *Model) ShowSessionList() {
 	m.Profiles = false
 	m.Err, m.Notice = "", ""
 	m.SessionList = true
-}
-
-// ShowAbout opens the About panel over whatever screen is showing.
-func (m *Model) ShowAbout() {
-	m.Err, m.Notice = "", ""
-	m.About = true
-}
-
-// CloseAbout dismisses the About panel.
-func (m *Model) CloseAbout() { m.About = false }
-
-// ShowPicker opens the tray quick-pick window for ws. The workspace is
-// snapshotted, so a refresh that reorders or replaces the list underneath
-// the picker does not change what it offers.
-func (m *Model) ShowPicker(ws kwclient.Workspace) {
-	m.Picker = &ws
-	m.PickerErr = ""
-	m.Err, m.Notice = "", ""
-}
-
-// ClosePicker dismisses the quick-pick window.
-func (m *Model) ClosePicker() {
-	m.Picker = nil
-	m.PickerErr = ""
 }
 
 // ShowCloseConfirm opens the main-window close question.

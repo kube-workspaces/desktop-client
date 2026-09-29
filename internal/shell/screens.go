@@ -1697,52 +1697,73 @@ func since(then, now time.Time) string {
 	}
 }
 
-// drawAboutModal shows the About panel over whatever screen is showing. It
-// is reached from the tray menu, which works before sign-in too, so it
-// cannot assume any screen behind it — only that the frame it dims belongs
-// to this shell.
-func (a *App) drawAboutModal(bounds ui.Rect) intent {
-	th := a.opts.Theme
-	ctx := a.ctx
-	var out intent
-
-	ctx.Canvas.Fill(bounds, modalScrim)
-
-	blurbH := ui.LineHeight(th.Body, th.Font) * 3
-	rows := []int{
-		ui.TextHeight(th.Title, th.Font), // title
-		ui.LineHeight(th.Body, th.Font),  // version
-		blurbH,                           // blurb
-		ui.LineHeight(th.Body, th.Font),  // repo
-		ui.LineHeight(th.Body, th.Font),  // docs
-		th.ControlHeight,                 // close row
-	}
-	content := 2 * th.Pad
+// stackHeight sums a padded card's content: 2*Pad plus rows and gaps,
+// plus an optional error row and its gap. The popup windows size
+// themselves with the same math they draw with, so the two cannot drift.
+func stackHeight(th *ui.Theme, rows []int, errH int) int {
+	content := 2*th.Pad + errH
 	for i, h := range rows {
-		if i > 0 {
+		if i > 0 || errH > 0 {
 			content += th.Gap
 		}
 		content += h
 	}
+	return content
+}
 
-	width := min(bounds.W-2*th.Pad, infoCardWidth)
-	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
-	if card.W <= 0 || card.H <= 0 {
-		return out
+// aboutContentHeight is the About panel's content height for the theme.
+func aboutContentHeight(th *ui.Theme) int {
+	return stackHeight(th, []int{
+		ui.TextHeight(th.Title, th.Font),    // title
+		ui.LineHeight(th.Body, th.Font),     // version
+		ui.LineHeight(th.Body, th.Font) * 3, // blurb
+		ui.LineHeight(th.Body, th.Font),     // repo
+		ui.LineHeight(th.Body, th.Font),     // docs
+		th.ControlHeight,                    // close row
+	}, 0)
+}
+
+// pickGlyphHeight is the tile icon square; pickTileHeight the whole tile.
+const pickGlyphHeight = 56
+
+func pickTileHeight(th *ui.Theme) int {
+	return pickGlyphHeight + th.Gap + th.ControlHeight + th.Gap/2 + ui.LineHeight(th.Small, th.Font)
+}
+
+// pickContentHeight is the quick-pick window's content height: title,
+// subtitle, tiles, hint, close row, and the error row when set.
+func pickContentHeight(th *ui.Theme, hasErr bool) int {
+	errH := 0
+	if hasErr {
+		errH = ui.LineHeight(th.Body, th.Font)
 	}
-	card.Y = max(card.Y, th.Gap)
+	return stackHeight(th, []int{
+		ui.TextHeight(th.Title, th.Font), // title (workspace key)
+		ui.LineHeight(th.Body, th.Font),  // subtitle
+		pickTileHeight(th),               // tiles
+		ui.LineHeight(th.Small, th.Font), // hint
+		th.ControlHeight,                 // close row
+	}, errH)
+}
 
-	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
-	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
-	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+// drawAboutModal draws the About panel full-bleed for a popup window: the
+// tray's About entry, which works before sign-in too. ctx is the window's
+// own context — popups draw with their own focus ring and input, never the
+// shell's.
+func (a *App) drawAboutModal(ctx *ui.Context, bounds ui.Rect) intent {
+	th := a.opts.Theme
+	var out intent
 
-	ui.Label(ctx, body.Next(rows[0]), i18n.Get("about.title"), ui.LabelStyle{Scale: th.Title})
-	ui.Label(ctx, body.Next(rows[1]), i18n.Sprintf("about.version", a.opts.Version), ui.LabelStyle{Color: th.TextMuted})
-	ui.Label(ctx, body.Next(rows[2]), i18n.Get("about.blurb"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
-	ui.Label(ctx, body.Next(rows[3]), i18n.Get("about.repo"), ui.LabelStyle{Color: th.TextMuted})
-	ui.Label(ctx, body.Next(rows[4]), i18n.Get("about.docs"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	ctx.Canvas.Fill(bounds, th.Background)
+	body := ui.NewStack(ui.Inset(bounds, th.Pad), th.Gap)
 
-	foot := body.Next(rows[5])
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), i18n.Get("about.title"), ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("about.version", a.opts.Version), ui.LabelStyle{Color: th.TextMuted})
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*3), i18n.Get("about.blurb"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Get("about.repo"), ui.LabelStyle{Color: th.TextMuted})
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Get("about.docs"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+
+	foot := body.Next(th.ControlHeight)
 	closeBtn := ui.Button{ID: idAboutClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
 	closeRect, _ := ui.CutRight(foot, closeBtn.Width(ctx))
 	if closeBtn.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
@@ -1751,78 +1772,43 @@ func (a *App) drawAboutModal(bounds ui.Rect) intent {
 	return out
 }
 
-// drawQuickPickModal offers the tray click's workspace as one large tile per
-// open mode. It is a chooser, not a session: picking a tile runs the exact
-// shell path for that mode (display, console seat, web view, terminal,
-// browser) and closes the picker, while a synchronously failing pick stays
-// open with the error inside for a retry or another choice.
-func (a *App) drawQuickPickModal(bounds ui.Rect) intent {
+// drawQuickPickModal draws the tray click's workspace as one large tile per
+// open mode, full-bleed for a popup window. It is a chooser, not a session:
+// picking a tile runs the exact shell path for that mode (display, console
+// seat, web view, terminal, browser) and closes the picker, while a
+// synchronously failing pick stays open with the error inside for a retry
+// or another choice. ws and pickerErr are the popup's own state.
+func (a *App) drawQuickPickModal(ctx *ui.Context, bounds ui.Rect, ws kwclient.Workspace, pickerErr string) intent {
 	th := a.opts.Theme
-	ctx := a.ctx
 	var out intent
 
-	ws := a.m.Picker
-	if ws == nil {
-		return out
-	}
-	modes := tray.ModesFor(trayKindOf(*ws))
+	modes := tray.ModesFor(trayKindOf(ws))
 	if len(modes) == 0 {
 		return out
 	}
 
-	ctx.Canvas.Fill(bounds, modalScrim)
+	ctx.Canvas.Fill(bounds, th.Background)
+	body := ui.NewStack(ui.Inset(bounds, th.Pad), th.Gap)
 
-	glyphH := 56
-	tileH := glyphH + th.Gap + th.ControlHeight + th.Gap/2 + ui.LineHeight(th.Small, th.Font)
-	rows := []int{
-		ui.TextHeight(th.Title, th.Font), // title (workspace key)
-		ui.LineHeight(th.Body, th.Font),  // subtitle
-		tileH,                            // tiles
-		ui.LineHeight(th.Small, th.Font), // hint
-		th.ControlHeight,                 // close row
-	}
-	errH := 0
-	if a.m.PickerErr != "" {
-		errH = ui.LineHeight(th.Body, th.Font)
-	}
-	content := 2*th.Pad + errH
-	for i, h := range rows {
-		if i > 0 || errH > 0 {
-			content += th.Gap
-		}
-		content += h
-	}
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), ws.Key(), ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Get("pick.subtitle"), ui.LabelStyle{Color: th.TextMuted})
 
-	width := min(bounds.W-2*th.Pad, infoCardWidth)
-	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
-	if card.W <= 0 || card.H <= 0 {
-		return out
-	}
-	card.Y = max(card.Y, th.Gap)
-
-	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
-	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
-	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
-
-	ui.Label(ctx, body.Next(rows[0]), ws.Key(), ui.LabelStyle{Scale: th.Title})
-	ui.Label(ctx, body.Next(rows[1]), i18n.Get("pick.subtitle"), ui.LabelStyle{Color: th.TextMuted})
-
-	tiles := body.Next(rows[2])
+	tiles := body.Next(pickTileHeight(th))
 	widths := make([]int, len(modes))
 	cols := ui.Row(tiles, th.Gap, widths...)
 	for i, mode := range modes {
-		if a.drawPickTile(cols[i], glyphH, ws, mode) ||
+		if a.drawPickTile(ctx, cols[i], &ws, mode) ||
 			ctx.Input.RuneChord(keysym.ModNone, '1'+rune(i)) {
 			out = intent{kind: intentPickMode, mode: mode}
 		}
 	}
 
-	if a.m.PickerErr != "" {
-		ui.Label(ctx, body.Next(errH), a.m.PickerErr, ui.LabelStyle{Color: th.Danger, Wrap: true})
+	if pickerErr != "" {
+		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), pickerErr, ui.LabelStyle{Color: th.Danger, Wrap: true})
 	}
-	ui.Label(ctx, body.Next(rows[3]), i18n.Sprintf("pick.hint", len(modes)), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Small, th.Font)), i18n.Sprintf("pick.hint", len(modes)), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
 
-	foot := body.Next(rows[4])
+	foot := body.Next(th.ControlHeight)
 	closeBtn := ui.Button{ID: idPickClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
 	closeRect, _ := ui.CutRight(foot, closeBtn.Width(ctx))
 	if closeBtn.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
@@ -1834,18 +1820,18 @@ func (a *App) drawQuickPickModal(bounds ui.Rect) intent {
 // drawPickTile draws one quick-pick tile — a vector glyph, the mode button
 // and its hint — and reports whether it was chosen. The button carries the
 // focus-ring identity, so tiles are Tab-navigable like every other control.
-func (a *App) drawPickTile(r ui.Rect, glyphH int, ws *kwclient.Workspace, mode tray.Mode) bool {
+// ctx is the presenting window's context.
+func (a *App) drawPickTile(ctx *ui.Context, r ui.Rect, ws *kwclient.Workspace, mode tray.Mode) bool {
 	th := a.opts.Theme
-	ctx := a.ctx
 
 	ctx.Canvas.FillRounded(r, th.Radius, th.SurfaceAlt)
 	ctx.Canvas.StrokeRounded(r, th.Radius, th.BorderWidth, th.Border)
 
 	inner := ui.Inset(r, th.Gap)
-	glyph := ui.Rect{X: inner.X, Y: inner.Y, W: inner.W, H: glyphH}
+	glyph := ui.Rect{X: inner.X, Y: inner.Y, W: inner.W, H: pickGlyphHeight}
 	drawPickGlyph(ctx, glyph, mode)
 
-	rest := ui.Rect{X: inner.X, Y: inner.Y + glyphH + th.Gap, W: inner.W, H: inner.H - glyphH - th.Gap}
+	rest := ui.Rect{X: inner.X, Y: inner.Y + pickGlyphHeight + th.Gap, W: inner.W, H: inner.H - pickGlyphHeight - th.Gap}
 	nameH := th.ControlHeight
 	nameRect := ui.Rect{X: rest.X, Y: rest.Y, W: rest.W, H: min(nameH, rest.H)}
 	chosen := false

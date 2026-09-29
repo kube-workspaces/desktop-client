@@ -203,34 +203,44 @@ func TestTraySettingsRoundTrip(t *testing.T) {
 // touching the model and must wake the loop.
 func TestHandleQueuesAndWakes(t *testing.T) {
 	r, _ := trayRig(t)
+	pbe := popupBackend(r)
 	wakes := r.be.wakeCount()
 	r.app.Handle(tray.Action{Kind: tray.ActionAbout})
 	if len(r.app.trayCh) != 1 {
 		t.Fatalf("trayCh holds %d actions, want 1", len(r.app.trayCh))
 	}
-	if r.app.m.About {
+	if r.app.popup != nil {
 		t.Fatal("Handle touched the model off the loop's goroutine")
 	}
 	if r.be.wakeCount() <= wakes {
 		t.Fatal("Handle did not wake the loop")
 	}
 	r.step()
-	if !r.app.m.About {
-		t.Fatal("queued About action did not open the panel")
+	if r.app.popup == nil || r.app.popup.kind != popupAbout {
+		t.Fatal("queued About action did not open the popup")
+	}
+	if pbe.opened != 1 {
+		t.Fatal("About popup opened no window")
 	}
 }
 
-// TestTrayAboutAndQuit: About opens the panel (Esc closes it), Quit quits.
+// TestTrayAboutAndQuit: About opens its own window (Esc closes it), Quit
+// quits. The main window is untouched throughout.
 func TestTrayAboutAndQuit(t *testing.T) {
 	r, _ := trayRig(t)
+	pbe := popupBackend(r)
 	r.app.trayCh <- tray.Action{Kind: tray.ActionAbout}
 	r.step()
-	if !r.app.m.About {
-		t.Fatal("About action did not open the panel")
+	if r.app.popup == nil || r.app.popup.kind != popupAbout {
+		t.Fatal("About action did not open the popup")
 	}
-	r.press(keysym.KeyEscape, keysym.ModNone)
-	if r.app.m.About {
-		t.Fatal("Esc did not close the About panel")
+	r.app.popup.events = append(r.app.popup.events, ui.EventKey{Key: keysym.KeyEscape, Down: true})
+	r.step()
+	if r.app.popup != nil {
+		t.Fatal("Esc did not close the About popup")
+	}
+	if pbe.closed != 1 {
+		t.Fatal("About popup did not close its window")
 	}
 	r.app.trayCh <- tray.Action{Kind: tray.ActionQuit}
 	r.step()
@@ -255,19 +265,21 @@ func TestTrayOpenFocusesLiveWindow(t *testing.T) {
 	if w.raises != raises+1 {
 		t.Fatal("tray click did not raise the live window")
 	}
-	if r.app.m.Picker != nil {
+	if r.app.popup != nil {
 		t.Fatal("picker opened for a live workspace")
 	}
 }
 
-// TestTrayOpenShowsPicker: a running VM with no live window offers the
-// quick-pick window, snapshotted by key.
-func TestTrayOpenShowsPicker(t *testing.T) {
+// TestTrayOpenShowsPopup: a running VM with no live window opens the
+// quick-pick popup, leaving the main window exactly as it was.
+func TestTrayOpenShowsPopup(t *testing.T) {
 	r, _ := trayRig(t)
+	popupBackend(r)
 	r.app.trayCh <- tray.Action{Kind: tray.ActionOpen, Key: "team/vm-a"}
 	r.step()
-	if r.app.m.Picker == nil || r.app.m.Picker.Key() != "team/vm-a" {
-		t.Fatalf("picker = %+v, want team/vm-a", r.app.m.Picker)
+	p := r.app.popup
+	if p == nil || p.kind != popupPick || p.ws.Key() != "team/vm-a" {
+		t.Fatalf("popup = %+v, want the team/vm-a picker", p)
 	}
 }
 
@@ -280,19 +292,31 @@ func TestTrayOpenStaleKey(t *testing.T) {
 	if r.app.m.Notice == "" {
 		t.Fatal("stale click reported nothing")
 	}
-	if r.app.m.Picker != nil || len(r.opened) != 0 {
+	if r.app.popup != nil || len(r.opened) != 0 {
 		t.Fatal("stale click opened something")
 	}
+}
+
+// openTestPopup opens the picker popup for key with a fake window behind
+// it, returning the popup and its backend for assertions.
+func openTestPopup(t *testing.T, r *rig, key string) (*popupWindow, *fakeBackend) {
+	t.Helper()
+	pbe := popupBackend(r)
+	r.app.openPickerPopup(lookupMust(t, r, key))
+	if r.app.popup == nil {
+		t.Fatal("picker popup did not open")
+	}
+	return r.app.popup, pbe
 }
 
 // TestPickDisplayOpensDisplay: the Display tile opens the display session
 // and closes the picker.
 func TestPickDisplayOpensDisplay(t *testing.T) {
 	r, _ := trayRig(t)
-	r.app.m.ShowPicker(lookupMust(t, r, "team/vm-a"))
-	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeDisplay})
+	p, _ := openTestPopup(t, r, "team/vm-a")
+	r.app.applyPopupPick(context.Background(), p, tray.ModeDisplay)
 	r.settle()
-	if r.app.m.Picker != nil {
+	if r.app.popup != nil {
 		t.Fatal("picker stayed open after picking Display")
 	}
 	if !r.app.isLive("team/vm-a") {
@@ -304,10 +328,10 @@ func TestPickDisplayOpensDisplay(t *testing.T) {
 // seat beside the display.
 func TestPickSerialOpensSerialSeat(t *testing.T) {
 	r, _ := trayRig(t)
-	r.app.m.ShowPicker(lookupMust(t, r, "team/vm-a"))
-	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeSerial})
+	p, _ := openTestPopup(t, r, "team/vm-a")
+	r.app.applyPopupPick(context.Background(), p, tray.ModeSerial)
 	r.settle()
-	if r.app.m.Picker != nil {
+	if r.app.popup != nil {
 		t.Fatal("picker stayed open after picking Serial")
 	}
 	if !r.app.isLive("team/vm-a#serial") {
@@ -319,9 +343,9 @@ func TestPickSerialOpensSerialSeat(t *testing.T) {
 // form rather than dialling directly.
 func TestPickSSHOpensCredentialForm(t *testing.T) {
 	r, _ := trayRig(t)
-	r.app.m.ShowPicker(lookupMust(t, r, "team/vm-a"))
-	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeSSH})
-	if r.app.m.Picker != nil {
+	p, _ := openTestPopup(t, r, "team/vm-a")
+	r.app.applyPopupPick(context.Background(), p, tray.ModeSSH)
+	if r.app.popup != nil {
 		t.Fatal("picker stayed open after picking SSH")
 	}
 	if r.app.m.SSH == nil || r.app.m.SSH.Key() != "team/vm-a" {
@@ -333,9 +357,9 @@ func TestPickSSHOpensCredentialForm(t *testing.T) {
 // container and closes the picker.
 func TestPickWebOpensWebview(t *testing.T) {
 	r, _ := trayRig(t)
-	r.app.m.ShowPicker(lookupMust(t, r, "team/web-a"))
-	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeWeb})
-	if r.app.m.Picker != nil {
+	p, _ := openTestPopup(t, r, "team/web-a")
+	r.app.applyPopupPick(context.Background(), p, tray.ModeWeb)
+	if r.app.popup != nil {
 		t.Fatal("picker stayed open after picking Web")
 	}
 	if len(r.webbed) != 1 || r.webbed[0].Name != "web-a" {
@@ -350,12 +374,12 @@ func TestPickWebFailureStaysInPicker(t *testing.T) {
 	r.app.opts.OpenWeb = func(profile, namespace, name string) error {
 		return errors.New("no webview here")
 	}
-	r.app.m.ShowPicker(lookupMust(t, r, "team/web-a"))
-	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeWeb})
-	if r.app.m.Picker == nil {
+	p, _ := openTestPopup(t, r, "team/web-a")
+	r.app.applyPopupPick(context.Background(), p, tray.ModeWeb)
+	if r.app.popup == nil {
 		t.Fatal("picker closed on a failed Web pick")
 	}
-	if r.app.m.PickerErr == "" {
+	if p.err == "" {
 		t.Fatal("failed Web pick reported nothing in the picker")
 	}
 	if r.app.m.Err != "" {
@@ -367,10 +391,10 @@ func TestPickWebFailureStaysInPicker(t *testing.T) {
 // terminal over /exec for a container.
 func TestPickTerminalOpensConsole(t *testing.T) {
 	r, _ := trayRig(t)
-	r.app.m.ShowPicker(lookupMust(t, r, "team/web-a"))
-	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeTerminal})
+	p, _ := openTestPopup(t, r, "team/web-a")
+	r.app.applyPopupPick(context.Background(), p, tray.ModeTerminal)
 	r.settle()
-	if r.app.m.Picker != nil {
+	if r.app.popup != nil {
 		t.Fatal("picker stayed open after picking Terminal")
 	}
 	if !r.app.isLive("team/web-a") {
@@ -390,7 +414,7 @@ func TestTrayOpenSingleModeDirect(t *testing.T) {
 	r.app.trayCh <- tray.Action{Kind: tray.ActionOpen, Key: "team/odd-a"}
 	r.step()
 	r.settle()
-	if r.app.m.Picker != nil {
+	if r.app.popup != nil {
 		t.Fatal("picker opened for a single-mode workspace")
 	}
 	if len(r.browsed) != 1 {
@@ -398,31 +422,31 @@ func TestTrayOpenSingleModeDirect(t *testing.T) {
 	}
 }
 
-// TestPickerClose: Esc and the Close button both dismiss the picker.
+// TestPickerClose: Esc and the Close button both dismiss the picker window.
 func TestPickerClose(t *testing.T) {
 	r, _ := trayRig(t)
-	r.app.m.ShowPicker(lookupMust(t, r, "team/vm-a"))
-	r.press(keysym.KeyEscape, keysym.ModNone)
-	if r.app.m.Picker != nil {
+	openTestPopup(t, r, "team/vm-a")
+	r.app.popup.events = append(r.app.popup.events, ui.EventKey{Key: keysym.KeyEscape, Down: true})
+	r.step()
+	if r.app.popup != nil {
 		t.Fatal("Esc did not close the picker")
 	}
-	r.app.m.ShowPicker(lookupMust(t, r, "team/vm-a"))
-	r.focus(idPickClose)
-	r.clickFocused()
+	p, _ := openTestPopup(t, r, "team/vm-a")
+	p.ctx.Focus().Set(idPickClose)
+	p.events = append(p.events, ui.EventKey{Key: keysym.KeyReturn, Down: true})
 	r.step()
-	if r.app.m.Picker != nil {
+	if r.app.popup != nil {
 		t.Fatal("Close did not close the picker")
 	}
 }
 
 // TestPickerTilesAreFocusable: every offered mode has a keyboard-reachable
-// control, so the picker is operable without a pointer.
+// control in the popup window, so the picker is operable without a pointer.
 func TestPickerTilesAreFocusable(t *testing.T) {
 	r, _ := trayRig(t)
-	r.app.m.ShowPicker(lookupMust(t, r, "team/vm-a"))
-	r.app.dirty = true
+	p, _ := openTestPopup(t, r, "team/vm-a")
 	r.step()
-	order := append([]ui.FocusID(nil), r.app.ctx.Focus().Order()...)
+	order := append([]ui.FocusID(nil), p.ctx.Focus().Order()...)
 	for _, mode := range []tray.Mode{tray.ModeDisplay, tray.ModeSerial, tray.ModeSSH} {
 		id := ui.FocusID(fmt.Sprintf("pick-mode-%d", int(mode)))
 		found := false
@@ -438,6 +462,67 @@ func TestPickerTilesAreFocusable(t *testing.T) {
 	}
 }
 
+// TestPopupSingleSlot: a second popup replaces the first — tray clicks are
+// sequential, and a pile of choosers would be a bug report.
+func TestPopupSingleSlot(t *testing.T) {
+	r, _ := trayRig(t)
+	first := popupBackend(r)
+	r.app.openPickerPopup(lookupMust(t, r, "team/vm-a"))
+	second := newFakeBackend(64, 48)
+	r.app.opts.PopupNew = func() viewer.Backend { return second }
+	r.app.openAboutPopup()
+	if r.app.popup == nil || r.app.popup.kind != popupAbout {
+		t.Fatal("About popup did not replace the picker")
+	}
+	if first.closed != 1 {
+		t.Fatal("replaced picker did not close its window")
+	}
+	if second.opened != 1 {
+		t.Fatal("About popup opened no window")
+	}
+}
+
+// TestPopupBackendFailure: a window that will not open falls back to a
+// notice on the main window instead of stranding the click in silence.
+func TestPopupBackendFailure(t *testing.T) {
+	r, _ := trayRig(t)
+	be := popupBackend(r)
+	be.openErr = errors.New("no display")
+	r.app.openPickerPopup(lookupMust(t, r, "team/vm-a"))
+	if r.app.popup != nil {
+		t.Fatal("popup exists without a window")
+	}
+	if r.app.m.Err == "" && r.app.m.Notice == "" {
+		t.Fatal("failed popup reported nothing")
+	}
+}
+
+// TestPopupClosesWithSessions: sign-out and friends tear the popup down
+// with the windows — its workspace snapshot belongs to the old identity.
+func TestPopupClosesWithSessions(t *testing.T) {
+	r, _ := trayRig(t)
+	_, pbe := openTestPopup(t, r, "team/vm-a")
+	r.app.closeAllSessions()
+	if r.app.popup != nil {
+		t.Fatal("popup survived the session teardown")
+	}
+	if pbe.closed != 1 {
+		t.Fatal("popup did not close its window")
+	}
+}
+
+// TestPopupRoutedThroughPump: popup input arrives through the same pump as
+// every other window — here, Esc on the popup backend's own queue.
+func TestPopupRoutedThroughPump(t *testing.T) {
+	r, _ := trayRig(t)
+	_, pbe := openTestPopup(t, r, "team/vm-a")
+	pbe.send(ui.EventKey{Key: keysym.KeyEscape, Down: true})
+	r.step()
+	if r.app.popup != nil {
+		t.Fatal("pumped Esc did not close the picker")
+	}
+}
+
 func lookupMust(t *testing.T, r *rig, key string) kwclient.Workspace {
 	t.Helper()
 	ws, ok := lookupWorkspace(r.app.m.Workspaces, key)
@@ -445,6 +530,15 @@ func lookupMust(t *testing.T, r *rig, key string) kwclient.Workspace {
 		t.Fatalf("workspace %s not in list", key)
 	}
 	return ws
+}
+
+// popupBackend wires a fake popup window backend into the rig and returns
+// it, so popup tests can assert on the window without a display. The
+// production path builds a real SDL window instead.
+func popupBackend(r *rig) *fakeBackend {
+	t := newFakeBackend(64, 48)
+	r.app.opts.PopupNew = func() viewer.Backend { return t }
+	return t
 }
 
 // TestWebChildRegistry pins the per-workspace child tracking: starts and
@@ -516,9 +610,9 @@ func TestPickWebSkipsDuplicate(t *testing.T) {
 		}
 	})
 	webChildStarted(key)
-	r.app.m.ShowPicker(lookupMust(t, r, key))
-	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeWeb})
-	if r.app.m.Picker != nil {
+	p, _ := openTestPopup(t, r, key)
+	r.app.applyPopupPick(context.Background(), p, tray.ModeWeb)
+	if r.app.popup != nil {
 		t.Fatal("picker stayed open on a duplicate Web pick")
 	}
 	if len(r.webbed) != 0 {
@@ -676,22 +770,24 @@ func TestDisableTrayWhileHiddenRestores(t *testing.T) {
 	}
 }
 
-// TestTrayOpenShowsPickerWhenHidden: the reported bug — a tray click that
-// needs the picker while the main window is minimized must restore the
-// window with the picker in it, not open the picker invisibly.
-func TestTrayOpenShowsPickerWhenHidden(t *testing.T) {
+// TestTrayOpenShowsPopupWhenHidden: a tray click that needs the picker
+// while the main window is minimized opens the picker popup and leaves
+// the shell hidden — the popup is a window of its own.
+func TestTrayOpenShowsPopupWhenHidden(t *testing.T) {
 	r, _ := trayRig(t)
+	popupBackend(r)
 	r.app.hideShellToTray()
 	if !r.app.shellHidden {
 		t.Fatal("hide did not hide")
 	}
 	r.app.trayCh <- tray.Action{Kind: tray.ActionOpen, Key: "team/vm-a"}
 	r.step()
-	if r.app.m.Picker == nil || r.app.m.Picker.Key() != "team/vm-a" {
-		t.Fatalf("picker = %+v, want team/vm-a", r.app.m.Picker)
+	p := r.app.popup
+	if p == nil || p.kind != popupPick || p.ws.Key() != "team/vm-a" {
+		t.Fatalf("popup = %+v, want the team/vm-a picker", p)
 	}
-	if r.app.shellHidden || r.be.isHidden() {
-		t.Fatal("picker opened in a hidden window: the click looked dead")
+	if !r.app.shellHidden || !r.be.isHidden() {
+		t.Fatal("picker popup popped the hidden shell")
 	}
 }
 
@@ -729,35 +825,18 @@ func TestTrayOpenStaleShowsShellWhenHidden(t *testing.T) {
 	}
 }
 
-// TestTrayAboutShowsShellWhenHidden: the About panel in a hidden window
-// would be as invisible as the picker was.
-func TestTrayAboutShowsShellWhenHidden(t *testing.T) {
+// TestTrayAboutKeepsShellHidden: the About popup is a window of its own,
+// so a minimized shell stays minimized behind it.
+func TestTrayAboutKeepsShellHidden(t *testing.T) {
 	r, _ := trayRig(t)
+	popupBackend(r)
 	r.app.hideShellToTray()
 	r.app.trayCh <- tray.Action{Kind: tray.ActionAbout}
 	r.step()
-	if !r.app.m.About {
-		t.Fatal("About action did not open the panel")
+	if r.app.popup == nil || r.app.popup.kind != popupAbout {
+		t.Fatal("About action did not open the popup")
 	}
-	if r.app.shellHidden || r.be.isHidden() {
-		t.Fatal("About panel opened in a hidden window")
-	}
-}
-
-// TestPickFailureShowsShellWhenHidden: minimizing with the picker already
-// open, then failing a pick, must bring the window back with the error.
-func TestPickFailureShowsShellWhenHidden(t *testing.T) {
-	r, _ := trayRig(t)
-	r.app.opts.OpenWeb = func(profile, namespace, name string) error {
-		return errors.New("no webview here")
-	}
-	r.app.m.ShowPicker(lookupMust(t, r, "team/web-a"))
-	r.app.hideShellToTray()
-	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeWeb})
-	if r.app.m.Picker == nil || r.app.m.PickerErr == "" {
-		t.Fatal("failed Web pick did not stay open with an error")
-	}
-	if r.app.shellHidden || r.be.isHidden() {
-		t.Fatal("failed pick stayed open in a hidden window")
+	if !r.app.shellHidden || !r.be.isHidden() {
+		t.Fatal("About popup popped the hidden shell")
 	}
 }

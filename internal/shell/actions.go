@@ -99,7 +99,9 @@ type intent struct {
 	workspace kwclient.Workspace
 	// observer indicates that intentActivate should open as an observer.
 	observer bool
-	// mode is the quick-pick tile of intentPickMode.
+	// mode is the quick-pick tile of intentPickMode. Popup windows produce
+	// these intents for their own Step to consume; the shell's act never
+	// sees them.
 	mode tray.Mode
 	// profile is the name of the subject of intentSwitchProfile.
 	profile string
@@ -258,13 +260,7 @@ func (a *App) act(ctx context.Context, in intent) {
 	case intentQuit:
 		a.quit = true
 	case intentAbout:
-		a.m.ShowAbout()
-	case intentAboutClose:
-		a.m.CloseAbout()
-	case intentPickMode:
-		a.pickMode(ctx, in.mode)
-	case intentPickClose:
-		a.m.ClosePicker()
+		a.openAboutPopup()
 	case intentCloseQuit:
 		a.m.CloseCloseConfirm()
 		a.quit = true

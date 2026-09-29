@@ -85,36 +85,50 @@ func (a *App) isLive(key string) bool {
 }
 
 // sdlTargets returns the shell backend followed by every live window
-// backend as *viewer.SDLBackend, for the single routed drain. The second
-// result is false when any window is not SDL (a test double with a private
-// queue) or when no session window is open either — both cases poll each
-// backend individually, which is also what the single-window loop has
-// always done.
-func (a *App) sdlTargets() ([]*viewer.SDLBackend, map[*viewer.SDLBackend]*liveEntry, bool) {
+// backend as *viewer.SDLBackend, for the single routed drain, plus the
+// popup backend when one is open. The fourth result is false when any
+// window is not SDL (a test double with a private queue), when no session
+// window is open and no popup is either — both cases poll each backend
+// individually, which is also what the single-window loop has always done.
+func (a *App) sdlTargets() ([]*viewer.SDLBackend, map[*viewer.SDLBackend]*liveEntry, *viewer.SDLBackend, bool) {
 	shell, ok := a.be.(*viewer.SDLBackend)
-	if !ok || len(a.live) == 0 {
-		return nil, nil, false
+	if !ok {
+		return nil, nil, nil, false
 	}
-	targets := make([]*viewer.SDLBackend, 0, len(a.live)+1)
+	var popupBe *viewer.SDLBackend
+	if a.popup != nil {
+		popupBe, ok = a.popup.be.(*viewer.SDLBackend)
+		if !ok || popupBe == nil {
+			return nil, nil, nil, false
+		}
+	}
+	if len(a.live) == 0 && popupBe == nil {
+		return nil, nil, nil, false
+	}
+	targets := make([]*viewer.SDLBackend, 0, len(a.live)+2)
 	byBackend := make(map[*viewer.SDLBackend]*liveEntry, len(a.live))
 	targets = append(targets, shell)
 	for _, e := range a.liveSorted() {
 		be, ok := e.window.WindowBackend().(*viewer.SDLBackend)
 		if !ok || be == nil {
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 		targets = append(targets, be)
 		byBackend[be] = e
 	}
-	return targets, byBackend, true
+	if popupBe != nil {
+		targets = append(targets, popupBe)
+	}
+	return targets, byBackend, popupBe, true
 }
 
 // pollFresh drains whatever platform input has landed since the last step,
 // appending it onto the shell's harvest and each live window's pending
-// slice. In a multi-window SDL process the queue is drained once and
-// routed; otherwise each backend drains its own queue.
+// slice, plus the popup's when one is open. In a multi-window SDL process
+// the queue is drained once and routed; otherwise each backend drains its
+// own queue.
 func (a *App) pollFresh() {
-	targets, byBackend, ok := a.sdlTargets()
+	targets, byBackend, popupBe, ok := a.sdlTargets()
 	if !ok {
 		a.events = a.be.PollEvents(a.events)
 		for _, e := range a.liveSorted() {
@@ -122,11 +136,16 @@ func (a *App) pollFresh() {
 				e.pending = be.PollEvents(e.pending)
 			}
 		}
+		if a.popup != nil && a.popup.be != nil {
+			a.popup.events = a.popup.be.PollEvents(a.popup.events)
+		}
 		return
 	}
 	routed := viewer.PollRouted(targets)
 	for be, evs := range routed {
-		if e, ok := byBackend[be]; ok {
+		if popupBe != nil && be == popupBe && a.popup != nil {
+			a.popup.events = append(a.popup.events, evs...)
+		} else if e, ok := byBackend[be]; ok {
 			e.pending = append(e.pending, evs...)
 		} else {
 			a.events = append(a.events, evs...)
@@ -138,7 +157,7 @@ func (a *App) pollFresh() {
 // harvests exactly like pollFresh does. A wake (see viewer.Backend.Wake)
 // ends the wait without producing an event.
 func (a *App) waitPump(timeout time.Duration) {
-	targets, byBackend, ok := a.sdlTargets()
+	targets, byBackend, popupBe, ok := a.sdlTargets()
 	if !ok {
 		a.events = a.be.WaitEvents(a.events, timeout)
 		for _, e := range a.liveSorted() {
@@ -146,11 +165,16 @@ func (a *App) waitPump(timeout time.Duration) {
 				e.pending = be.PollEvents(e.pending)
 			}
 		}
+		if a.popup != nil && a.popup.be != nil {
+			a.popup.events = a.popup.be.PollEvents(a.popup.events)
+		}
 		return
 	}
 	routed := viewer.WaitRouted(targets, timeout)
 	for be, evs := range routed {
-		if e, ok := byBackend[be]; ok {
+		if popupBe != nil && be == popupBe && a.popup != nil {
+			a.popup.events = append(a.popup.events, evs...)
+		} else if e, ok := byBackend[be]; ok {
 			e.pending = append(e.pending, evs...)
 		} else {
 			a.events = append(a.events, evs...)
