@@ -5,6 +5,7 @@ package kwclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -143,6 +144,65 @@ func TestDialTerminals(t *testing.T) {
 				t.Errorf("negotiated subprotocol = %q, want none", got)
 			}
 		})
+	}
+}
+
+// TestDialSSHWithAuthIntroducesItself: the SSH bridge drops a client that
+// stays silent past the handshake, so the dial must send the auth message
+// as its first frame.
+func TestDialSSHWithAuthIntroducesItself(t *testing.T) {
+	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	type observed struct {
+		typ  int
+		body struct {
+			Type       string `json:"type"`
+			User       string `json:"user"`
+			PrivateKey string `json:"privateKey"`
+		}
+	}
+	seen := make(chan observed, 1)
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Errorf("deadline: %v", err)
+			return
+		}
+		typ, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read auth: %v", err)
+			return
+		}
+		var ob observed
+		ob.typ = typ
+		if err := json.Unmarshal(msg, &ob.body); err != nil {
+			t.Errorf("auth JSON: %v", err)
+			return
+		}
+		seen <- ob
+	}
+	c := newTestClient(t, handler)
+
+	conn, err := c.DialSSHWithAuth(context.Background(), "demo", "dev", 120, 40, "debian", "PEM-BYTES")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	select {
+	case got := <-seen:
+		if got.typ != websocket.TextMessage {
+			t.Errorf("first frame type = %d, want text (%d)", got.typ, websocket.TextMessage)
+		}
+		if got.body.Type != "ssh" || got.body.User != "debian" || got.body.PrivateKey != "PEM-BYTES" {
+			t.Errorf("auth = %+v, want type=ssh user=debian with the key", got.body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never received the SSH auth message")
 	}
 }
 

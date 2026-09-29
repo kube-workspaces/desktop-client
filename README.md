@@ -312,6 +312,23 @@ Opening a **VM** workspace starts a display session in the window. Opening a
 subcommand on a developer copy; the in-app terminal (Console) and the system
 browser are the secondary actions.
 
+A running **VM** also offers its out-of-band consoles beside the display:
+**Serial** opens the guest serial console (the `/exec` bridge, which serves
+the KubeVirt serial stream for VMs), and **SSH** opens the `/ssh` bridge
+after asking for the guest username and a private-key file whose public half
+is seeded into the guest. Consoles are independent single-seat slots — a
+display, a serial console and an SSH console on one workspace may all be
+open at once — so each checks its seat before connecting: when another
+session holds it the window waits on a busy plate, and **Enter** explicitly
+takes it over. The key file is read at connect time and held in memory only;
+it is never saved. `F11` toggles fullscreen in console windows too, and
+`Ctrl+Alt+Q` disconnects, same as in a display session.
+
+Session windows open centred on the display the pointer is on, and
+fullscreen follows whichever display the window is on. Spanning a window
+across monitors is an ordinary resize where the window manager allows it;
+Wayland compositors and tiling managers own placement and may ignore it.
+
 ### The CLI
 
 The subcommands remain for scripting and for diagnosing the client libraries

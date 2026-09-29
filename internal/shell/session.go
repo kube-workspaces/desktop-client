@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
@@ -27,12 +28,27 @@ import (
 // exists on the adapter with exactly the window-facing signatures.
 var _ viewer.Tier1Input = (*selkies.Control)(nil)
 
-// sessionRecord is one held session: the workspace, whether it is an
-// observer, and the transport that outlives its windows.
+// sessionRecord is one held session: the workspace, which seat of it (a
+// display, or a VM's serial/SSH console alongside the display), whether it
+// is an observer, and the transport that outlives its windows. A display
+// and its consoles are independent single-seat slots, so one workspace may
+// hold all three at once under different keys.
 type sessionRecord struct {
 	ws       kwclient.Workspace
+	terminal string
 	observer bool
 	handle   SessionHandle
+}
+
+// sessionKey names the held seat: the workspace key for a display, suffixed
+// for a console seat. The switcher, the live map and the held map all key
+// on it, which is what lets a display and its consoles stay open — and
+// parked — side by side.
+func sessionKey(ws kwclient.Workspace, seat string) string {
+	if seat != "" {
+		return ws.Key() + "#" + seat
+	}
+	return ws.Key()
 }
 
 // sessionEntry is the model's display copy of a held session.
@@ -42,7 +58,10 @@ func sessionEntryFor(rec *sessionRecord, open bool) SessionEntry {
 	if rec.observer {
 		title += i18n.Get("workspaces.observer")
 	}
-	return SessionEntry{Key: rec.ws.Key(), Title: title, Kind: kind, Open: open}
+	if rec.terminal != "" {
+		title += " — " + rec.terminal
+	}
+	return SessionEntry{Key: sessionKey(rec.ws, rec.terminal), Title: title, Kind: kind, Open: open}
 }
 
 // syncSessions rebuilds the model's session list from the held transports,
@@ -104,12 +123,13 @@ func (a *App) closeAllSessions() {
 func (a *App) openLiveSession(ctx context.Context) error {
 	ws := a.m.Opening
 	observer := a.m.OpenObserver
+	seat := a.m.OpenTerminal
 	if a.dialer == nil {
 		a.m.SessionEnded(errors.New("this build cannot open sessions"))
 		return nil
 	}
 
-	key := ws.Key()
+	key := sessionKey(ws, seat)
 	if e, ok := a.live[key]; ok {
 		if e.observer == observer {
 			// Already open: focus instead of opening a second window on
@@ -132,12 +152,22 @@ func (a *App) openLiveSession(ctx context.Context) error {
 			a.closeSession(key)
 		}
 		a.logf("dialling a session to %s", key)
-		handle, err := a.dialer.Dial(ctx, ws, observer)
+		var handle SessionHandle
+		var err error
+		if seat != "" {
+			handle, err = a.dialer.DialTerminal(ctx, ws, TerminalDialOpts{
+				Kind:      seat,
+				SSHUser:   a.m.OpenSSHUser,
+				SSHKeyPEM: a.m.OpenSSHKeyPEM,
+			})
+		} else {
+			handle, err = a.dialer.Dial(ctx, ws, observer)
+		}
 		if err != nil {
 			a.m.SessionEnded(err)
 			return nil
 		}
-		rec = &sessionRecord{ws: ws, observer: observer, handle: handle}
+		rec = &sessionRecord{ws: ws, terminal: seat, observer: observer, handle: handle}
 		a.sessions[key] = rec
 		a.syncSessions()
 	}
@@ -440,36 +470,138 @@ func (h *exclusiveHandle) Close() {
 	})
 }
 
-// terminalHandle is a held integrated terminal: every Open redials the
-// /exec bridge fresh (the bridge is multi-session, so nothing needs holding).
+// terminalHandle is a held integrated terminal: every Open redials fresh
+// (the container /exec bridge is multi-session and a VM console seat is a
+// single slot claimed per dial, so nothing needs holding past the window).
+//
+// A VM console seat — "serial" over /exec, "ssh" over /ssh — is a
+// single-seat slot beside the display: the window checks the seat status
+// before dialling and takes over only on explicit Enter consent, mirroring
+// the web console. A dial that loses the race answers 409, which the window
+// maps back onto the busy plate rather than stealing.
 type terminalHandle struct {
 	client *kwclient.Client
 	opts   TerminalOptions
 	ws     kwclient.Workspace
+	kind   string
+	// sshUser and sshKeyPEM authenticate the /ssh bridge. The key bytes
+	// live in memory only, held for redials across window closes, and are
+	// never written anywhere; dropping the handle forgets them.
+	sshUser   string
+	sshKeyPEM []byte
 }
 
 // Kind implements [SessionHandle].
-func (h *terminalHandle) Kind() string { return "terminal" }
+func (h *terminalHandle) Kind() string {
+	if h.kind != "" {
+		return h.kind
+	}
+	return "terminal"
+}
+
+// DialTerminal implements [SessionDialer]: it opens a VM's serial or SSH
+// console seat. Missing credentials fail fast here, in the workspace list,
+// instead of in a blank window; the form validates the key file itself, so
+// reaching this without one is a programming error, not user input.
+func (d *sessionDialer) DialTerminal(_ context.Context, ws kwclient.Workspace, opts TerminalDialOpts) (SessionHandle, error) {
+	if !ws.IsVM() {
+		return nil, errors.New("console seats are only available for VM workspaces")
+	}
+	switch opts.Kind {
+	case "serial":
+		return &terminalHandle{client: d.client, ws: ws, kind: "serial",
+			opts: TerminalOptions{Scale: 1, Logf: d.opts.Logf}}, nil
+	case "ssh":
+		if opts.SSHUser == "" {
+			return nil, errors.New("ssh needs a username")
+		}
+		if len(opts.SSHKeyPEM) == 0 {
+			return nil, errors.New("ssh needs a private key")
+		}
+		return &terminalHandle{client: d.client, ws: ws, kind: "ssh",
+			sshUser: opts.SSHUser, sshKeyPEM: opts.SSHKeyPEM,
+			opts: TerminalOptions{Scale: 1, Logf: d.opts.Logf}}, nil
+	default:
+		return nil, errors.New("unknown console seat")
+	}
+}
 
 // Open implements [SessionHandle]: it returns a fresh live terminal window.
 func (h *terminalHandle) Open(ctx context.Context) (liveWindow, error) {
-	dial := func(ctx context.Context, cols, rows uint16) (io.ReadWriteCloser, error) {
-		conn, err := h.client.DialExec(ctx, h.ws.Namespace, h.ws.Name, cols, rows)
-		if err != nil {
-			return nil, err
-		}
-		return wsio.New(conn), nil
+	dial, check, take := h.bridge()
+	title := h.ws.Key()
+	if h.kind != "" {
+		title += " — " + h.kind
 	}
 	det, err := terminal.OpenDetached(ctx, dial, terminal.Options{
-		Title: h.ws.Key(),
-		Theme: h.opts.Theme,
-		Scale: h.opts.Scale,
-		Logf:  h.opts.Logf,
+		Title:     title,
+		Theme:     h.opts.Theme,
+		Scale:     h.opts.Scale,
+		Logf:      h.opts.Logf,
+		CheckSeat: check,
+		TakeSeat:  take,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &terminalLiveWindow{det: det}, nil
+}
+
+// bridge wires a console seat to its status, takeover and dial. A container
+// terminal (no kind) keeps the old behaviour: no seat, no consent.
+func (h *terminalHandle) bridge() (terminal.Dial, func(ctx context.Context) (bool, error), func(ctx context.Context) error) {
+	if h.kind == "" {
+		return func(ctx context.Context, cols, rows uint16) (io.ReadWriteCloser, error) {
+			conn, err := h.client.DialExec(ctx, h.ws.Namespace, h.ws.Name, cols, rows)
+			if err != nil {
+				return nil, err
+			}
+			return wsio.New(conn), nil
+		}, nil, nil
+	}
+	status := h.client.ConsoleStatus
+	take := h.client.ConsoleTakeover
+	if h.kind == "ssh" {
+		status = h.client.SSHStatus
+		take = h.client.SSHTakeover
+	}
+	check := func(ctx context.Context) (bool, error) {
+		st, err := status(ctx, h.ws.Namespace, h.ws.Name)
+		if err != nil {
+			return false, err
+		}
+		return st.InUse, nil
+	}
+	takeSeat := func(ctx context.Context) error {
+		res, err := take(ctx, h.ws.Namespace, h.ws.Name)
+		if err != nil {
+			return err
+		}
+		if !res.OK {
+			return errors.New(i18n.Get("session.takeoverDeclined"))
+		}
+		return nil
+	}
+	dial := func(ctx context.Context, cols, rows uint16) (io.ReadWriteCloser, error) {
+		conn, err := h.connect(ctx, cols, rows)
+		if err != nil {
+			if errors.Is(err, kwclient.ErrSessionInUse) {
+				return nil, terminal.ErrInUse
+			}
+			return nil, err
+		}
+		return wsio.New(conn), nil
+	}
+	return dial, check, takeSeat
+}
+
+// connect dials the seat's bridge: the serial stream over /exec, or the
+// authenticated SSH session over /ssh.
+func (h *terminalHandle) connect(ctx context.Context, cols, rows uint16) (*websocket.Conn, error) {
+	if h.kind == "ssh" {
+		return h.client.DialSSHWithAuth(ctx, h.ws.Namespace, h.ws.Name, cols, rows, h.sshUser, string(h.sshKeyPEM))
+	}
+	return h.client.DialExec(ctx, h.ws.Namespace, h.ws.Name, cols, rows)
 }
 
 // Close implements [SessionHandle]: nothing is held past the window.

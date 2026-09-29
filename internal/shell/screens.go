@@ -788,6 +788,15 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if observe {
 		observeBtn = ui.Button{ID: idObserve, Text: i18n.Get("workspaces.observe"), Variant: ui.ButtonSecondary}
 	}
+	// A running VM's out-of-band consoles sit beside its display: the
+	// serial console over /exec and the SSH console over /ssh, each an
+	// independent single-seat slot with its own status/takeover consent.
+	serialBtn := ui.Button{}
+	sshBtn := ui.Button{}
+	if observe {
+		serialBtn = ui.Button{ID: idSerial, Text: i18n.Get("workspaces.serial"), Variant: ui.ButtonSecondary}
+		sshBtn = ui.Button{ID: idSSH, Text: i18n.Get("workspaces.ssh"), Variant: ui.ButtonSecondary}
+	}
 	// Stop is the quiet inverse of the primary action, offered for exactly the
 	// workspaces that have one to stop: the running ones.
 	stop := ui.Button{ID: idStop, Text: i18n.Get("workspaces.stop"), Variant: ui.ButtonSecondary}
@@ -797,14 +806,14 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	info := ui.Button{ID: idInfo, Text: i18n.Get("workspaces.info"), Variant: ui.ButtonSecondary, Disabled: !has}
 
 	// Order: the open buttons first (primary open, then open-in-browser,
-	// then the shared-display observer), then stop, with Console second to
-	// last and Info last.
+	// then the shared-display observer and the VM consoles), then stop,
+	// with Console second to last and Info last.
 	widths := []int{max(180, open.Width(ctx))}
 	if browser {
 		widths = append(widths, browserBtn.Width(ctx))
 	}
 	if observe {
-		widths = append(widths, observeBtn.Width(ctx))
+		widths = append(widths, observeBtn.Width(ctx), serialBtn.Width(ctx), sshBtn.Width(ctx))
 	}
 	if showStop {
 		widths = append(widths, stop.Width(ctx))
@@ -829,6 +838,14 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if observe {
 		if observeBtn.Layout(ctx, cols[ci]) {
 			*out = intent{kind: intentOpenObserver, workspace: ws}
+		}
+		ci++
+		if serialBtn.Layout(ctx, cols[ci]) {
+			*out = intent{kind: intentOpenSerial, workspace: ws}
+		}
+		ci++
+		if sshBtn.Layout(ctx, cols[ci]) {
+			*out = intent{kind: intentOpenSSH, workspace: ws}
 		}
 		ci++
 	}
@@ -1157,6 +1174,91 @@ func (a *App) drawCreateModal(bounds ui.Rect) intent {
 	return out
 }
 
+// drawSSHModal collects the /ssh bridge credentials over a dimmed, frozen
+// copy of the list. The guest username and the private key file name the
+// key matching one seeded into the guest; the key bytes are read at submit
+// and held in memory only, never written. Enter in a field connects, Esc
+// and Cancel close.
+func (a *App) drawSSHModal(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	var out intent
+
+	ctx.Canvas.Fill(bounds, modalScrim)
+
+	name := ""
+	if a.m.SSH != nil {
+		name = a.m.SSH.Key()
+	}
+
+	fieldH := th.ControlHeight
+	labelH := ui.LineHeight(th.Small, th.Font)
+	rows := []int{
+		ui.TextHeight(th.Title, th.Font), // title
+		ui.LineHeight(th.Body, th.Font),  // subtitle (which workspace)
+		labelH, fieldH,                   // user
+		labelH, fieldH, // key file
+		ui.LineHeight(th.Small, th.Font), // hint
+	}
+	if a.m.Err != "" {
+		rows = append(rows, ui.LineHeight(th.Body, th.Font)) // error line
+	}
+	rows = append(rows, th.ControlHeight) // buttons
+	content := 2 * th.Pad
+	for i, h := range rows {
+		if i > 0 {
+			content += th.Gap
+		}
+		content += h
+	}
+
+	width := min(bounds.W-2*th.Pad, infoCardWidth)
+	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
+	if card.W <= 0 || card.H <= 0 {
+		return out
+	}
+	card.Y = max(card.Y, th.Gap)
+
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+
+	ui.Label(ctx, body.Next(rows[0]), i18n.Get("ssh.title"), ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(rows[1]), name, ui.LabelStyle{Color: th.TextMuted})
+
+	ui.Label(ctx, body.Next(labelH), i18n.Get("ssh.user"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	if a.sshUserField.Layout(ctx, body.Next(fieldH)) {
+		out = intent{kind: intentSSHSubmit}
+	}
+
+	ui.Label(ctx, body.Next(labelH), i18n.Get("ssh.keyFile"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	if a.sshKeyFileField.Layout(ctx, body.Next(fieldH)) {
+		out = intent{kind: intentSSHSubmit}
+	}
+
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Small, th.Font)), i18n.Get("ssh.hint"), ui.LabelStyle{
+		Color: th.TextMuted, Scale: th.Small, Wrap: true,
+	})
+
+	if a.m.Err != "" {
+		ui.Label(ctx, body.Next(rows[len(rows)-2]), a.m.Err, ui.LabelStyle{Color: th.Danger, Wrap: true})
+	}
+
+	foot := body.Next(rows[len(rows)-1])
+	submit := ui.Button{ID: idSSHSubmit, Text: i18n.Get("ssh.connect"), Variant: ui.ButtonPrimary}
+	cancel := ui.Button{ID: idSSHClose, Text: i18n.Get("ssh.cancel"), Variant: ui.ButtonSecondary}
+	cancelRect, rest := ui.CutRight(foot, cancel.Width(ctx))
+	rest = ui.CutRightGap(rest, th.Gap)
+	submitRect, _ := ui.CutRight(rest, submit.Width(ctx))
+	if submit.Layout(ctx, submitRect) {
+		out = intent{kind: intentSSHSubmit}
+	}
+	if cancel.Layout(ctx, cancelRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentSSHClose}
+	}
+	return out
+}
+
 // drawProfilesModal lists every configured instance profile over a dimmed,
 // frozen copy of the list. Picking one switches the shell to it without a
 // relaunch; Esc and Close back out.
@@ -1326,6 +1428,10 @@ func sessionKindLabel(kind string) string {
 	switch kind {
 	case "terminal":
 		return i18n.Get("sessions.kindTerminal")
+	case "serial":
+		return i18n.Get("sessions.kindSerial")
+	case "ssh":
+		return i18n.Get("sessions.kindSSH")
 	case "observer":
 		return i18n.Get("sessions.kindObserver")
 	case "tier1":

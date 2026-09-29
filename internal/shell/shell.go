@@ -232,6 +232,12 @@ type App struct {
 	createImageIdx       int
 	createImageList      ui.List
 
+	// The SSH credential form's widget state: the guest username and the
+	// private key file. The key bytes themselves are read at submit and
+	// carried in the model for the opening window only — never written.
+	sshUserField    ui.TextInput
+	sshKeyFileField ui.TextInput
+
 	// The surface. img is reallocated on resize; canvas wraps it.
 	img           *image.RGBA
 	canvas        *ui.Canvas
@@ -288,6 +294,10 @@ func New(opts Options) (*App, error) {
 	a.createNameField.Placeholder = i18n.Get("create.namePlaceholder")
 	a.createNamespaceField.ID = idCreateNamespace
 	a.createNamespaceField.Placeholder = "workspaces"
+	a.sshUserField.ID = idSSHUser
+	a.sshUserField.Placeholder = i18n.Get("ssh.userPlaceholder")
+	a.sshKeyFileField.ID = idSSHKeyFile
+	a.sshKeyFileField.Placeholder = i18n.Get("ssh.keyPlaceholder")
 	a.createType = kwclient.WorkspaceTypeContainer
 	a.createImageList.ID = idCreateImages
 	a.insecureBox.ID = idInsecure
@@ -586,7 +596,7 @@ func (a *App) draw(ctx context.Context) error {
 	// A modal keeps the previous frame as a frozen, dimmed backdrop. The
 	// background is deliberately not cleared and the list is not drawn, so the
 	// buffer still holds the frame the user last saw and the modal dims it.
-	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList)
+	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList || a.m.SSH != nil)
 	if !modal {
 		a.canvas.Fill(a.canvas.Bounds(), a.opts.Theme.Background)
 	}
@@ -605,6 +615,8 @@ func (a *App) draw(ctx context.Context) error {
 			intent = a.drawProfilesModal(a.canvas.Bounds())
 		case a.m.Creating:
 			intent = a.drawCreateModal(a.canvas.Bounds())
+		case a.m.SSH != nil:
+			intent = a.drawSSHModal(a.canvas.Bounds())
 		case modal:
 			intent = a.drawWorkspaceInfoModal(a.canvas.Bounds())
 		default:

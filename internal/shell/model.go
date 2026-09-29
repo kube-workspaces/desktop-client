@@ -127,6 +127,21 @@ type Model struct {
 	// OpenObserver records that the opening session is a shared-display
 	// observer rather than the workspace's primary surface.
 	OpenObserver bool
+	// OpenTerminal selects a VM console seat alongside its display:
+	// "" for the display, "serial" or "ssh" for a console window. The
+	// switcher resumes a parked console into the same seat.
+	OpenTerminal string
+	// OpenSSHUser and OpenSSHKeyPEM carry the /ssh bridge credentials for
+	// the opening window: the guest username and the PEM private key.
+	// The key bytes live in memory only and are never persisted; opening
+	// anything else clears them.
+	OpenSSHUser   string
+	OpenSSHKeyPEM []byte
+	// SSH is the workspace the SSH credential form is collecting the
+	// username and key file for, or nil when the form is closed. It is a
+	// snapshot like Info, so a list refresh under the form cannot change
+	// what Connect will open.
+	SSH *kwclient.Workspace
 
 	// Sessions are the held transports, for the switcher: workspaces whose
 	// windows are closed but whose connections are still up.
@@ -160,6 +175,10 @@ func (m *Model) NeedServer(reason string) {
 	m.Info = nil
 	m.Creating = false
 	m.Profiles = false
+	m.SSH = nil
+	m.OpenTerminal = ""
+	m.OpenSSHUser = ""
+	m.OpenSSHKeyPEM = nil
 	m.Busy, m.BusyText = false, ""
 	m.Err = reason
 	m.Notice = ""
@@ -204,6 +223,10 @@ func (m *Model) SignOut(reason string) {
 	m.Info = nil
 	m.Creating = false
 	m.Profiles = false
+	m.SSH = nil
+	m.OpenTerminal = ""
+	m.OpenSSHUser = ""
+	m.OpenSSHKeyPEM = nil
 	m.Busy, m.BusyText = false, ""
 	m.Err = ""
 	m.Notice = reason
@@ -301,11 +324,33 @@ type SessionEntry struct {
 func (m *Model) Open(ws kwclient.Workspace) {
 	m.Opening = ws
 	m.OpenObserver = false
+	m.OpenTerminal = ""
+	m.OpenSSHUser = ""
+	m.OpenSSHKeyPEM = nil
 	m.Selected = ws.Key()
 	m.Err, m.Notice = "", ""
 	m.Busy, m.BusyText = false, ""
 	m.State = StateSession
 }
+
+// OpenConsole moves to the session screen for one of ws's console seats:
+// "serial" or "ssh". SSH carries its bridge credentials; anything else
+// forgets them.
+func (m *Model) OpenConsole(ws kwclient.Workspace, kind, user string, keyPEM []byte) {
+	m.Open(ws)
+	m.OpenTerminal = kind
+	m.OpenSSHUser = user
+	m.OpenSSHKeyPEM = keyPEM
+}
+
+// ShowSSH opens the SSH credential form for ws.
+func (m *Model) ShowSSH(ws kwclient.Workspace) {
+	m.SSH = &ws
+	m.Err, m.Notice = "", ""
+}
+
+// CloseSSH dismisses the SSH credential form.
+func (m *Model) CloseSSH() { m.SSH = nil }
 
 // OpenAsObserver moves to the session screen for ws as a shared-display
 // observer.
@@ -364,6 +409,9 @@ func (m *Model) CloseSessionList() { m.SessionList = false }
 func (m *Model) SessionParked(ws kwclient.Workspace) {
 	m.Opening = kwclient.Workspace{}
 	m.OpenObserver = false
+	m.OpenTerminal = ""
+	m.OpenSSHUser = ""
+	m.OpenSSHKeyPEM = nil
 	m.State = StateWorkspaces
 	m.Busy, m.BusyText = false, ""
 	m.Err = ""
@@ -376,6 +424,9 @@ func (m *Model) SessionParked(ws kwclient.Workspace) {
 func (m *Model) SessionOpened(ws kwclient.Workspace) {
 	m.Opening = kwclient.Workspace{}
 	m.OpenObserver = false
+	m.OpenTerminal = ""
+	m.OpenSSHUser = ""
+	m.OpenSSHKeyPEM = nil
 	m.State = StateWorkspaces
 	m.Busy, m.BusyText = false, ""
 	m.Err = ""
@@ -395,6 +446,9 @@ func (m *Model) SessionOpened(ws kwclient.Workspace) {
 func (m *Model) SessionEnded(err error) {
 	ws := m.Opening
 	m.Opening = kwclient.Workspace{}
+	m.OpenTerminal = ""
+	m.OpenSSHUser = ""
+	m.OpenSSHKeyPEM = nil
 	m.State = StateWorkspaces
 	m.Busy, m.BusyText = false, ""
 

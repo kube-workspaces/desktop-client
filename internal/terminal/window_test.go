@@ -26,20 +26,21 @@ import (
 // goroutine never race.
 
 type fakeBackend struct {
-	mu        sync.Mutex
-	w, h      int
-	evs       []viewer.Event
-	wakeCh    chan struct{}
-	opts      viewer.WindowOptions
-	title     string
-	texW      int
-	texH      int
-	img       *image.RGBA
-	uploads   int
-	lastDirty viewer.Rect
-	presents  int
-	lastOv    viewer.Overlay
-	ovUploads int
+	mu         sync.Mutex
+	w, h       int
+	fullscreen bool
+	evs        []viewer.Event
+	wakeCh     chan struct{}
+	opts       viewer.WindowOptions
+	title      string
+	texW       int
+	texH       int
+	img        *image.RGBA
+	uploads    int
+	lastDirty  viewer.Rect
+	presents   int
+	lastOv     viewer.Overlay
+	ovUploads  int
 }
 
 func newFakeBackend() *fakeBackend {
@@ -147,8 +148,17 @@ func (f *fakeBackend) SetTitle(title string) error {
 	return nil
 }
 
-func (f *fakeBackend) SetFullscreen(on bool) error         { return nil }
-func (f *fakeBackend) Fullscreen() bool                    { return false }
+func (f *fakeBackend) SetFullscreen(on bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fullscreen = on
+	return nil
+}
+func (f *fakeBackend) Fullscreen() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fullscreen
+}
 func (f *fakeBackend) Clipboard() (string, error)          { return "", nil }
 func (f *fakeBackend) SetClipboard(string) error           { return nil }
 func (f *fakeBackend) Raise() error                        { return nil }

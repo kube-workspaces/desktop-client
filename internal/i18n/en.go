@@ -100,6 +100,8 @@ var english = map[string]string{
 	"workspaces.openBrowser":   "Open in browser",
 	"workspaces.observe":       "Observe",
 	"workspaces.observer":      " (observer)",
+	"workspaces.serial":        "Serial",
+	"workspaces.ssh":           "SSH",
 	"workspaces.stop":          "Stop",
 	"workspaces.info":          "Info",
 	"workspaces.close":         "Close",
@@ -175,6 +177,8 @@ var english = map[string]string{
 	"sessions.closed":       "Closed %s.",
 	"sessions.kindDisplay":  "Display",
 	"sessions.kindTerminal": "Terminal",
+	"sessions.kindSerial":   "Serial",
+	"sessions.kindSSH":      "SSH",
 	"sessions.kindObserver": "Observer",
 	"sessions.kindTier1":    "Tier 1",
 
@@ -252,4 +256,17 @@ var english = map[string]string{
 	// here rather than in Describe's fallback capitaliser.
 	"session.takeoverDeclined": "server declined the takeover",
 	"session.sharedDisabled":   "shared display sessions are not enabled on this platform",
+
+	// SSH console credential form.
+	"ssh.title":           "SSH console",
+	"ssh.user":            "GUEST USERNAME",
+	"ssh.userPlaceholder": "debian",
+	"ssh.keyFile":         "PRIVATE KEY FILE",
+	"ssh.keyPlaceholder":  "~/.ssh/id_ed25519",
+	"ssh.hint":            "The key stays in memory for this session and is never saved.",
+	"ssh.connect":         "Connect",
+	"ssh.cancel":          "Cancel",
+	"ssh.needUser":        "Enter the guest username.",
+	"ssh.badKey":          "Private key could not be loaded: %v.",
+	"ssh.gone":            "That workspace is no longer available.",
 }

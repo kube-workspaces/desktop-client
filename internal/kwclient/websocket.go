@@ -5,6 +5,7 @@ package kwclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -114,6 +115,38 @@ func (c *Client) DialSSH(ctx context.Context, namespace, name string, cols, rows
 	conn, _, err := c.DialWS(ctx, workspacePath(name, "ssh"), terminalQuery(namespace, cols, rows), nil)
 	if err != nil {
 		return nil, err
+	}
+	return conn, nil
+}
+
+// sshAuthMessage is the first client message on an SSH bridge session,
+// carrying the guest username and the caller's private key. The key is held
+// only for the dial and never persisted by this client; the server holds it
+// only for the bridge lifetime to authenticate to the guest sshd.
+type sshAuthMessage struct {
+	Type       string `json:"type"`
+	User       string `json:"user"`
+	PrivateKey string `json:"privateKey"`
+}
+
+// DialSSHWithAuth dials the SSH bridge like [Client.DialSSH] and then sends
+// the bridge's mandatory first message: the SSH credentials as a text frame.
+// The server waits at most ten seconds for it and closes a silent client,
+// so a dial that returns here has already introduced itself; a missing or
+// bad key fails the session server-side rather than wedging the slot.
+func (c *Client) DialSSHWithAuth(ctx context.Context, namespace, name string, cols, rows uint16, user, privateKey string) (*websocket.Conn, error) {
+	conn, err := c.DialSSH(ctx, namespace, name, cols, rows)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(sshAuthMessage{Type: "ssh", User: user, PrivateKey: privateKey})
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("kwclient: SSH auth message: %w", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("kwclient: SSH auth message: %w", err)
 	}
 	return conn, nil
 }

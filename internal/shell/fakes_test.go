@@ -685,11 +685,30 @@ var _ Store = (*memStore)(nil)
 // from the rig's connect hook, so session tests control the outcome without
 // a network or a window.
 type fakeDialer struct {
-	dial func(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error)
+	dial     func(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error)
+	terminal func(ctx context.Context, ws kwclient.Workspace, opts TerminalDialOpts) (SessionHandle, error)
 }
 
 func (d *fakeDialer) Dial(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error) {
 	return d.dial(ctx, ws, observer)
+}
+
+func (d *fakeDialer) DialTerminal(ctx context.Context, ws kwclient.Workspace, opts TerminalDialOpts) (SessionHandle, error) {
+	if d.terminal != nil {
+		return d.terminal(ctx, ws, opts)
+	}
+	h, err := d.dial(ctx, ws, false)
+	if err != nil {
+		return nil, err
+	}
+	if fh, ok := h.(*fakeHandle); ok {
+		kind := opts.Kind
+		if kind == "" {
+			kind = "terminal"
+		}
+		fh.kind = kind
+	}
+	return h, nil
 }
 
 // fakeHandle is a [SessionHandle] with scripted open and recorded close.

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
@@ -39,6 +40,14 @@ const (
 	// long enough to stay quiet and short enough that a scheduled reconnect
 	// or a pending resize never drifts visibly.
 	idleWait = 200 * time.Millisecond
+
+	// seatRecheckInterval is how often a window waiting on a held console
+	// re-asks whether the seat cleared. It matches the shared-display
+	// membership poll: gentle enough to be invisible, prompt enough that a
+	// freed seat connects without the user having to press anything. A dial
+	// never evicts, so polling needs no consent; only the takeover call
+	// does, and that stays behind Enter.
+	seatRecheckInterval = 5 * time.Second
 )
 
 // window owns the live terminal session: the backend, the emulator, the
@@ -48,14 +57,25 @@ const (
 // through [window.mu]-guarded state and the backend's Wake mechanism, which is
 // exactly the shape the viewer's own loop uses.
 type window struct {
-	be      viewer.Backend
-	emu     *Emulator
-	ren     *renderer
-	in      *input
-	dial    Dial
-	ctx     context.Context
-	backoff reconnect.Policy
-	logf    func(string, ...any)
+	be        viewer.Backend
+	emu       *Emulator
+	ren       *renderer
+	in        *input
+	dial      Dial
+	checkSeat func(ctx context.Context) (bool, error)
+	takeSeat  func(ctx context.Context) error
+	ctx       context.Context
+	backoff   reconnect.Policy
+	logf      func(string, ...any)
+
+	// seatApproved records explicit takeover consent for this window's
+	// lifetime: once the user has pressed Enter on the busy plate, later
+	// dials skip the seat check the way the web console's approved flag
+	// does. seatInUse is the busy plate itself. Both are owned by the loop
+	// goroutine — the network pump never touches them — like the rest of
+	// the draw path.
+	seatApproved bool
+	seatInUse    bool
 
 	title string
 	scale int
@@ -282,12 +302,25 @@ func (w *window) nextTryTime() time.Time {
 
 // tryConnect dials once. A failure schedules the next attempt with backoff
 // and reflects it in the window title; a success hands the connection to
-// attach.
+// attach. A held single-seat console is not a failure: the window parks on
+// the busy plate (rechecking gently, dialling when the seat clears) until
+// the user explicitly takes it over with Enter.
 func (w *window) tryConnect() {
+	if w.seatHeld() {
+		return
+	}
 	conn, err := w.dial(w.ctx, uint16(w.cols), uint16(w.rows))
 	if err != nil {
 		if w.ctx.Err() != nil {
 			w.quit = true
+			return
+		}
+		if errors.Is(err, ErrInUse) {
+			// Raced 409: the seat filled between the status check and the
+			// dial. Back on the busy plate — no silent steal, same as the
+			// pre-dial check.
+			w.markSeatBusy("")
+			w.logf("terminal: seat taken (raced status); waiting for consent")
 			return
 		}
 		w.mu.Lock()
@@ -308,6 +341,67 @@ func (w *window) tryConnect() {
 	w.attach(conn)
 }
 
+// seatHeld reports whether a single-seat console is currently held, parking
+// the window on the busy plate when it is. A check failure is fail-open: a
+// status hiccup must not block the console, so the window dials and lets
+// the bridge answer instead.
+func (w *window) seatHeld() bool {
+	if w.seatApproved || w.checkSeat == nil {
+		return false
+	}
+	inUse, err := w.checkSeat(w.ctx)
+	if err != nil {
+		w.logf("terminal: seat check failed (fail-open): %v", err)
+		return false
+	}
+	if !inUse {
+		return false
+	}
+	w.markSeatBusy("")
+	return true
+}
+
+// markSeatBusy parks the window on the busy plate with a gentle recheck. A
+// dial never evicts, so re-polling needs no consent; only the takeover call
+// does.
+func (w *window) markSeatBusy(detail string) {
+	w.seatInUse = true
+	w.mu.Lock()
+	w.attempts = 0
+	w.nextTry = time.Now().Add(seatRecheckInterval)
+	if detail != "" {
+		w.lastErr = detail
+	}
+	w.mu.Unlock()
+	if w.title != "" {
+		_ = w.be.SetTitle(w.title)
+	}
+}
+
+// takeSeatNow runs the explicit-consent takeover and dials immediately on
+// success. A failed takeover stays on the busy plate with the reason, so
+// Enter retries and closing the window backs out.
+func (w *window) takeSeatNow() {
+	if w.takeSeat == nil {
+		return
+	}
+	if err := w.takeSeat(w.ctx); err != nil {
+		w.logf("terminal: takeover failed: %v", err)
+		w.mu.Lock()
+		w.lastErr = err.Error()
+		w.nextTry = time.Now().Add(seatRecheckInterval)
+		w.mu.Unlock()
+		return
+	}
+	w.seatApproved = true
+	w.seatInUse = false
+	w.mu.Lock()
+	w.failed = true
+	w.attempts = 0
+	w.nextTry = time.Now()
+	w.mu.Unlock()
+}
+
 // attach wires a freshly dialed connection into the session: a clean screen, a
 // grid announcement, and a read pump.
 func (w *window) attach(conn io.ReadWriteCloser) {
@@ -326,6 +420,10 @@ func (w *window) attach(conn io.ReadWriteCloser) {
 	w.failed = false
 	w.liveOnce = true
 	w.mu.Unlock()
+	// A connection proves the seat is ours; the busy plate goes away. The
+	// approval stays for the window's lifetime so a later drop redials
+	// without re-prompting, exactly like the web console's approved flag.
+	w.seatInUse = false
 
 	w.sendResize()
 	go w.pump(conn)
@@ -407,13 +505,17 @@ func (w *window) endedNow() bool {
 
 // statusNow is the connection state the in-window plate should show: nothing
 // while a session is live, "connecting" until the first session has ever been
-// established, and "reconnecting" after a drop. lastErr, when there is one,
+// established, "reconnecting" after a drop, and "display in use" while a
+// single-seat console is held by somebody else. lastErr, when there is one,
 // sits under the headline.
 func (w *window) statusNow() (viewer.Status, string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if !w.failed || w.ended {
 		return viewer.StatusLive, ""
+	}
+	if w.seatInUse {
+		return viewer.StatusDisplayInUse, w.lastErr
 	}
 	if !w.liveOnce {
 		return viewer.StatusConnecting, w.lastErr
@@ -431,6 +533,25 @@ func (w *window) handleEvent(e viewer.Event) {
 	case viewer.EventResize:
 		w.scheduleResize(ev.W, ev.H)
 	default:
+		if ev, ok := e.(viewer.EventKey); ok && ev.Down && !ev.Repeat {
+			// F11 is the palette's fullscreen affordance, shared with the
+			// display viewer: it belongs to the window and is never
+			// forwarded, so a guest fullscreen app cannot swallow the
+			// binding. The grid follows through the resize the window
+			// manager answers with.
+			if ev.Key == keysym.KeyF11 {
+				w.toggleFullscreen()
+				return
+			}
+			// Enter on the busy plate is explicit takeover consent:
+			// evict the holder and dial. It is consumed here, never
+			// typed into a shell that is not there, and the plate names
+			// the alternative (Ctrl+Alt+Q closes).
+			if ev.Key == keysym.KeyReturn && w.seatInUse {
+				w.takeSeatNow()
+				return
+			}
+		}
 		out, quit := w.in.handle(e)
 		if quit {
 			w.quit = true
@@ -529,6 +650,38 @@ func (w *window) nextWait(now time.Time) time.Duration {
 	return wait
 }
 
+// toggleFullscreen flips the window's fullscreen state, the terminal half
+// of the in-session palette (the display viewer owns the other half behind
+// the same F11). A backend that cannot do it — a tiling compositor owns
+// the state — reports the error and keeps the window as it is.
+func (w *window) toggleFullscreen() {
+	if err := w.be.SetFullscreen(!w.be.Fullscreen()); err != nil {
+		w.logf("terminal: fullscreen: %v", err)
+		return
+	}
+	if gw, gh := w.be.Size(); gw > 0 && gh > 0 {
+		w.winW, w.winH = gw, gh
+	}
+}
+
+// plateLines renders a status into the overlay plate's lines. Everything but
+// the busy seat shares the viewer's plate; the busy seat names the console
+// and its two exits, because "Display in use" would not tell a terminal
+// user what is held or how to take it.
+func (w *window) plateLines(status viewer.Status, detail string) []string {
+	if status != viewer.StatusDisplayInUse {
+		return viewer.StatusLines(status, detail)
+	}
+	lines := []string{
+		"Console in use by another session",
+		"Enter: take over  ·  Ctrl+Alt+Q: close",
+	}
+	if detail != "" {
+		lines = append(lines, detail)
+	}
+	return lines
+}
+
 // present redraws the changed cells into the texture and shows the window.
 func (w *window) present() {
 	gw, gh := w.ren.Size()
@@ -541,7 +694,7 @@ func (w *window) present() {
 	}
 	fit := viewer.FitLetterbox(gw, gh, w.winW, w.winH)
 	status, detail := w.statusNow()
-	ov, err := w.plate.Build(w.be, viewer.StatusLines(status, detail), w.winW, w.winH)
+	ov, err := w.plate.Build(w.be, w.plateLines(status, detail), w.winW, w.winH)
 	if err != nil {
 		w.logf("terminal: status plate: %v", err)
 	}

@@ -51,6 +51,10 @@ const (
 	intentRefresh
 	intentActivate
 	intentOpenObserver
+	intentOpenSerial
+	intentOpenSSH
+	intentSSHSubmit
+	intentSSHClose
 	intentOpenWeb
 	intentOpenInBrowser
 	intentStartWorkspace
@@ -120,6 +124,19 @@ func (a *App) act(ctx context.Context, in intent) {
 		if ws, ok := a.resolve(in.workspace); ok {
 			a.activate(ctx, ws, true)
 		}
+	case intentOpenSerial:
+		if ws, ok := a.resolve(in.workspace); ok && ws.IsVM() && ws.Running() {
+			a.m.OpenConsole(ws, "serial", "", nil)
+		}
+	case intentOpenSSH:
+		if ws, ok := a.resolve(in.workspace); ok && ws.IsVM() && ws.Running() {
+			a.openSSH(ws)
+		}
+	case intentSSHSubmit:
+		a.submitSSH()
+	case intentSSHClose:
+		a.m.CloseSSH()
+		a.ctx.Focus().Set(idSSH)
 	case intentOpenWeb:
 		if ws, ok := a.resolve(in.workspace); ok {
 			a.openWeb(ctx, ws)
@@ -167,9 +184,14 @@ func (a *App) act(ctx context.Context, in intent) {
 		} else if rec, ok := a.sessions[in.sessionKey]; ok {
 			// Parked: resume the held transport in a fresh window.
 			a.m.CloseSessionList()
-			if rec.observer {
+			switch {
+			case rec.observer:
 				a.m.OpenAsObserver(rec.ws)
-			} else {
+			case rec.terminal != "":
+				// The handle holds its own credentials for redials; the
+				// model copy is only read when dialling a new transport.
+				a.m.OpenConsole(rec.ws, rec.terminal, "", nil)
+			default:
 				a.m.Open(rec.ws)
 			}
 		}
@@ -697,6 +719,74 @@ func (a *App) openInBrowser(ctx context.Context, ws kwclient.Workspace) {
 	})
 }
 
+// openSSH opens the SSH credential form for a VM workspace. The /ssh bridge
+// authenticates with the guest username and the private key matching a key
+// seeded into the guest; both are collected here and held in memory only,
+// never written anywhere. The key is named by file rather than pasted: a
+// PEM never fits a single-line field, and a path keeps the bytes off the
+// screen.
+func (a *App) openSSH(ws kwclient.Workspace) {
+	a.sshUserField.SetValue("")
+	a.sshKeyFileField.SetValue("")
+	a.m.ShowSSH(ws)
+	a.ctx.Focus().Set(idSSHUser)
+}
+
+// submitSSH validates the credential form and opens the SSH console seat.
+func (a *App) submitSSH() {
+	sub := a.m.SSH
+	if sub == nil {
+		return
+	}
+	ws, ok := a.resolve(*sub)
+	if !ok || !ws.IsVM() || !ws.Running() {
+		a.m.Err = i18n.Get("ssh.gone")
+		a.m.CloseSSH()
+		a.ctx.Focus().Set(idSSH)
+		return
+	}
+	user := strings.TrimSpace(a.sshUserField.Value())
+	if user == "" {
+		a.m.Err = i18n.Get("ssh.needUser")
+		a.ctx.Focus().Set(idSSHUser)
+		return
+	}
+	pem, err := readSSHKeyFile(strings.TrimSpace(a.sshKeyFileField.Value()))
+	if err != nil {
+		a.m.Err = i18n.Sprintf("ssh.badKey", err)
+		a.ctx.Focus().Set(idSSHKeyFile)
+		return
+	}
+	a.m.CloseSSH()
+	a.ctx.Focus().Set(idSSH)
+	a.m.OpenConsole(ws, "ssh", user, pem)
+}
+
+// readSSHKeyFile loads a PEM private key for the SSH form. A leading ~/ is
+// the user's home; anything else is taken literally. The bytes are returned
+// for the dial and never stored: the handle that redials holds them in
+// memory, and dropping the session forgets them.
+func readSSHKeyFile(path string) ([]byte, error) {
+	if path == "" {
+		return nil, errors.New("no key file given")
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(pem) == 0 || !strings.Contains(string(pem), "PRIVATE KEY") {
+		return nil, errors.New("not a PEM private key")
+	}
+	return pem, nil
+}
+
 // openCreate opens the "new workspace" form modal with fresh defaults: an
 // empty name, the profile (or platform-default) namespace, the container type
 // and the first image that supports it.
@@ -1143,9 +1233,16 @@ const (
 	idOpenInBrowser ui.FocusID = "open-in-browser"
 	idConsole       ui.FocusID = "console"
 	idObserve       ui.FocusID = "observe"
+	idSerial        ui.FocusID = "serial"
+	idSSH           ui.FocusID = "ssh"
 	idStop          ui.FocusID = "stop"
 	idRefresh       ui.FocusID = "refresh"
 	idSignOut       ui.FocusID = "sign-out"
+
+	idSSHUser    ui.FocusID = "ssh-user"
+	idSSHKeyFile ui.FocusID = "ssh-key-file"
+	idSSHSubmit  ui.FocusID = "ssh-submit"
+	idSSHClose   ui.FocusID = "ssh-close"
 
 	idInfo      ui.FocusID = "info"
 	idInfoClose ui.FocusID = "info-close"

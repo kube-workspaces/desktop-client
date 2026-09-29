@@ -38,9 +38,31 @@ type Options struct {
 	// quitting on Esc would make vim unusable.
 	QuitRune rune
 
+	// CheckSeat reports whether a single-seat console is currently held by
+	// somebody else. Nil means the bridge is multi-session (container /exec):
+	// no check happens and the window dials straight away, exactly as before.
+	// A check failure is fail-open — a status hiccup must not block the
+	// console — so the window dials and lets the bridge answer instead.
+	CheckSeat func(ctx context.Context) (inUse bool, err error)
+
+	// TakeSeat evicts the current holder so the next dial can connect. It is
+	// called only after explicit user consent: Enter on the busy plate. Nil
+	// means no takeover is available and the window waits for the seat to
+	// clear on its own.
+	TakeSeat func(ctx context.Context) error
+
 	// Logf receives non-fatal diagnostics. Nil drops them.
 	Logf func(string, ...any)
 }
+
+// ErrInUse reports that a single-seat console is held by somebody else.
+//
+// A dial returns it (wrapping is fine; detected with errors.Is) when the
+// bridge answers 409. The window answers with the busy plate and waits for
+// explicit takeover consent instead of retrying behind the holder's back,
+// mirroring the web console's consent flow. A dial that never evicts needs
+// no consent to retry once the seat is free.
+var ErrInUse = errors.New("console in use")
 
 // Dial opens one session transport: a ReadWriteCloser whose reads are the
 // shell's output and whose writes are the shell's input. cols and rows are
@@ -107,18 +129,20 @@ func buildWindow(dial Dial, opts Options) (*window, error) {
 	}
 
 	return &window{
-		be:      be,
-		emu:     emu,
-		ren:     newRenderer(defaultCols, defaultRows, scale),
-		in:      in,
-		dial:    dial,
-		backoff: reconnect.Default(),
-		logf:    logf,
-		title:   opts.Title,
-		scale:   scale,
-		cellW:   ui.GlyphAdvance * scale,
-		cellH:   ui.LineAdvance * scale,
-		cols:    defaultCols,
-		rows:    defaultRows,
+		be:        be,
+		emu:       emu,
+		ren:       newRenderer(defaultCols, defaultRows, scale),
+		in:        in,
+		dial:      dial,
+		checkSeat: opts.CheckSeat,
+		takeSeat:  opts.TakeSeat,
+		backoff:   reconnect.Default(),
+		logf:      logf,
+		title:     opts.Title,
+		scale:     scale,
+		cellW:     ui.GlyphAdvance * scale,
+		cellH:     ui.LineAdvance * scale,
+		cols:      defaultCols,
+		rows:      defaultRows,
 	}, nil
 }

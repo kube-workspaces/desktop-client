@@ -97,8 +97,22 @@ type SessionHandle interface {
 	// Close ends the session and frees what it holds on the server.
 	Close()
 	// Kind names the session for the switcher: "display", "terminal",
-	// "observer" or "tier1".
+	// "serial", "ssh", "observer" or "tier1".
 	Kind() string
+}
+
+// TerminalDialOpts selects a VM's out-of-band console seat: its serial
+// console (the /exec bridge, which serves the KubeVirt serial stream for
+// VMs) or its SSH console (the /ssh bridge). A display and its consoles
+// are independent single-seat slots, so all three may be held at once.
+type TerminalDialOpts struct {
+	// Kind is "serial" or "ssh".
+	Kind string
+	// SSHUser and SSHKeyPEM authenticate the /ssh bridge: the guest
+	// username and the PEM private key matching a key seeded into the
+	// guest. The bytes live in memory only and are never persisted.
+	SSHUser   string
+	SSHKeyPEM []byte
 }
 
 // SessionDialer opens holdable sessions for the concurrent-session manager.
@@ -109,6 +123,9 @@ type SessionHandle interface {
 // once.
 type SessionDialer interface {
 	Dial(ctx context.Context, ws kwclient.Workspace, observer bool) (SessionHandle, error)
+	// DialTerminal opens a VM's serial or SSH console seat. The window
+	// appears on the first Open like any other session.
+	DialTerminal(ctx context.Context, ws kwclient.Workspace, opts TerminalDialOpts) (SessionHandle, error)
 }
 
 // ClientFactory builds the client for an instance, and the dialer that opens
