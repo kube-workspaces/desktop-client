@@ -675,3 +675,89 @@ func TestDisableTrayWhileHiddenRestores(t *testing.T) {
 		t.Fatal("window stayed hidden with the tray gone")
 	}
 }
+
+// TestTrayOpenShowsPickerWhenHidden: the reported bug — a tray click that
+// needs the picker while the main window is minimized must restore the
+// window with the picker in it, not open the picker invisibly.
+func TestTrayOpenShowsPickerWhenHidden(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.hideShellToTray()
+	if !r.app.shellHidden {
+		t.Fatal("hide did not hide")
+	}
+	r.app.trayCh <- tray.Action{Kind: tray.ActionOpen, Key: "team/vm-a"}
+	r.step()
+	if r.app.m.Picker == nil || r.app.m.Picker.Key() != "team/vm-a" {
+		t.Fatalf("picker = %+v, want team/vm-a", r.app.m.Picker)
+	}
+	if r.app.shellHidden || r.be.isHidden() {
+		t.Fatal("picker opened in a hidden window: the click looked dead")
+	}
+}
+
+// TestTrayOpenLiveKeepsShellHidden: focusing a live window needs no shell
+// UI, so a hidden shell stays hidden and only the session raises.
+func TestTrayOpenLiveKeepsShellHidden(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.m.Open(lookupMust(t, r, "team/vm-a"))
+	r.settle()
+	r.app.hideShellToTray()
+	w := r.app.live["team/vm-a"].window.(*fakeLiveWindow)
+	raises := w.raises
+	r.app.trayCh <- tray.Action{Kind: tray.ActionOpen, Key: "team/vm-a"}
+	r.step()
+	if w.raises != raises+1 {
+		t.Fatal("tray click did not raise the live window")
+	}
+	if !r.app.shellHidden || !r.be.isHidden() {
+		t.Fatal("focusing a live window popped the hidden shell")
+	}
+}
+
+// TestTrayOpenStaleShowsShellWhenHidden: a stale click's only outcome is a
+// notice, which needs a visible window to be seen.
+func TestTrayOpenStaleShowsShellWhenHidden(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.hideShellToTray()
+	r.app.trayCh <- tray.Action{Kind: tray.ActionOpen, Key: "team/gone"}
+	r.step()
+	if r.app.m.Notice == "" {
+		t.Fatal("stale click reported nothing")
+	}
+	if r.app.shellHidden || r.be.isHidden() {
+		t.Fatal("stale-click notice went to a hidden window")
+	}
+}
+
+// TestTrayAboutShowsShellWhenHidden: the About panel in a hidden window
+// would be as invisible as the picker was.
+func TestTrayAboutShowsShellWhenHidden(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.hideShellToTray()
+	r.app.trayCh <- tray.Action{Kind: tray.ActionAbout}
+	r.step()
+	if !r.app.m.About {
+		t.Fatal("About action did not open the panel")
+	}
+	if r.app.shellHidden || r.be.isHidden() {
+		t.Fatal("About panel opened in a hidden window")
+	}
+}
+
+// TestPickFailureShowsShellWhenHidden: minimizing with the picker already
+// open, then failing a pick, must bring the window back with the error.
+func TestPickFailureShowsShellWhenHidden(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.opts.OpenWeb = func(profile, namespace, name string) error {
+		return errors.New("no webview here")
+	}
+	r.app.m.ShowPicker(lookupMust(t, r, "team/web-a"))
+	r.app.hideShellToTray()
+	r.app.act(context.Background(), intent{kind: intentPickMode, mode: tray.ModeWeb})
+	if r.app.m.Picker == nil || r.app.m.PickerErr == "" {
+		t.Fatal("failed Web pick did not stay open with an error")
+	}
+	if r.app.shellHidden || r.be.isHidden() {
+		t.Fatal("failed pick stayed open in a hidden window")
+	}
+}

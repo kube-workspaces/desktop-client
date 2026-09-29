@@ -206,6 +206,17 @@ func (a *App) drainTray(ctx context.Context) {
 	}
 }
 
+// ensureShellVisible restores a minimized main window before presenting
+// shell UI for a tray action. A picker, notice or panel opening in a
+// hidden window looks exactly like the click doing nothing — which is the
+// failure this guards. Session windows need no such help: they open and
+// raise on their own, so a direct open leaves a hidden shell hidden.
+func (a *App) ensureShellVisible() {
+	if a.shellHidden {
+		a.showShell()
+	}
+}
+
 // applyTrayAction performs one menu click: Show restores the main window,
 // About opens the panel, Quit quits through the same flag the window-close
 // path sets, and Open focuses, picks or opens the workspace.
@@ -214,6 +225,7 @@ func (a *App) applyTrayAction(ctx context.Context, action tray.Action) {
 	case tray.ActionShow:
 		a.showShell()
 	case tray.ActionAbout:
+		a.ensureShellVisible()
 		a.m.ShowAbout()
 	case tray.ActionQuit:
 		a.quit = true
@@ -230,6 +242,9 @@ func (a *App) applyTrayAction(ctx context.Context, action tray.Action) {
 func (a *App) trayOpenWorkspace(ctx context.Context, key string) {
 	ws, ok := lookupWorkspace(a.m.Workspaces, key)
 	if !ok || !ws.Running() {
+		// Stale click: the only outcome is a notice, which needs a
+		// visible window to be seen.
+		a.ensureShellVisible()
 		a.m.Err = ""
 		a.m.Notice = i18n.Get("pick.gone")
 		a.refreshWorkspaces(ctx, false)
@@ -237,7 +252,8 @@ func (a *App) trayOpenWorkspace(ctx context.Context, key string) {
 	}
 	if e, ok := a.live[ws.Key()]; ok && !e.observer {
 		// The primary surface is already on screen: focus it, exactly as
-		// the sessions switcher does.
+		// the sessions switcher does. No shell UI involved, so a hidden
+		// shell stays hidden.
 		_ = e.window.Raise()
 		a.m.Err = ""
 		a.m.Notice = i18n.Sprintf("sessions.opened", ws.Key())
@@ -246,8 +262,15 @@ func (a *App) trayOpenWorkspace(ctx context.Context, key string) {
 	modes := tray.ModesFor(trayKindOf(ws))
 	if len(modes) == 1 {
 		a.openTrayMode(ctx, ws, modes[0])
+		// A direct open speaks through the new window — except when it
+		// fails into shell UI (a stayed-open picker, the SSH form, an
+		// error), which must be seen to be answered.
+		if a.shellHidden && (a.m.Err != "" || a.m.Picker != nil || a.m.SSH != nil) {
+			a.showShell()
+		}
 		return
 	}
+	a.ensureShellVisible()
 	a.m.ShowPicker(ws)
 }
 
@@ -278,6 +301,12 @@ func (a *App) pickMode(ctx context.Context, mode tray.Mode) {
 		return
 	}
 	a.openTrayMode(ctx, ws, mode)
+	// A pick that keeps the picker open (a synchronously failing Web
+	// open) must be seen to be retried — e.g. after minimizing with the
+	// picker already up.
+	if a.m.Picker != nil && a.shellHidden {
+		a.showShell()
+	}
 }
 
 // openTrayMode opens ws through one mode, closing the picker on the paths
