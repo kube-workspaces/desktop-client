@@ -228,10 +228,12 @@ type App struct {
 	list          ui.List
 
 	// Selectable read-only values: the message strip, the browser sign-in
-	// URL and the installed version. Each keeps its own selection.
-	msgSel ui.SelectableText
-	urlSel ui.SelectableText
-	verSel ui.SelectableText
+	// URL, the installed version, and the Updates status line (failure
+	// sentences get pasted into bug reports). Each keeps its own selection.
+	msgSel    ui.SelectableText
+	urlSel    ui.SelectableText
+	verSel    ui.SelectableText
+	statusSel ui.SelectableText
 
 	// The "new workspace" form's widget state. The type and image selections
 	// are indices rather than widgets: the type row is three buttons and the
@@ -328,6 +330,7 @@ func New(opts Options) (*App, error) {
 	a.msgSel.ID = idMsgSel
 	a.urlSel.ID = idURLSel
 	a.verSel.ID = idVerSel
+	a.statusSel.ID = idStatusSel
 
 	a.ctx.Clipboard = a.be.Clipboard
 	a.ctx.SetClipboard = a.be.SetClipboard

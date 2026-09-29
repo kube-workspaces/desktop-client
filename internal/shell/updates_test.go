@@ -470,3 +470,37 @@ func TestBadgeAndSettingsBothReachable(t *testing.T) {
 		t.Fatalf("the header Settings button led to %v, want Settings", r.app.m.State)
 	}
 }
+
+// TestUpdateStatusCopies: the Updates status line is selectable and carries
+// a Copy button, so failure sentences (installer exit codes with their log
+// path) can be pasted into a bug report.
+func TestUpdateStatusCopies(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	r.start()
+	r.settle()
+	r.app.m.State = StateUpdates
+	r.app.updates.status = "update: installer failed with exit code 1603 (see C:\\log)"
+	r.app.dirty = true
+	r.step()
+	order := append([]ui.FocusID(nil), r.app.ctx.Focus().Order()...)
+	at := func(id ui.FocusID) int {
+		for i, got := range order {
+			if got == id {
+				return i
+			}
+		}
+		return -1
+	}
+	if at(idStatusSel) < 0 {
+		t.Fatalf("status text missing from focus order %v", order)
+	}
+	if at(idCopyStatus) < 0 {
+		t.Fatalf("copy button missing from focus order %v", order)
+	}
+	r.focus(idCopyStatus)
+	r.clickFocused()
+	r.step()
+	if got := r.be.getClipboard(); got != r.app.updates.status {
+		t.Fatalf("clipboard = %q, want the status text", got)
+	}
+}

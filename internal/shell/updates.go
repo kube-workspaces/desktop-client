@@ -341,9 +341,19 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 			dy = 0
 		}
 		ui.CheckMark(ctx, ui.Rect{X: icon.X, Y: icon.Y + dy, W: size, H: size}, th.Success)
-		ui.Label(ctx, rest, a.updates.status, ui.LabelStyle{Wrap: true})
+		a.statusSel.Layout(ctx, rest, a.updates.status, ui.SelectableStyle{})
 	} else {
-		ui.Label(ctx, statusRect, a.updates.status, ui.LabelStyle{Wrap: true})
+		a.statusSel.Layout(ctx, statusRect, a.updates.status, ui.SelectableStyle{})
+	}
+	// The status carries failure sentences users paste into bug reports
+	// (notably installer exit codes with their log path), so it is
+	// selectable like the other read-only text — plus a Copy button,
+	// because reaching for Ctrl-C inside a three-line wrap is fiddly.
+	if a.updates.status != "" {
+		copyBtn := ui.Button{ID: idCopyStatus, Text: i18n.Get("common.copy"), Variant: ui.ButtonSecondary}
+		if copyBtn.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, copyBtn.Width(ctx), 0)[0]) {
+			ctx.Copy(a.updates.status)
+		}
 	}
 	if a.updates.busy {
 		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.bytes", a.updates.bytes.Load()), ui.LabelStyle{})

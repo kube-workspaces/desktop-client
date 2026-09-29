@@ -1378,5 +1378,8 @@ const (
 	idCopyURL ui.FocusID = "copy-url"
 	idVerSel  ui.FocusID = "version"
 
+	idStatusSel  ui.FocusID = "update-status"
+	idCopyStatus ui.FocusID = "copy-update-status"
+
 	idUpdates ui.FocusID = "updates"
 )

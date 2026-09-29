@@ -427,3 +427,81 @@ func TestDetectMSIViaInstaller(t *testing.T) {
 		t.Fatalf("got %+v, %v", m, err)
 	}
 }
+
+// TestApplyMSIAdminBlock checks that a 1603 caused by MSI error 1730 (a
+// per-machine change attempted without administrator rights, as a silent
+// unattended upgrade of older per-machine products produces) surfaces as
+// actionable elevation guidance naming the staged package — not a bare
+// exit code. Seen live: five stale per-machine registrations, every
+// nested removal failing 1730, outer install rolling back to 1603.
+func TestApplyMSIAdminBlock(t *testing.T) {
+	dir := t.TempDir()
+	work := t.TempDir()
+	log := filepath.Join(work, "msi-update.log")
+	fail1730 := "Product: Kube Workspaces -- Error 1730. You must be an Administrator to remove this application.\nAction ended 13:31:17: INSTALL. Return value 3.\n"
+	old := execMsiexec
+	defer func() { execMsiexec = old }()
+	execMsiexec = func([]string) error { return &msiExitError{Code: 1603} }
+
+	// Plain-text log.
+	if err := os.WriteFile(log, []byte(fail1730), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: work}, func(string, string) error { return nil })
+	if !errors.Is(err, ErrNeedsElevation) {
+		t.Fatalf("1730 reported %v, want ErrNeedsElevation", err)
+	}
+	if !strings.Contains(err.Error(), "pkg.msi") || !strings.Contains(err.Error(), "manually") {
+		t.Fatalf("1730 error %q does not name the staged package to run manually", err)
+	}
+
+	// UTF-16 log, as msiexec writes it: NUL-interleaved ASCII must still match.
+	var wide []byte
+	for _, c := range []byte(fail1730) {
+		wide = append(wide, c, 0)
+	}
+	if err := os.WriteFile(log, wide, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: work}, func(string, string) error { return nil }); !errors.Is(err, ErrNeedsElevation) {
+		t.Fatalf("UTF-16 1730 reported %v, want ErrNeedsElevation", err)
+	}
+
+	// A 1603 without 1730 keeps the old bare message.
+	if err := os.WriteFile(log, []byte("Action ended 13:31:17: INSTALL. Return value 3.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = applyMSI(&MSIPackage{Path: "pkg.msi", Tag: "v1.2.3", Dir: dir, Work: work}, func(string, string) error { return nil })
+	if errors.Is(err, ErrNeedsElevation) || !strings.Contains(err.Error(), "exit code 1603") {
+		t.Fatalf("plain 1603 reported %v, want the bare exit-code message", err)
+	}
+}
+
+func TestLogShowsAdminBlock(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "absent.log")
+	if logShowsAdminBlock(missing) {
+		t.Fatal("missing log reads as an admin block")
+	}
+	empty := filepath.Join(dir, "empty.log")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if logShowsAdminBlock(empty) {
+		t.Fatal("empty log reads as an admin block")
+	}
+	plain := filepath.Join(dir, "plain.log")
+	if err := os.WriteFile(plain, []byte("Error 1730. You must be an Administrator"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !logShowsAdminBlock(plain) {
+		t.Fatal("plain 1730 not detected")
+	}
+	other := filepath.Join(dir, "other.log")
+	if err := os.WriteFile(other, []byte("Return value 3"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if logShowsAdminBlock(other) {
+		t.Fatal("unrelated failure reads as an admin block")
+	}
+}

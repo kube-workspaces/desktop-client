@@ -4,6 +4,7 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -160,6 +161,27 @@ func msiArgs(path, dir string, machine bool, log string) []string {
 	return append(args, "INSTALLDIR="+dir)
 }
 
+// logShowsAdminBlock reports whether the installer log shows MSI error
+// 1730 ("you must be an Administrator"): a per-machine change attempted
+// without administrator rights, which a silent unattended run can never
+// satisfy with a prompt. Seen live when a major upgrade's nested removal
+// of older per-machine products runs unelevated.
+//
+// The verbose log may be UTF-16 (as msiexec writes it) or plain text;
+// stripping NUL bytes makes the ASCII-subset search work for either
+// encoding. Logs are capped: a runaway log must not balloon the helper.
+func logShowsAdminBlock(log string) bool {
+	const maxLogScan = 8 << 20
+	b, err := os.ReadFile(log)
+	if err != nil || len(b) == 0 || len(b) > maxLogScan {
+		return false
+	}
+	if bytes.IndexByte(b, 0) >= 0 {
+		b = bytes.ReplaceAll(b, []byte{0}, nil)
+	}
+	return strings.Contains(string(b), "Error 1730")
+}
+
 // msiExitError is a completed msiexec run with a nonzero status.
 type msiExitError struct{ Code int }
 
@@ -251,6 +273,10 @@ func applyMSI(pkg *MSIPackage, verify func(binary, wantTag string) error) error 
 			return fmt.Errorf("%w in %s: approve the administrator prompt, or run the update from an elevated terminal (%s)",
 				ErrNeedsElevation, pkg.Dir, diagnostic)
 		default:
+			if logShowsAdminBlock(log) {
+				return fmt.Errorf("%w for a per-machine install: run %s manually and approve the administrator prompt, then relaunch (%s)",
+					ErrNeedsElevation, pkg.Path, diagnostic)
+			}
 			return fmt.Errorf("update: installer failed with exit code %d (%s)", xe.Code, diagnostic)
 		}
 	}

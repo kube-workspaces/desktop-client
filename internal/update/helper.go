@@ -169,26 +169,43 @@ func RunHelper(job string) error {
 // runMSIHelper executes the installer half of the handoff: the parent has
 // exited, so msiexec owns the install directory uncontested. A failure keeps
 // the stage (including msi-update.log) for diagnosis; success cleans it.
-// The client relaunches only when args are present.
+// The client relaunches only when args are present. The marker goes beside
+// the running binary: that is the binary the user will launch again, and
+// the one whose directory [TakeError] reads.
 //
-// The marker goes beside the running binary, not to the MSI's recorded
-// location: the two normally agree, and if they ever do not it is the binary
-// the user will launch again whose directory [TakeError] reads.
+// A failed install still relaunches the client: msiexec is transactional,
+// so the previous build is in place exactly as the user left it, and
+// stranding them with nothing running is worse than any restart risk. The
+// recorded error surfaces on the next launch through [TakeError].
 func runMSIHelper(h handoff) error {
 	pkg := &MSIPackage{Path: h.MSI.Path, Tag: h.MSI.Tag, Dir: h.MSI.Dir, MachineScope: h.MSI.Machine, Work: h.MSI.Work}
 	err := applyMSI(pkg, nil)
 	if err != nil {
 		recordUpdateError(filepath.Dir(h.Exe), err)
+		if len(h.Args) > 0 {
+			if rerr := startDetached(h.Exe, h.Args); rerr != nil {
+				return fmt.Errorf("%w; restart client: %v", err, rerr)
+			}
+		}
 		return err
 	}
 	pkg.Close()
 	if len(h.Args) == 0 {
 		return nil
 	}
-	cmd := exec.Command(h.Exe, h.Args...)
+	if err := startDetached(h.Exe, h.Args); err != nil {
+		return fmt.Errorf("restart client: %w", err)
+	}
+	return nil
+}
+
+// startDetached launches exe with args outside this process's lifetime,
+// for the helper's client restart after the install (or its rollback).
+func startDetached(exe string, args []string) error {
+	cmd := exec.Command(exe, args...)
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("restart client: %w", err)
+		return err
 	}
 	_ = cmd.Process.Release()
 	return nil

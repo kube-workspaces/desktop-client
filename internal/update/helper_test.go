@@ -6,9 +6,12 @@ package update
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 var (
@@ -142,5 +145,73 @@ func TestErrorMarkerNamesTheFailure(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "access denied") {
 		t.Fatalf("marker %q does not carry the failure", b)
+	}
+}
+
+// TestHelperProbe is the relaunch target for
+// TestRunMSIHelperRelaunchesAfterFailure, in the standard helper-process
+// pattern: with KW_UPDATE_PROBE set it records the launch and exits,
+// otherwise it returns immediately so the suite is unaffected.
+func TestHelperProbe(t *testing.T) {
+	marker := os.Getenv("KW_UPDATE_PROBE")
+	if marker == "" {
+		return
+	}
+	if err := os.WriteFile(marker, []byte("ran"), 0o600); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+}
+
+// deadPid returns a process ID that is already gone, so waitParent returns
+// at once instead of watching a live process: the test binary itself, run
+// once with the probe unset and reaped.
+func deadPid(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperProbe")
+	env := []string{"PATH=" + os.Getenv("PATH")}
+	if runtime.GOOS == "windows" {
+		env = append(env, "SYSTEMROOT="+os.Getenv("SYSTEMROOT"))
+	}
+	cmd.Env = env
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("probe run: %v", err)
+	}
+	return cmd.Process.Pid
+}
+
+// TestRunMSIHelperRelaunchesAfterFailure checks that a failed MSI install
+// still hands the user a shell: msiexec is transactional, so the previous
+// build is in place exactly as left. Seen live: the helper recorded the
+// error and exited, and nothing was running after "restart to update".
+func TestRunMSIHelperRelaunchesAfterFailure(t *testing.T) {
+	dir := t.TempDir()
+	work := t.TempDir()
+	ran := filepath.Join(dir, "relaunched")
+	t.Setenv("KW_UPDATE_PROBE", ran)
+	old := execMsiexec
+	defer func() { execMsiexec = old }()
+	execMsiexec = func([]string) error { return &msiExitError{Code: 1603} }
+	h := handoff{
+		MSI:    &msiHandoff{Path: filepath.Join(work, "pkg.msi"), Tag: "v0.8.0", Dir: dir, Work: work},
+		Exe:    os.Args[0],
+		Parent: deadPid(t),
+		Args:   []string{"-test.run=TestHelperProbe"},
+	}
+	err := runMSIHelper(h)
+	if err == nil || !strings.Contains(err.Error(), "exit code 1603") {
+		t.Fatalf("got %v, want the install failure", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, statErr := os.Stat(ran); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("failed install did not relaunch the client")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if msg := TakeError(os.Args[0]); !strings.Contains(msg, "1603") {
+		t.Fatalf("failure marker = %q, want the install failure", msg)
 	}
 }
