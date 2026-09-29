@@ -112,19 +112,19 @@ func runShell(ctx context.Context, args []string) error {
 
 	app, err := shell.New(shell.Options{
 		Version: version,
-		FirstFrame: func() string {
+		FirstFrame: func() (string, bool) {
 			exe, err := os.Executable()
 			if err != nil {
-				return err.Error()
+				return err.Error(), true
 			}
 			notice, err := update.ConfirmPending(exe, version)
 			if err != nil {
-				return err.Error()
+				return err.Error(), true
 			}
 			if failure := update.TakeError(exe); failure != "" {
-				return failure
+				return failure, true
 			}
-			return notice
+			return notice, false
 		},
 		Updater: &update.Installer{},
 		UpdatePolicy: func() (bool, bool) {

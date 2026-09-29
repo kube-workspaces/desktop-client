@@ -94,7 +94,10 @@ type Options struct {
 	// installs). Nil means installer updates cannot restart: the shell keeps
 	// the verified package and reports the failure, like [RestartUpdate].
 	RestartMSI func(*update.MSIPackage) error
-	FirstFrame func() string
+	// FirstFrame supplies the Updates status for the first frame: a pending
+	// update notice, a previous helper failure, or "". The bool reports
+	// whether the text is a failure, so the Copy button tracks it.
+	FirstFrame func() (string, bool)
 	// Backend is the shell's own window. The shell opens and closes it;
 	// every session window brings a backend of its own, and the pump in
 	// windows.go steps them all on the same main thread.
@@ -735,7 +738,7 @@ func (a *App) draw(ctx context.Context) error {
 	if !a.updates.started {
 		a.updates.started = true
 		if a.opts.FirstFrame != nil {
-			a.updates.status = a.opts.FirstFrame()
+			a.updates.status, a.updates.failed = a.opts.FirstFrame()
 		}
 		a.checkUpdate(ctx, false)
 	}

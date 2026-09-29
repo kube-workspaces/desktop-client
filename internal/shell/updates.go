@@ -31,10 +31,16 @@ type updateState struct {
 	upToDate            bool
 	last                int64
 	status              string
-	result              update.Result
-	prepared            *update.Prepared
-	msi                 *update.MSIPackage
-	bytes               atomic.Int64
+	// failed reports that status is a failure sentence (users paste
+	// those into bug reports, hence the Copy button). It is set with
+	// every failure status and cleared whenever new work starts or a
+	// non-failure status lands, so the button tracks the error rather
+	// than any text that happens to be showing.
+	failed   bool
+	result   update.Result
+	prepared *update.Prepared
+	msi      *update.MSIPackage
+	bytes    atomic.Int64
 }
 
 // drawStandaloneSettings draws the top-left settings entry point for the
@@ -79,6 +85,7 @@ func (a *App) checkUpdate(ctx context.Context, manual bool) {
 	p := a.updatePolicy()
 	if p.Managed {
 		a.updates.status = i18n.Get("updates.managed")
+		a.updates.failed = false
 		a.updates.upToDate = false
 		return
 	}
@@ -94,6 +101,7 @@ func (a *App) checkUpdate(ctx context.Context, manual bool) {
 	}
 	a.updates.busy = true
 	a.updates.status = i18n.Get("updates.checking")
+	a.updates.failed = false
 	a.updates.upToDate = false
 	a.updates.last = time.Now().Unix()
 	a.saveSettings()
@@ -103,6 +111,7 @@ func (a *App) checkUpdate(ctx context.Context, manual bool) {
 			a.updates.busy = false
 			if err != nil {
 				a.updates.status = i18n.Sprintf("updates.failed", err)
+				a.updates.failed = true
 				return
 			}
 			a.updates.result = r
@@ -124,6 +133,7 @@ func (a *App) downloadUpdate(ctx context.Context) {
 	a.updates.busy = true
 	a.updates.bytes.Store(0)
 	a.updates.status = i18n.Get("updates.downloading")
+	a.updates.failed = false
 	a.updates.upToDate = false
 	a.background(func() func() {
 		// MSI-managed installs download the .msi, not the archive: the
@@ -144,6 +154,7 @@ func (a *App) downloadUpdate(ctx context.Context) {
 					a.updates.busy = false
 					a.updates.msi = pkg
 					a.updates.status = i18n.Get("updates.msiReady")
+					a.updates.failed = false
 					a.updates.upToDate = false
 				}
 			} else if !errors.Is(err, update.ErrNotMSI) {
@@ -151,6 +162,7 @@ func (a *App) downloadUpdate(ctx context.Context) {
 					return func() {
 						a.updates.busy = false
 						a.updates.status = i18n.Sprintf("updates.failed", err)
+						a.updates.failed = true
 					}
 				}
 				return nil
@@ -176,6 +188,7 @@ func (a *App) downloadUpdate(ctx context.Context) {
 			a.updates.busy = false
 			if err != nil {
 				a.updates.status = i18n.Sprintf("updates.failed", err)
+				a.updates.failed = true
 				return
 			}
 			a.updates.prepared = p
@@ -192,15 +205,18 @@ func (a *App) restartUpdate() {
 	if a.updates.msi != nil {
 		if a.opts.RestartMSI == nil {
 			a.updates.status = i18n.Sprintf("updates.failed", "installer restart unavailable")
+			a.updates.failed = true
 			return
 		}
 		if len(a.sessions) != 0 || webChildCount() != 0 || a.m.State == StateSession {
 			a.updates.status = i18n.Get("updates.sessions")
+			a.updates.failed = false
 			a.updates.upToDate = false
 			return
 		}
 		if err := a.opts.RestartMSI(a.updates.msi); err != nil {
 			a.updates.status = i18n.Sprintf("updates.failed", err)
+			a.updates.failed = true
 			return
 		}
 		a.updates.msi = nil // ownership transferred to the helper
@@ -215,11 +231,13 @@ func (a *App) restartUpdate() {
 	}
 	if len(a.sessions) != 0 || webChildCount() != 0 || a.m.State == StateSession {
 		a.updates.status = i18n.Get("updates.sessions")
+		a.updates.failed = false
 		a.updates.upToDate = false
 		return
 	}
 	if err := a.opts.RestartUpdate(a.updates.prepared); err != nil {
 		a.updates.status = i18n.Sprintf("updates.failed", err)
+		a.updates.failed = true
 		return
 	}
 	a.updates.prepared = nil // ownership transferred to the helper
@@ -345,11 +363,11 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 	} else {
 		a.statusSel.Layout(ctx, statusRect, a.updates.status, ui.SelectableStyle{})
 	}
-	// The status carries failure sentences users paste into bug reports
-	// (notably installer exit codes with their log path), so it is
-	// selectable like the other read-only text — plus a Copy button,
-	// because reaching for Ctrl-C inside a three-line wrap is fiddly.
-	if a.updates.status != "" {
+	// The Copy button tracks failures, not text: it is there while an
+	// error is showing so installer exit codes and log paths paste
+	// straight into a bug report, and it leaves with the error when a
+	// new check (or anything else) replaces it.
+	if a.updates.failed {
 		copyBtn := ui.Button{ID: idCopyStatus, Text: i18n.Get("common.copy"), Variant: ui.ButtonSecondary}
 		if copyBtn.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, copyBtn.Width(ctx), 0)[0]) {
 			ctx.Copy(a.updates.status)

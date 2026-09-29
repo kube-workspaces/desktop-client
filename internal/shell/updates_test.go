@@ -472,14 +472,15 @@ func TestBadgeAndSettingsBothReachable(t *testing.T) {
 }
 
 // TestUpdateStatusCopies: the Updates status line is selectable and carries
-// a Copy button, so failure sentences (installer exit codes with their log
-// path) can be pasted into a bug report.
+// a Copy button while it shows a failure, so failure sentences (installer
+// exit codes with their log path) paste straight into a bug report.
 func TestUpdateStatusCopies(t *testing.T) {
 	r := newRig(savedProfile(), "token")
 	r.start()
 	r.settle()
 	r.app.m.State = StateUpdates
 	r.app.updates.status = "update: installer failed with exit code 1603 (see C:\\log)"
+	r.app.updates.failed = true
 	r.app.dirty = true
 	r.step()
 	order := append([]ui.FocusID(nil), r.app.ctx.Focus().Order()...)
@@ -503,4 +504,67 @@ func TestUpdateStatusCopies(t *testing.T) {
 	if got := r.be.getClipboard(); got != r.app.updates.status {
 		t.Fatalf("clipboard = %q, want the status text", got)
 	}
+}
+
+// TestUpdateCopyButtonTracksFailure: the Copy button is there while a check
+// reports an error and leaves with it when the next check succeeds —
+// exactly the reported bug, where re-checking to "up to date" kept a stale
+// button.
+func TestUpdateCopyButtonTracksFailure(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	u := &fakeUpdater{err: errors.New("boom")}
+	r.app.opts.Version = "v1.0.0"
+	r.app.opts.Updater = u
+	r.app.opts.FirstFrame = func() (string, bool) { return "", false }
+	r.start()
+	r.settle()
+	if !r.app.updates.failed {
+		t.Fatal("failed check did not flag the status")
+	}
+	r.app.m.State = StateUpdates
+	r.app.dirty = true
+	r.step()
+	if atFocus(r, idCopyStatus) < 0 {
+		t.Fatal("Copy button missing for a failed status")
+	}
+	u.err = nil
+	r.app.checkUpdate(context.Background(), true)
+	r.settle()
+	if r.app.updates.failed {
+		t.Fatal("successful check kept the failure flag")
+	}
+	r.app.dirty = true
+	r.step()
+	if atFocus(r, idCopyStatus) >= 0 {
+		t.Fatal("Copy button stayed after the error cleared")
+	}
+}
+
+// TestUpdateFirstFrameFailureFlags: a previous helper failure surfaced on
+// the first frame carries the Copy button with it.
+func TestUpdateFirstFrameFailureFlags(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	r.app.opts.Version = "v1.0.0"
+	r.app.opts.FirstFrame = func() (string, bool) { return "update: installer failed", true }
+	r.start()
+	r.settle()
+	if !r.app.updates.failed {
+		t.Fatal("first-frame failure did not flag the status")
+	}
+	r.app.m.State = StateUpdates
+	r.app.dirty = true
+	r.step()
+	if atFocus(r, idCopyStatus) < 0 {
+		t.Fatal("Copy button missing for a first-frame failure")
+	}
+}
+
+func atFocus(r *rig, id ui.FocusID) int {
+	order := append([]ui.FocusID(nil), r.app.ctx.Focus().Order()...)
+	for i, got := range order {
+		if got == id {
+			return i
+		}
+	}
+	return -1
 }
