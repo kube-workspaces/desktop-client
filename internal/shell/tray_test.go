@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/tray"
@@ -838,5 +840,118 @@ func TestTrayAboutKeepsShellHidden(t *testing.T) {
 	}
 	if !r.app.shellHidden || !r.be.isHidden() {
 		t.Fatal("About popup popped the hidden shell")
+	}
+}
+
+// TestAboutLogoDecodes: the About panel's logo must decode from the same
+// bytes the window chrome uses — a broken export blanks the header.
+func TestAboutLogoDecodes(t *testing.T) {
+	r, _ := trayRig(t)
+	logo := r.app.logoImage()
+	if logo == nil {
+		t.Fatal("app icon did not decode")
+	}
+	if logo.Bounds().Dx() != 256 || logo.Bounds().Dy() != 256 {
+		t.Fatalf("logo is %v, want 256x256", logo.Bounds())
+	}
+	if r.app.logoImage() != logo {
+		t.Fatal("logo is decoded more than once")
+	}
+}
+
+// TestWrappedHeightMeasuresWrapping: row heights must follow wrapped line
+// counts, or multi-line rows clip — the failure that cut the About docs
+// line in half.
+func TestWrappedHeightMeasuresWrapping(t *testing.T) {
+	r, _ := trayRig(t)
+	th := r.app.opts.Theme
+	one := wrappedHeight(th, th.Body, "Short.", 400)
+	if one != ui.LineHeight(th.Body, th.Font) {
+		t.Fatalf("short row = %d, want one line", one)
+	}
+	long := wrappedHeight(th, th.Body, strings.Repeat("word ", 60), 400)
+	if long <= one {
+		t.Fatal("long row did not measure taller than one line")
+	}
+	if h := aboutContentHeight(th); h <= 0 {
+		t.Fatalf("about content height = %d", h)
+	}
+}
+
+// TestPopupWindowCloseButton: the popup window's X dismisses it, like Esc
+// and the Close button — it must not be dead chrome.
+func TestPopupWindowCloseButton(t *testing.T) {
+	r, _ := trayRig(t)
+	_, pbe := openTestPopup(t, r, "team/vm-a")
+	pbe.send(viewer.EventWindowClose{})
+	r.step()
+	if r.app.popup != nil {
+		t.Fatal("window X did not close the picker popup")
+	}
+	if pbe.closed != 1 {
+		t.Fatal("picker popup did not close its window")
+	}
+
+	r.app.openAboutPopup()
+	pbe.send(viewer.EventWindowClose{})
+	r.step()
+	if r.app.popup != nil {
+		t.Fatal("window X did not close the About popup")
+	}
+}
+
+// TestAboutRepoLinkOpensBrowser: the About panel's repo link opens the
+// project site in the system browser and leaves the popup open.
+func TestAboutRepoLinkOpensBrowser(t *testing.T) {
+	r, _ := trayRig(t)
+	popupBackend(r)
+	r.app.trayCh <- tray.Action{Kind: tray.ActionAbout}
+	r.step()
+	p := r.app.popup
+	if p == nil {
+		t.Fatal("About popup did not open")
+	}
+	found := false
+	for _, got := range p.ctx.Focus().Order() {
+		if got == idAboutRepo {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("repo link missing from focus order %v", p.ctx.Focus().Order())
+	}
+	p.ctx.Focus().Set(idAboutRepo)
+	p.events = append(p.events, ui.EventKey{Key: keysym.KeyReturn, Down: true})
+	r.step()
+	if len(r.browsed) != 1 || r.browsed[0] != i18n.Get("about.repo") {
+		t.Fatalf("browsed = %v, want the repo URL", r.browsed)
+	}
+	if r.app.popup == nil {
+		t.Fatal("opening the link closed the popup")
+	}
+}
+
+// TestAboutRepoLinkFailureNotices: a browser that will not start is
+// reported where it can be seen instead of failing silently.
+func TestAboutRepoLinkFailureNotices(t *testing.T) {
+	r, _ := trayRig(t)
+	popupBackend(r)
+	r.app.opts.OpenBrowser = func(string) error { return errors.New("no browser here") }
+	r.app.hideShellToTray()
+	r.app.trayCh <- tray.Action{Kind: tray.ActionAbout}
+	r.step()
+	p := r.app.popup
+	if p == nil {
+		t.Fatal("About popup did not open")
+	}
+	p.ctx.Focus().Set(idAboutRepo)
+	p.events = append(p.events, ui.EventKey{Key: keysym.KeyReturn, Down: true})
+	r.step()
+	if r.app.m.Notice == "" {
+		t.Fatal("failed link open reported nothing")
+	}
+	if r.app.shellHidden {
+		t.Fatal("failure notice went to a hidden window")
 	}
 }

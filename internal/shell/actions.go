@@ -84,6 +84,7 @@ const (
 	intentQuit
 	intentAbout
 	intentAboutClose
+	intentOpenRepo
 	intentPickMode
 	intentPickClose
 	intentCloseQuit
@@ -1362,6 +1363,7 @@ const (
 
 	idAbout      ui.FocusID = "about"
 	idAboutClose ui.FocusID = "about-close"
+	idAboutRepo  ui.FocusID = "about-repo"
 
 	idPickClose ui.FocusID = "pick-close"
 

@@ -271,6 +271,9 @@ type App struct {
 	// stays hidden throughout.
 	popup *popupWindow
 
+	// aboutLogo is the decoded app icon for the About panel, loaded once.
+	aboutLogo *image.NRGBA
+
 	// The surface. img is reallocated on resize; canvas wraps it.
 	img           *image.RGBA
 	canvas        *ui.Canvas

@@ -243,8 +243,8 @@ var english = map[string]string{
 	"about.title":   "About Kube Workspaces",
 	"about.version": "Version %s",
 	"about.blurb":   "A native desktop client for kube-workspaces: Tier 1 agent video where the image carries one, agentless console everywhere else.",
-	"about.repo":    "github.com/kube-workspaces/desktop-client",
-	"about.docs":    "Desktop-client docs ship with the platform site under /docs/desktop-client/.",
+	"about.repo":    "https://github.com/kube-workspaces/desktop-client",
+	"about.license": "Licensed under the Apache License, Version 2.0.",
 
 	// Main-window close question (minimize to tray vs quit).
 	"close.title":    "Close the main window?",

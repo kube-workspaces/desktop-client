@@ -95,7 +95,7 @@ func (a *App) openPopup(kind popupKind, ws kwclient.Workspace) {
 	h := aboutContentHeight(th)
 	if kind == popupPick {
 		title = ws.Key()
-		h = pickContentHeight(th, false)
+		h = pickContentHeight(th, len(tray.ModesFor(trayKindOf(ws))), "")
 	}
 	w := popupWidth(th)
 	if maxH := popupMaxHeight(); maxH > 0 && h > maxH {
@@ -159,7 +159,7 @@ func (a *App) fitPopup() {
 	w := popupWidth(th)
 	h := aboutContentHeight(th)
 	if p.kind == popupPick {
-		h = pickContentHeight(th, p.err != "")
+		h = pickContentHeight(th, len(tray.ModesFor(trayKindOf(p.ws))), p.err)
 	}
 	if maxH := popupMaxHeight(); maxH > 0 && h > maxH {
 		h = maxH
@@ -201,6 +201,13 @@ func (a *App) stepPopups(ctx context.Context, now time.Time) {
 func (p *popupWindow) step(ctx context.Context, now time.Time, events []viewer.Event) error {
 	a := p.app
 	p.in = p.in.Fold(now, events)
+	if p.in.Quit {
+		// The window's close button. Popups have no minimize-to-tray of
+		// their own — closing one dismisses it, exactly like Esc or the
+		// Close button.
+		a.closePopup()
+		return nil
+	}
 	if len(events) > 0 {
 		p.dirty = true
 	}
@@ -260,18 +267,33 @@ func (p *popupWindow) present(w, h int) error {
 func (p *popupWindow) IdleWait(time.Time) time.Duration { return time.Second }
 
 // applyPopupIntent performs one popup frame's outcome. About only ever
-// closes; a pick either closes into its session or stays open with the
-// failure inside for a retry or another tile.
+// closes or opens its repo link; a pick either closes into its session or
+// stays open with the failure inside for a retry or another tile.
 func (a *App) applyPopupIntent(ctx context.Context, p *popupWindow, in intent) {
 	switch in.kind {
 	case intentNone:
 		return
 	case intentAboutClose:
 		a.closePopup()
+	case intentOpenRepo:
+		a.openAboutRepo()
 	case intentPickClose:
 		a.closePopup()
 	case intentPickMode:
 		a.applyPopupPick(ctx, p, in.mode)
+	}
+}
+
+// openAboutRepo opens the project site in the system browser. A browser
+// that will not start is reported on the main window, which is restored
+// for the occasion — a silent failure here would look like a dead link.
+func (a *App) openAboutRepo() {
+	url := i18n.Get("about.repo")
+	if err := a.opts.OpenBrowser(url); err != nil {
+		a.logf("about: open browser: %v", err)
+		a.ensureShellVisible()
+		a.m.Err = ""
+		a.m.Notice = i18n.Sprintf("workspaces.noBrowser", url)
 	}
 }
 

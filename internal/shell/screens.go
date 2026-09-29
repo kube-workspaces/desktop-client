@@ -4,8 +4,12 @@
 package shell
 
 import (
+	"bytes"
 	"fmt"
+	"image"
 	"image/color"
+	"image/draw"
+	"image/png"
 	"strings"
 	"time"
 
@@ -14,6 +18,7 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/tray"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
 // Layout constants. They are named because a number that appears twice in a
@@ -1711,16 +1716,37 @@ func stackHeight(th *ui.Theme, rows []int, errH int) int {
 	return content
 }
 
+// wrappedHeight measures a text row as drawn: wrapped to width at the
+// given scale, at least one line. Layout math must use this wherever the
+// drawing wraps — a row budgeted one line for a two-line paragraph clips
+// it, which is exactly how the About docs line used to disappear.
+func wrappedHeight(th *ui.Theme, scale int, text string, width int) int {
+	n := len(ui.Wrap(text, scale, th.Font, width))
+	return max(n, 1) * ui.LineHeight(scale, th.Font)
+}
+
+// aboutLogoHeight is the About logo square: twice the title height, so it
+// spans the title and version rows and scales with the interface.
+func aboutLogoHeight(th *ui.Theme) int {
+	return 2 * ui.TextHeight(th.Title, th.Font)
+}
+
+// aboutRows lists the About panel's row heights for width, shared by
+// window sizing and drawing so the two cannot drift.
+func aboutRows(th *ui.Theme, width int) []int {
+	return []int{
+		aboutLogoHeight(th),             // title + logo
+		ui.LineHeight(th.Body, th.Font), // version (one line)
+		wrappedHeight(th, th.Body, i18n.Get("about.blurb"), width),
+		ui.LineHeight(th.Body, th.Font), // repo link (single line, truncates)
+		wrappedHeight(th, th.Body, i18n.Get("about.license"), width),
+		th.ControlHeight, // close row
+	}
+}
+
 // aboutContentHeight is the About panel's content height for the theme.
 func aboutContentHeight(th *ui.Theme) int {
-	return stackHeight(th, []int{
-		ui.TextHeight(th.Title, th.Font),    // title
-		ui.LineHeight(th.Body, th.Font),     // version
-		ui.LineHeight(th.Body, th.Font) * 3, // blurb
-		ui.LineHeight(th.Body, th.Font),     // repo
-		ui.LineHeight(th.Body, th.Font),     // docs
-		th.ControlHeight,                    // close row
-	}, 0)
+	return stackHeight(th, aboutRows(th, popupWidth(th)-2*th.Pad), 0)
 }
 
 // pickGlyphHeight is the tile icon square; pickTileHeight the whole tile.
@@ -1730,20 +1756,29 @@ func pickTileHeight(th *ui.Theme) int {
 	return pickGlyphHeight + th.Gap + th.ControlHeight + th.Gap/2 + ui.LineHeight(th.Small, th.Font)
 }
 
-// pickContentHeight is the quick-pick window's content height: title,
-// subtitle, tiles, hint, close row, and the error row when set.
-func pickContentHeight(th *ui.Theme, hasErr bool) int {
+// pickRows lists the quick-pick window's row heights for width plus its
+// error-row height, shared by window sizing and drawing so the two cannot
+// drift. The error text is measured, not assumed: it is the row most
+// likely to wrap.
+func pickRows(th *ui.Theme, nModes int, err string, width int) ([]int, int) {
 	errH := 0
-	if hasErr {
-		errH = ui.LineHeight(th.Body, th.Font)
+	if err != "" {
+		errH = wrappedHeight(th, th.Body, err, width)
 	}
-	return stackHeight(th, []int{
+	rows := []int{
 		ui.TextHeight(th.Title, th.Font), // title (workspace key)
-		ui.LineHeight(th.Body, th.Font),  // subtitle
-		pickTileHeight(th),               // tiles
-		ui.LineHeight(th.Small, th.Font), // hint
-		th.ControlHeight,                 // close row
-	}, errH)
+		wrappedHeight(th, th.Body, i18n.Get("pick.subtitle"), width),
+		pickTileHeight(th), // tiles
+		wrappedHeight(th, th.Small, i18n.Sprintf("pick.hint", nModes), width),
+		th.ControlHeight, // close row
+	}
+	return rows, errH
+}
+
+// pickContentHeight is the quick-pick window's content height.
+func pickContentHeight(th *ui.Theme, nModes int, err string) int {
+	rows, errH := pickRows(th, nModes, err, popupWidth(th)-2*th.Pad)
+	return stackHeight(th, rows, errH)
 }
 
 // drawAboutModal draws the About panel full-bleed for a popup window: the
@@ -1756,14 +1791,21 @@ func (a *App) drawAboutModal(ctx *ui.Context, bounds ui.Rect) intent {
 
 	ctx.Canvas.Fill(bounds, th.Background)
 	body := ui.NewStack(ui.Inset(bounds, th.Pad), th.Gap)
+	rows := aboutRows(th, bounds.W-2*th.Pad)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), i18n.Get("about.title"), ui.LabelStyle{Scale: th.Title})
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("about.version", a.opts.Version), ui.LabelStyle{Color: th.TextMuted})
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*3), i18n.Get("about.blurb"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Get("about.repo"), ui.LabelStyle{Color: th.TextMuted})
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Get("about.docs"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	head := body.Next(rows[0])
+	logoRect, titleRect := ui.CutRight(head, aboutLogoHeight(th))
+	ui.Label(ctx, titleRect, i18n.Get("about.title"), ui.LabelStyle{Scale: th.Title, Middle: true})
+	a.drawLogo(ctx, logoRect)
+	ui.Label(ctx, body.Next(rows[1]), i18n.Sprintf("about.version", a.opts.Version), ui.LabelStyle{Color: th.TextMuted})
+	ui.Label(ctx, body.Next(rows[2]), i18n.Get("about.blurb"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	repo := ui.Link{ID: idAboutRepo, Text: i18n.Get("about.repo")}
+	if repo.Layout(ctx, body.Next(rows[3])) {
+		out = intent{kind: intentOpenRepo}
+	}
+	ui.Label(ctx, body.Next(rows[4]), i18n.Get("about.license"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 
-	foot := body.Next(th.ControlHeight)
+	foot := body.Next(rows[5])
 	closeBtn := ui.Button{ID: idAboutClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
 	closeRect, _ := ui.CutRight(foot, closeBtn.Width(ctx))
 	if closeBtn.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
@@ -1789,11 +1831,12 @@ func (a *App) drawQuickPickModal(ctx *ui.Context, bounds ui.Rect, ws kwclient.Wo
 
 	ctx.Canvas.Fill(bounds, th.Background)
 	body := ui.NewStack(ui.Inset(bounds, th.Pad), th.Gap)
+	rows, errH := pickRows(th, len(modes), pickerErr, bounds.W-2*th.Pad)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), ws.Key(), ui.LabelStyle{Scale: th.Title})
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Get("pick.subtitle"), ui.LabelStyle{Color: th.TextMuted})
+	ui.Label(ctx, body.Next(rows[0]), ws.Key(), ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(rows[1]), i18n.Get("pick.subtitle"), ui.LabelStyle{Color: th.TextMuted})
 
-	tiles := body.Next(pickTileHeight(th))
+	tiles := body.Next(rows[2])
 	widths := make([]int, len(modes))
 	cols := ui.Row(tiles, th.Gap, widths...)
 	for i, mode := range modes {
@@ -1804,11 +1847,11 @@ func (a *App) drawQuickPickModal(ctx *ui.Context, bounds ui.Rect, ws kwclient.Wo
 	}
 
 	if pickerErr != "" {
-		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), pickerErr, ui.LabelStyle{Color: th.Danger, Wrap: true})
+		ui.Label(ctx, body.Next(errH), pickerErr, ui.LabelStyle{Color: th.Danger, Wrap: true})
 	}
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Small, th.Font)), i18n.Sprintf("pick.hint", len(modes)), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	ui.Label(ctx, body.Next(rows[3]), i18n.Sprintf("pick.hint", len(modes)), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
 
-	foot := body.Next(th.ControlHeight)
+	foot := body.Next(rows[4])
 	closeBtn := ui.Button{ID: idPickClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
 	closeRect, _ := ui.CutRight(foot, closeBtn.Width(ctx))
 	if closeBtn.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
@@ -1992,4 +2035,43 @@ func (a *App) drawCloseConfirmModal(bounds ui.Rect) intent {
 		out = intent{kind: intentCloseCancel}
 	}
 	return out
+}
+
+// logoImage decodes the embedded app icon once and keeps it: every About
+// draw scales from this rather than re-decoding the PNG per frame.
+func (a *App) logoImage() *image.NRGBA {
+	if a.aboutLogo != nil {
+		return a.aboutLogo
+	}
+	img, err := png.Decode(bytes.NewReader(viewer.AppIcon()))
+	if err != nil {
+		return nil
+	}
+	b := img.Bounds()
+	nrgba := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(nrgba, nrgba.Bounds(), img, b.Min, draw.Src)
+	a.aboutLogo = nrgba
+	return nrgba
+}
+
+// drawLogo paints the app icon into r, scaled with nearest-neighbour
+// sampling and composited over whatever is beneath (the cube carries
+// transparency). r is normally the About title row's right square.
+func (a *App) drawLogo(ctx *ui.Context, r ui.Rect) {
+	src := a.logoImage()
+	if src == nil || r.W <= 0 || r.H <= 0 {
+		return
+	}
+	sb := src.Bounds()
+	sw, sh := sb.Dx(), sb.Dy()
+	if sw <= 0 || sh <= 0 {
+		return
+	}
+	scaled := image.NewNRGBA(image.Rect(0, 0, r.W, r.H))
+	for y := 0; y < r.H; y++ {
+		for x := 0; x < r.W; x++ {
+			scaled.SetNRGBA(x, y, src.NRGBAAt(sb.Min.X+x*sw/r.W, sb.Min.Y+y*sh/r.H))
+		}
+	}
+	draw.Draw(ctx.Canvas.Image(), image.Rect(r.X, r.Y, r.X+r.W, r.Y+r.H), scaled, image.Point{}, draw.Over)
 }

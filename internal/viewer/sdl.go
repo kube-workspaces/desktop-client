@@ -31,6 +31,11 @@ import (
 //go:embed icon.png
 var appIconPNG []byte
 
+// AppIcon returns the embedded application icon PNG (256×256 Kube
+// Workspaces cube), for surfaces outside the window chrome — the About
+// panel renders it from these bytes rather than carrying a second copy.
+func AppIcon() []byte { return appIconPNG }
+
 // wakeEventType is the event [SDLBackend.Wake] pushes.
 //
 // SDL_EVENT_USER is the first type reserved for the application, and SDL's own
