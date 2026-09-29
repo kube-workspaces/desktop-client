@@ -6,6 +6,7 @@ package viewer
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -32,6 +33,12 @@ const (
 	trayEntryDisabled = sdl.TrayEntryFlags(0x80000000)
 )
 
+// trayCallbackFunc is the menu-click trampoline shape. Windows
+// (syscall.NewCallback, which purego delegates to) requires exactly one
+// uintptr-sized result — a void func panics the process at startup — so
+// the result exists even though SDL ignores it. See TestTrayCallbackShape.
+type trayCallbackFunc func(userdata, entry uintptr) uintptr
+
 // trayIconSize is the tray icon's pixel size. Notification areas render
 // small; handing SDL the 256 px window icon and hoping the platform
 // downscales it well is how tray icons end up a blurry cube.
@@ -56,7 +63,7 @@ type SDLTray struct {
 	// SDL points at a purego closure that must stay reachable: if it is
 	// garbage-collected the next click jumps nowhere.
 	cb     sdl.TrayCallback
-	cbFunc func(userdata, entry uintptr)
+	cbFunc trayCallbackFunc
 }
 
 var _ tray.Backend = (*SDLTray)(nil)
@@ -65,11 +72,24 @@ var _ tray.Backend = (*SDLTray)(nil)
 // submenu, About, Quit) and an empty workspace list. A nil icon surface —
 // the PNG failed to decode — still creates the tray: an iconless tray
 // entry beats no tray at all.
-func NewSDLTray(handler tray.Handler) (*SDLTray, error) {
+//
+// A creation failure is an error, never a panic: the binding panics
+// rather than returning errors (missing symbols on an older SDL, platform
+// callback limits), and the tray is best-effort — a tray the platform
+// cannot support must degrade to today's shell, not take the application
+// down. Seen live: Windows rejects a callback without a uintptr-sized
+// result, so the trampoline returns one.
+func NewSDLTray(handler tray.Handler) (t *SDLTray, err error) {
 	if handler == nil {
 		return nil, errors.New("viewer: tray needs a handler")
 	}
-	t := &SDLTray{handler: handler, byEntry: make(map[uintptr]tray.Action)}
+	defer func() {
+		if r := recover(); r != nil {
+			t = nil
+			err = fmt.Errorf("viewer: tray unavailable: %v", r)
+		}
+	}()
+	t = &SDLTray{handler: handler, byEntry: make(map[uintptr]tray.Action)}
 	icon, err := trayIconSurface()
 	if err != nil {
 		icon = nil
@@ -91,7 +111,7 @@ func NewSDLTray(handler tray.Handler) (*SDLTray, error) {
 		}
 		return nil, errors.New("viewer: tray menu creation failed")
 	}
-	t.cbFunc = func(_, entry uintptr) { t.dispatch(entry) }
+	t.cbFunc = func(_, entry uintptr) uintptr { t.dispatch(entry); return 0 }
 	t.cb = sdl.TrayCallback(purego.NewCallback(t.cbFunc))
 	wsHolder := menu.InsertEntryAt(-1, "Workspaces", trayEntrySubmenu)
 	if wsHolder == nil {
