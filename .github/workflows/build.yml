@@ -701,7 +701,8 @@ jobs:
           deb_arm64="$(basename linuxpkgs/*/*_arm64.deb)"
           rpm_amd64="$(basename linuxpkgs/*/*.x86_64.rpm)"
           rpm_arm64="$(basename linuxpkgs/*/*.aarch64.rpm)"
-          flatpak="io.github.kubeworkspaces.KubeWorkspaces-$VERSION.flatpak"
+          flatpak_amd64="$(basename linuxpkgs/*/*.x86_64.flatpak)"
+          flatpak_arm64="$(basename linuxpkgs/*/*.aarch64.flatpak)"
           {
             echo "Native desktop client for Kube Workspaces: sign in to an instance, browse your"
             echo "workspaces, and open a VM workspace's display in a real window."
@@ -714,8 +715,9 @@ jobs:
             echo "| Linux | x86_64 | **AppImage** [\`kube-workspaces-$VERSION-linux-amd64.AppImage\`]($base/kube-workspaces-$VERSION-linux-amd64.AppImage) |"
             echo "| Linux | x86_64 | **deb** [\`$deb_amd64\`]($base/$deb_amd64) |"
             echo "| Linux | x86_64 | **rpm** [\`$rpm_amd64\`]($base/$rpm_amd64) |"
-            echo "| Linux | x86_64 | **Flatpak** [\`$flatpak\`]($base/$flatpak) |"
+            echo "| Linux | x86_64 | **Flatpak** [\`$flatpak_amd64\`]($base/$flatpak_amd64) |"
             echo "| Linux | arm64 | [\`kube-workspaces-$VERSION-linux-arm64.tar.gz\`]($base/kube-workspaces-$VERSION-linux-arm64.tar.gz) |"
+            echo "| Linux | arm64 | **Flatpak** [\`$flatpak_arm64\`]($base/$flatpak_arm64) |"
             echo "| Linux | arm64 | **deb** [\`$deb_arm64\`]($base/$deb_arm64) |"
             echo "| Linux | arm64 | **rpm** [\`$rpm_arm64\`]($base/$rpm_arm64) |"
             echo "| macOS | Apple silicon | [\`kube-workspaces-$VERSION-darwin-arm64.tar.gz\`]($base/kube-workspaces-$VERSION-darwin-arm64.tar.gz) |"
@@ -764,7 +766,7 @@ jobs:
             echo '```bash'
             echo "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
             echo "flatpak install flathub org.gnome.Platform//48"
-            echo "flatpak install --user $flatpak"
+            echo "flatpak install --user $flatpak_amd64"
             echo "flatpak run io.github.kubeworkspaces.KubeWorkspaces"
             echo '```'
             echo

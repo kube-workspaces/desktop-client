@@ -91,7 +91,7 @@ if command -v python3 >/dev/null 2>&1; then
 fi
 
 flatpak-builder --force-clean --state-dir="$work/state" --repo="$work/repo" --arch="$flatarch" "$work/build" "$src/$appid.json" >&2
-bundle="$outdir/$appid-$version.flatpak"
+bundle="$outdir/$appid-$version.$flatarch.flatpak"
 flatpak build-bundle "$work/repo" "$bundle" "$appid" --arch="$flatarch" >&2
 test -f "$bundle" || { echo "build-flatpak: no bundle produced at $bundle" >&2; exit 1; }
 sha256sum "$bundle" | awk '{print $1}' > "$bundle.sha256"
