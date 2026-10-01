@@ -835,6 +835,9 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	// Info is for looking, not acting, so it is secondary to the open button
 	// and disabled when there is no selection to look at.
 	info := ui.Button{ID: idInfo, Text: i18n.Get("workspaces.info"), Variant: ui.ButtonSecondary, Disabled: !has}
+	for _, button := range []*ui.Button{&open, &consoleBtn, &browserBtn, &observeBtn, &serialBtn, &sshBtn, &stop, &info} {
+		button.Raised = true
+	}
 
 	// Order: the open buttons first (primary open, then open-in-browser,
 	// then the shared-display observer and the VM consoles), then stop,

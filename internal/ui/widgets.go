@@ -96,6 +96,22 @@ const (
 	ButtonDanger
 )
 
+// buttonShadowOffset is how far below the face the drop shadow sits, and
+// buttonShadow its colour: translucent black, equally at home on the dark
+// and light palettes. The shadow is drawn at rest and on hover and omitted
+// while held, when the face has sunk onto the surface.
+const buttonShadowOffset = 2
+
+// buttonShadow, buttonPressShade and buttonHighlight are the three
+// palette-agnostic button depth colours: the drop shadow, the translucent
+// shade that darkens a held non-primary face, and the top inner highlight
+// that reads as light catching the button's upper edge.
+var (
+	buttonShadow     = color.RGBA{R: 0, G: 0, B: 0, A: 56}
+	buttonPressShade = color.RGBA{R: 0, G: 0, B: 0, A: 36}
+	buttonHighlight  = color.RGBA{R: 255, G: 255, B: 255, A: 44}
+)
+
 // Button is a clickable command.
 //
 // It is a struct rather than a function call with eight arguments because the
@@ -113,6 +129,8 @@ type Button struct {
 	Disabled bool
 	// Scale overrides the theme's body scale.
 	Scale int
+	// Raised opts into layered depth and pressed travel for workspace actions.
+	Raised bool
 }
 
 // Width returns the button's intrinsic width: its label plus symmetric
@@ -144,17 +162,50 @@ func (b *Button) Layout(ctx *Context, r Rect) bool {
 		fill, ink, border = th.Surface, th.TextDisabled, th.Border
 	}
 
-	if fill != Transparent {
-		ctx.Canvas.FillRounded(r, th.Radius, fill)
+	// Pressed travel: the face — and the label, which is laid out from it —
+	// sinks while held, and the shadow below goes away with it. Together
+	// those read as a physical push. The travel tracks the body scale so it
+	// stays proportional under the HiDPI theme scale.
+	sink := 0
+	if held && b.Raised {
+		sink = max(1, orInt(b.Scale, th.Body))
 	}
-	if border != Transparent {
-		ctx.Canvas.StrokeRounded(r, th.Radius, th.BorderWidth, border)
-	}
-	if focused {
-		ctx.Canvas.StrokeRounded(r, th.Radius, th.FocusWidth, th.Focus)
+	face := Rect{X: r.X, Y: r.Y + sink, W: r.W, H: r.H}
+	radius := th.Radius
+	if b.Raised {
+		// A quarter-height corner reads as a soft rectangle rather than a
+		// capsule. Deriving it from the control keeps the shape at every DPI.
+		radius = max(radius, r.H/4)
 	}
 
-	Label(ctx, InsetXY(r, th.Gap, 0), b.Text, LabelStyle{
+	if b.Raised && !b.Disabled && !held && b.Variant != ButtonQuiet && fill != Transparent {
+		ctx.Canvas.FillRounded(Rect{X: r.X, Y: r.Y + max(buttonShadowOffset, th.Body), W: r.W, H: r.H}, radius, buttonShadow)
+	}
+	if fill != Transparent {
+		ctx.Canvas.FillRounded(face, radius, fill)
+	}
+	if b.Raised && held && b.Variant != ButtonPrimary {
+		// The primary has its own pressed colour ([Theme.AccentPressed]);
+		// the rest darken the hover face with a translucent shade, which
+		// works in every palette without a colour per variant per mode.
+		ctx.Canvas.FillRounded(face, radius, buttonPressShade)
+	}
+	if border != Transparent {
+		ctx.Canvas.StrokeRounded(face, radius, th.BorderWidth, border)
+	}
+	if b.Raised && !held && !b.Disabled && b.Variant != ButtonQuiet && fill != Transparent {
+		// Follow the upper curve instead of laying a flat stripe across it.
+		// Clip before the vertical sides so the light stays on the upper lip.
+		inner := Inset(face, th.BorderWidth)
+		ctx.Canvas.PushClip(Rect{X: inner.X, Y: inner.Y, W: inner.W, H: max(1, radius/2)})
+		ctx.Canvas.StrokeRounded(inner, max(0, radius-th.BorderWidth), max(1, th.Body/2), buttonHighlight)
+		ctx.Canvas.PopClip()
+	}
+	if focused {
+		ctx.Canvas.StrokeRounded(face, radius, th.FocusWidth, th.Focus)
+	}
+
+	Label(ctx, InsetXY(face, th.Gap, 0), b.Text, LabelStyle{
 		Color:  ink,
 		Scale:  orInt(b.Scale, th.Body),
 		Align:  AlignCenter,
@@ -182,6 +233,9 @@ func (b *Button) colors(th *Theme, hovered, held bool) (fill, ink, border color.
 		}
 		if held {
 			fill = th.Accent
+			if b.Raised {
+				fill = or(th.AccentPressed, th.Accent)
+			}
 		}
 		return fill, th.TextOnAccent, Transparent
 
@@ -208,6 +262,9 @@ func (b *Button) colors(th *Theme, hovered, held bool) (fill, ink, border color.
 		border = th.Border
 		if hovered {
 			border = th.BorderStrong
+			if b.Raised {
+				fill = th.SurfaceSelected
+			}
 		}
 		return fill, th.Text, border
 	}
