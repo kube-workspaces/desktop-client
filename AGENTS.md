@@ -17,7 +17,11 @@ several things named on this page are explicitly **not implemented**.
 
 Implemented and working:
 
-- Platform API client, including browser-based OIDC login (RFC 8252 loopback
+- Platform API client, including revocable device credentials, workspace-list
+  SSE, screenshot PNG fetch and generic TCP dial/status/takeover helpers.
+  Interactive CLI/shell login exchanges its session for a device credential
+  when supported, verifies it, and uses the existing token-storage policy.
+  Browser-based OIDC login (RFC 8252 loopback
   redirect + PKCE) — **implemented and deployed**, both in the CLI (`login`,
   `login --browser`) and in the shell's sign-in screen. A completed login whose
   code the API will not redeem (single-use codes live on the API replica that
@@ -296,6 +300,17 @@ must stay on a release built with go1.26 or newer.
   A workspace is connectable **iff `!stopped && ready_replicas > 0`**. There is
   no URL/links field — the client composes proxy URLs itself from the Image
   CR's `default_path`.
+- **Revocable native credentials.** Interactive CLI/shell login now registers
+  `/auth/device/create` after verifying the initial session. Default device
+  expiry is 90 days; older/unavailable backends retain the short session and
+  report that fallback. The shell checks identity once per minute while its
+  list watch is healthy, detecting revocation even without workspace changes.
+  A rejected credential is never persisted. The web profile Devices panel
+  lists/revokes registrations. Existing open connections are not automatically
+  terminated by the server's per-request revocation check.
+- **Workspace-list updates.** The shell consumes `/v1/workspaces/watch` full
+  snapshots with reconnect/backoff, preserving selection and rejecting older
+  polling results. It polls every five seconds only while disconnected.
 - **`/v1/workspaces/{name}/vnc` is a transparent raw-RFB relay** over binary
   WebSocket frames; message types are preserved in both directions. It is
   **single-session**: when another session holds it the API returns

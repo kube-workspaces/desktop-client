@@ -355,12 +355,16 @@ type fakeAPI struct {
 	authErr    error
 	native     *kwclient.NativeAuthConfig
 
-	identity  *kwclient.Identity
-	meErr     error
-	meCalls   int
-	loginTok  string
-	loginErr  error
-	loginMust bool
+	identity      *kwclient.Identity
+	meErr         error
+	meCalls       int
+	loginTok      string
+	loginErr      error
+	loginMust     bool
+	deviceToken   *kwclient.DeviceToken
+	deviceErr     error
+	deviceCalls   int
+	rejectedToken string
 
 	browserLogin *kwclient.BrowserLogin
 	browserErr   error
@@ -412,6 +416,19 @@ func (f *fakeAPI) Token() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.token
+}
+
+func (f *fakeAPI) CreateDeviceToken(_ context.Context, _ string) (*kwclient.DeviceToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deviceCalls++
+	if f.deviceErr != nil {
+		return nil, f.deviceErr
+	}
+	if f.deviceToken == nil {
+		return nil, kwclient.ErrNotFound
+	}
+	return f.deviceToken, nil
 }
 
 func (f *fakeAPI) SetToken(token string) {
@@ -475,6 +492,9 @@ func (f *fakeAPI) Me(context.Context) (*kwclient.Identity, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.meCalls++
+	if f.rejectedToken != "" && f.token == f.rejectedToken {
+		return nil, kwclient.ErrUnauthorized
+	}
 	if f.meErr != nil {
 		return nil, f.meErr
 	}

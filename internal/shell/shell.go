@@ -301,6 +301,13 @@ type App struct {
 	refreshStarted time.Time
 	nextRefresh    time.Time
 	repaintAt      time.Time
+
+	watchCancel          context.CancelFunc
+	watchGeneration      uint64
+	watchSnapshotVersion uint64
+	watchKey             string
+	watchConnected       bool
+	nextAuthCheck        time.Time
 }
 
 // New returns an App. It opens no window; see [App.Run].
@@ -394,6 +401,7 @@ func (a *App) Run(ctx context.Context) error {
 	// still trying to deliver a result into a queue nobody is draining.
 	defer close(a.done)
 	defer a.stopUpdates()
+	defer a.stopWorkspaceWatch()
 	ctx, cancelUpdates := context.WithCancel(ctx)
 	defer cancelUpdates()
 
@@ -475,7 +483,10 @@ func (a *App) idleTimeout(now time.Time) time.Duration {
 	if a.popup != nil {
 		earlier(now.Add(a.popup.IdleWait(now)))
 	}
-	if a.m.State == StateWorkspaces && a.opts.RefreshInterval > 0 {
+	if a.watchConnected {
+		earlier(a.nextAuthCheck)
+	}
+	if a.m.State == StateWorkspaces && a.opts.RefreshInterval > 0 && !a.watchConnected {
 		if a.nextRefresh.IsZero() {
 			return 0
 		}
@@ -640,6 +651,8 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 // tick handles everything that happens because time passed rather than because
 // the user did something: the list refresh and a deferred repaint.
 func (a *App) tick(ctx context.Context, now time.Time) {
+	a.reconcileWorkspaceWatch(ctx)
+	a.checkWatchIdentity(ctx, now)
 	if a.updates.busy || a.m.State == StateUpdates {
 		a.dirty = true
 	}
@@ -647,7 +660,7 @@ func (a *App) tick(ctx context.Context, now time.Time) {
 		a.repaintAt = time.Time{}
 		a.dirty = true
 	}
-	if a.m.State != StateWorkspaces || a.opts.RefreshInterval < 0 {
+	if a.m.State != StateWorkspaces || a.opts.RefreshInterval < 0 || a.watchConnected {
 		return
 	}
 	if a.nextRefresh.IsZero() || !now.Before(a.nextRefresh) {
@@ -831,6 +844,7 @@ func (a *App) background(fn func() func()) {
 
 // useServer points the shell at an instance.
 func (a *App) useServer(server string, insecure bool) error {
+	a.stopWorkspaceWatch()
 	api, dialer, err := a.opts.NewClient(server, insecure)
 	if err != nil {
 		return err

@@ -518,21 +518,105 @@ func (a *App) signInBrowser(ctx context.Context) {
 
 // finishLogin stores a freshly issued token and verifies it.
 //
-// The token is verified before being trusted and after being stored, in that
-// order, because a stored token that the server will not accept leaves the
-// user with a client that fails mysteriously on every screen.
+// Both the initial session and its replacement device credential are verified
+// before persisting. Older servers can still use the shorter-lived session.
 func (a *App) finishLogin(ctx context.Context, token, email string, mustChange bool) {
 	a.api.SetToken(token)
-	a.rememberProfile(a.m.Server, a.m.Insecure, email)
-	if err := a.opts.Store.Save(a.profile, token); err != nil {
-		// Not fatal: the session works, it just will not survive a restart.
-		a.logf("store session token: %v", err)
-		a.m.Notice = i18n.Sprintf("workspaces.noSave", Describe(err))
-	}
-	if mustChange {
-		a.m.Notice = i18n.Get("workspaces.mustChange")
-	}
-	a.verifySession(ctx)
+	api := a.api
+	initialToken := token
+	opCtx, cancel := context.WithTimeout(ctx, loginTimeout)
+	a.cancelInFlight()
+	a.cancelPending = cancel
+	a.background(func() func() {
+		defer cancel()
+		identity, err := api.Me(opCtx)
+		var deviceErr error
+		if err == nil && identity.AuthEnabled && identity.Authenticated && !mustChange && !identity.MustChangePassword {
+			device, createErr := api.CreateDeviceToken(opCtx, kwclient.DeviceName())
+			deviceErr = createErr
+			if createErr == nil {
+				token = device.Token
+			}
+		}
+		opErr := opCtx.Err()
+		return func() {
+			if a.api != api || api.Token() != initialToken || a.m.State != StateLogin {
+				return
+			}
+			a.cancelPending = nil
+			if opErr != nil || ctx.Err() != nil {
+				a.m.Done()
+				if errors.Is(opErr, context.DeadlineExceeded) {
+					a.m.Err = Describe(opErr)
+				}
+				return
+			}
+			if err != nil {
+				a.m.Done()
+				a.m.Err = Describe(err)
+				return
+			}
+			if identity.AuthEnabled && !identity.Authenticated {
+				a.m.Done()
+				a.m.Err = i18n.Get("workspaces.expired")
+				return
+			}
+			if deviceErr != nil {
+				if errors.Is(deviceErr, kwclient.ErrUnauthorized) {
+					a.m.Done()
+					a.m.Err = Describe(deviceErr)
+					return
+				}
+				a.logf("device credential unavailable; keeping session credential: %v", deviceErr)
+			}
+			a.saveLogin(ctx, token, email, mustChange, deviceErr != nil)
+		}
+	})
+}
+
+func (a *App) saveLogin(ctx context.Context, token, email string, mustChange, deviceUnavailable bool) {
+	a.api.SetToken(token)
+	api := a.api
+	opCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	a.cancelPending = cancel
+	a.background(func() func() {
+		defer cancel()
+		identity, err := api.Me(opCtx)
+		cancelled := opCtx.Err() != nil
+		return func() {
+			if a.api != api || api.Token() != token || a.m.State != StateLogin {
+				return
+			}
+			a.cancelPending = nil
+			a.m.Done()
+			if cancelled || ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				a.m.Err = Describe(err)
+				return
+			}
+			if identity.AuthEnabled && !identity.Authenticated {
+				a.m.Err = i18n.Get("workspaces.expired")
+				return
+			}
+			a.rememberProfile(a.m.Server, a.m.Insecure, email)
+			a.m.SignedIn(identity)
+			if deviceUnavailable {
+				a.m.Notice = i18n.Get("workspaces.shortSession")
+			}
+			if err := a.opts.Store.Save(a.profile, token); err != nil {
+				a.logf("store session token: %v", err)
+				a.m.Notice = i18n.Sprintf("workspaces.noSave", Describe(err))
+			}
+			if mustChange || identity.MustChangePassword {
+				a.m.Notice = i18n.Get("workspaces.mustChange")
+			}
+			a.rememberTokenExpiry(token)
+			a.refreshWorkspaces(ctx, true)
+			a.refreshImages(ctx)
+		}
+	})
 }
 
 // refreshWorkspaces refetches the list.
@@ -558,6 +642,7 @@ func (a *App) refreshWorkspaces(ctx context.Context, manual bool) {
 
 	api := a.api
 	namespace := kwclient.AllNamespaces
+	generation, snapshotVersion := a.watchGeneration, a.watchSnapshotVersion
 	if a.profile != nil && a.profile.Namespace != "" {
 		namespace = a.profile.Namespace
 	}
@@ -569,6 +654,11 @@ func (a *App) refreshWorkspaces(ctx context.Context, manual bool) {
 		now := time.Now()
 		return func() {
 			a.refreshing = false
+			// A list request started before a newer SSE snapshot (or profile
+			// change) must not overwrite the live list with stale data.
+			if a.api != api || generation != a.watchGeneration || snapshotVersion != a.watchSnapshotVersion {
+				return
+			}
 			if a.m.State != StateWorkspaces {
 				return
 			}
@@ -1048,6 +1138,7 @@ func (a *App) switchProfile(ctx context.Context, name string) {
 // not mean retyping the server address. Held sessions are released: their
 // transports were authenticated by the session being forgotten.
 func (a *App) signOut() {
+	a.stopWorkspaceWatch()
 	a.closeUserMenu()
 	a.cancelInFlight()
 	a.closeAllSessions()

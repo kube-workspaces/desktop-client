@@ -109,6 +109,7 @@ var english = map[string]string{
 	"workspaces.tier1":         " · Tier 1",
 	"workspaces.signedOut":     "You are signed out.",
 	"workspaces.noSave":        "Signed in, but the session could not be saved: %s",
+	"workspaces.shortSession":  "Signed in with a shorter-lived session; a revocable device credential was unavailable.",
 	"workspaces.mustChange":    "This account must change its password in the web UI.",
 	"workspaces.openedView":    "Opened %s in the web view.",
 	"workspaces.alreadyOpen":   "%s is already open.",

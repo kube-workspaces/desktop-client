@@ -17,6 +17,9 @@ import (
 // with no header segment, so there is no "alg" to inspect and the signature can
 // only be checked by the server, which holds the secret.
 type TokenClaims struct {
+	// Type and DeviceID identify revocable native credentials.
+	Type     string `json:"typ,omitempty"`
+	DeviceID string `json:"jti,omitempty"`
 	// Email identifies the user and is the API's primary subject.
 	Email string `json:"email"`
 	// DisplayName is the human-friendly name, when the IdP supplied one.

@@ -36,6 +36,7 @@ type API interface {
 	LoginLocal(ctx context.Context, email, password string) (token string, mustChangePassword bool, err error)
 	// LoginBrowser runs the loopback + PKCE flow in the system browser.
 	LoginBrowser(ctx context.Context, opts *kwclient.BrowserLoginOptions) (*kwclient.BrowserLogin, error)
+	CreateDeviceToken(ctx context.Context, name string) (*kwclient.DeviceToken, error)
 	// Me reports who the server thinks the session belongs to.
 	Me(ctx context.Context) (*kwclient.Identity, error)
 

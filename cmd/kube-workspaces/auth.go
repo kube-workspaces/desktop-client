@@ -81,7 +81,8 @@ func runLogin(ctx context.Context, args []string) error {
 		sessionToken = os.Getenv("KUBE_WORKSPACES_TOKEN")
 	}
 
-	if sessionToken == "" {
+	interactive := sessionToken == ""
+	if interactive {
 		sessionToken, err = interactiveLogin(ctx, client, profile, *browser)
 		if err != nil {
 			return err
@@ -97,6 +98,25 @@ func runLogin(ctx context.Context, args []string) error {
 	}
 	if !identity.Authenticated && identity.AuthEnabled {
 		return errors.New("session token was rejected by the server")
+	}
+	if interactive && identity.AuthEnabled && !identity.MustChangePassword {
+		device, deviceErr := client.CreateDeviceToken(ctx, kwclient.DeviceName())
+		if deviceErr != nil {
+			if errors.Is(deviceErr, kwclient.ErrUnauthorized) {
+				return deviceErr
+			}
+			fmt.Fprintf(os.Stderr, "Device credential unavailable; saving the shorter-lived session instead: %v\n", deviceErr)
+		} else {
+			client.SetToken(device.Token)
+			verified, verifyErr := client.Me(ctx)
+			if verifyErr != nil {
+				return fmt.Errorf("verify device credential: %w", verifyErr)
+			}
+			if !verified.Authenticated {
+				return errors.New("device credential was rejected by the server")
+			}
+			sessionToken = device.Token
+		}
 	}
 
 	storage, err := config.SaveToken(profile.Name, sessionToken)
