@@ -682,6 +682,13 @@ func (a *App) draw(ctx context.Context) error {
 	a.ensureSurface(w, h)
 
 	if a.m.State != a.lastState {
+		// Restoring a valid token bypasses sign-in discovery. Every return
+		// to login must discover its controls, including sign-out and a
+		// credential revoked while the list/watch was open. Probe only on
+		// entry so discovery failures do not retry on every frame.
+		if a.m.State == StateLogin {
+			a.ensureAuthConfig(ctx)
+		}
 		// Focus belongs to a screen. Carrying it across a transition would
 		// leave the keyboard on a control that is no longer drawn, which is
 		// indistinguishable from the keyboard not working.

@@ -343,6 +343,7 @@ func (a *App) ensureAuthConfig(ctx context.Context) {
 	// session has expired", typically — is the reason the user is on this
 	// screen at all. Carry it across the probe and put it back.
 	was := a.m.Err
+	notice := a.m.Notice
 	a.m.Working(i18n.Sprintf("busy.contacting", server))
 	opCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	a.cancelInFlight()
@@ -358,6 +359,9 @@ func (a *App) ensureAuthConfig(ctx context.Context) {
 			}
 		}
 		return func() {
+			if a.api != api || a.m.State != StateLogin || a.m.Server != server {
+				return
+			}
 			a.cancelPending = nil
 			a.m.Done()
 			if err != nil {
@@ -365,6 +369,7 @@ func (a *App) ensureAuthConfig(ctx context.Context) {
 				return
 			}
 			a.m.ServerReady(server, insecure, cfg, native)
+			a.m.Notice = notice
 			if was != "" {
 				a.m.Err = was
 			}

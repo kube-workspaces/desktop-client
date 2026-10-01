@@ -5,11 +5,81 @@ package shell
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 )
+
+func TestRestoredSessionDiscoversSignInMethodsWhenReturningToLogin(t *testing.T) {
+	for _, browser := range []bool{false, true} {
+		for _, transition := range []string{"sign-out", "expired-list", "revoked-watch"} {
+			name := "local/" + transition
+			if browser {
+				name = "browser/" + transition
+			}
+			t.Run(name, func(t *testing.T) {
+				r := newRig(savedProfile(), "stored-token")
+				r.api.set(func(f *fakeAPI) {
+					f.authConfig = &kwclient.AuthConfig{Enabled: true, LocalAuth: kwclient.LocalAuthConfig{Enabled: !browser}}
+					if browser {
+						f.native = &kwclient.NativeAuthConfig{Enabled: true, Methods: []string{"loopback-pkce"}}
+					}
+				})
+				r.start()
+				if r.app.m.State != StateWorkspaces || r.app.m.Auth != nil {
+					t.Fatal("setup did not restore a session without auth discovery")
+				}
+				switch transition {
+				case "sign-out":
+					r.app.act(context.Background(), intent{kind: intentSignOut})
+				case "expired-list":
+					r.api.set(func(f *fakeAPI) { f.listErr = kwclient.ErrUnauthorized })
+					r.app.refreshWorkspaces(context.Background(), true)
+				case "revoked-watch":
+					r.api.set(func(f *fakeAPI) { f.meErr = kwclient.ErrUnauthorized })
+					r.app.watchConnected = true
+					r.app.checkWatchIdentity(context.Background(), r.now)
+				}
+				r.settle()
+				if r.app.m.State != StateLogin || r.app.m.Busy {
+					t.Fatalf("login did not settle: state=%v busy=%t", r.app.m.State, r.app.m.Busy)
+				}
+				if browser && !r.app.m.CanUseBrowserAuth() || !browser && !r.app.m.CanUseLocalAuth() {
+					t.Fatal("restored session returned to login with no usable sign-in method")
+				}
+				if transition == "sign-out" && r.app.m.Notice == "" {
+					t.Fatal("sign-out explanation lost during discovery")
+				}
+				if transition != "sign-out" && !strings.Contains(r.app.m.Err, "expired") {
+					t.Fatalf("expiry explanation lost: %q", r.app.m.Err)
+				}
+			})
+		}
+	}
+}
+
+func TestSignOutDiscoveryFailureDoesNotRetryEveryFrame(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.start()
+	r.api.set(func(f *fakeAPI) { f.authErr = errors.New("auth discovery unavailable") })
+	r.app.act(context.Background(), intent{kind: intentSignOut})
+	r.settle()
+	for range 10 {
+		r.app.dirty = true
+		r.step()
+	}
+	if r.app.m.State != StateLogin || r.app.m.Busy || !strings.Contains(strings.ToLower(r.app.m.Err), "auth discovery unavailable") {
+		t.Fatalf("discovery failure not reported: state=%v busy=%t err=%q", r.app.m.State, r.app.m.Busy, r.app.m.Err)
+	}
+	r.api.set(func(f *fakeAPI) {
+		if f.authCalls != 1 {
+			t.Fatalf("failed discovery retried %d times", f.authCalls)
+		}
+	})
+}
 
 func TestLoginPersistsOnlyVerifiedDeviceCredential(t *testing.T) {
 	for _, rejected := range []bool{false, true} {

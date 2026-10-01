@@ -353,6 +353,7 @@ type fakeAPI struct {
 
 	authConfig *kwclient.AuthConfig
 	authErr    error
+	authCalls  int
 	native     *kwclient.NativeAuthConfig
 
 	identity      *kwclient.Identity
@@ -440,6 +441,7 @@ func (f *fakeAPI) SetToken(token string) {
 func (f *fakeAPI) AuthConfig(context.Context) (*kwclient.AuthConfig, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.authCalls++
 	if f.authErr != nil {
 		return nil, f.authErr
 	}

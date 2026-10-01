@@ -54,8 +54,8 @@ func (c *Client) WatchWorkspaces(ctx context.Context, namespace string, snapshot
 		line := scanner.Text()
 		if line == "" {
 			if event == "snapshot" {
-				var workspaces []Workspace
-				if err := json.Unmarshal([]byte(data.String()), &workspaces); err != nil {
+				workspaces, err := decodeWorkspaceSnapshot([]byte(data.String()))
+				if err != nil {
 					return fmt.Errorf("kwclient: watch snapshot: %w", err)
 				}
 				snapshot(workspaces)
@@ -84,4 +84,27 @@ func (c *Client) WatchWorkspaces(ctx context.Context, namespace string, snapshot
 		return fmt.Errorf("kwclient: watch: %w", err)
 	}
 	return io.EOF
+}
+
+func decodeWorkspaceSnapshot(raw []byte) ([]Workspace, error) {
+	var records []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &records); err != nil {
+		return nil, err
+	}
+	// encoding/json accepts Name for a name tag, but not ReadyReplicas for
+	// ready_replicas. Reject service-model JSON instead of silently rendering
+	// all workspaces unready; the shell will use its normal list fallback.
+	for i, record := range records {
+		for _, field := range []string{"name", "namespace", "type", "image", "ready_replicas", "stopped"} {
+			value, ok := record[field]
+			if !ok || strings.TrimSpace(string(value)) == "null" {
+				return nil, fmt.Errorf("workspace %d missing %s", i, field)
+			}
+		}
+	}
+	var workspaces []Workspace
+	if err := json.Unmarshal(raw, &workspaces); err != nil {
+		return nil, err
+	}
+	return workspaces, nil
 }

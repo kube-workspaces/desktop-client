@@ -79,7 +79,7 @@ func TestWatchStreamingOutlivesRESTTimeoutAndCancels(t *testing.T) {
 			t.Error("watch scope/authentication lost")
 		}
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-		_, _ = fmt.Fprint(w, ": heartbeat\n\nevent: snapshot\ndata: [{\ndata: \"name\":\"first\",\"namespace\":\"team\"}]\n\n")
+		_, _ = fmt.Fprint(w, ": heartbeat\n\nevent: snapshot\ndata: [{\ndata: \"name\":\"first\",\"namespace\":\"team\",\"type\":\"vm\",\"image\":\"example/image\",\"ready_replicas\":1,\"stopped\":false}]\n\n")
 		w.(http.Flusher).Flush()
 		timer := time.NewTimer(50 * time.Millisecond)
 		defer timer.Stop()
@@ -97,7 +97,7 @@ func TestWatchStreamingOutlivesRESTTimeoutAndCancels(t *testing.T) {
 	var snapshots int
 	err := c.WatchWorkspaces(ctx, "team", func(items []Workspace) {
 		snapshots++
-		if snapshots == 1 && (len(items) != 1 || items[0].Name != "first") {
+		if snapshots == 1 && (len(items) != 1 || items[0].Name != "first" || !items[0].Running()) {
 			t.Error("multiline snapshot corrupted")
 		}
 		if snapshots == 2 {
@@ -116,6 +116,16 @@ func TestWatchRejectsMalformedSnapshot(t *testing.T) {
 	})
 	if err := c.WatchWorkspaces(context.Background(), "team", func([]Workspace) { t.Error("invalid snapshot delivered") }); err == nil {
 		t.Fatal("invalid snapshot accepted")
+	}
+}
+
+func TestWatchRejectsServiceModelJSON(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: snapshot\ndata: [{\"Name\":\"vm\",\"Namespace\":\"team\",\"Type\":\"vm\",\"Image\":\"example/image\",\"ReadyReplicas\":1,\"Stopped\":false}]\n\n")
+	})
+	if err := c.WatchWorkspaces(context.Background(), "team", func([]Workspace) { t.Error("invalid wire format delivered") }); err == nil {
+		t.Fatal("service-model JSON accepted")
 	}
 }
 
