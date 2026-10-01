@@ -160,6 +160,10 @@ var english = map[string]string{
 	"header.settings":      "Settings",
 	"header.profiles":      "Profiles",
 	"header.noAuth":        "authentication disabled",
+	"header.userMenu":      "User menu",
+	"header.profile":       "Profile: %s",
+	"header.endpoint":      "Endpoint: %s",
+	"header.role":          "Role: %s",
 
 	// Profile switcher.
 	"profiles.title":   "Profiles",

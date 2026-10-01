@@ -314,7 +314,7 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 
 	content := ui.Inset(bounds, th.Pad)
 	header, content := ui.CutTop(content, ui.TextHeight(th.Title, th.Font)+th.Gap)
-	a.drawHeader(header, &out)
+	a.drawHeader(header)
 
 	content.Y += th.Gap
 	content.H -= th.Gap
@@ -594,55 +594,15 @@ type styleOption struct {
 	label string
 }
 
-// drawHeader draws the title bar: who is signed in, the way out, and the way
-// to the appearance settings. The buttons carry chrome (rather than the quiet
-// treatment): a text-only Settings label blends into the identity line beside
-// it and users cannot find it. When an update is available the badge joins
-// them as its own button instead of relabelling Settings, so both stay
-// reachable.
-func (a *App) drawHeader(r ui.Rect, out *intent) {
-	th := a.opts.Theme
-	ctx := a.ctx
-
-	type headerButton struct {
-		id   ui.FocusID
-		text string
-		kind intentKind
+// drawHeader keeps account controls independent of the workspace toolbar.
+func (a *App) drawHeader(r ui.Rect) {
+	avatar, title := ui.CutRight(r, r.H)
+	ui.Label(a.ctx, title, i18n.Get("workspaces.title"), ui.LabelStyle{Scale: a.opts.Theme.Title, Middle: true})
+	if a.drawAvatar(avatar) {
+		a.userMenuOpen = !a.userMenuOpen
+		a.userMenuScroll = 0
+		a.ctx.Repaint()
 	}
-	buttons := []headerButton{
-		{idProfiles, i18n.Get("header.profiles"), intentOpenProfiles},
-	}
-	if a.updates.result.Available {
-		buttons = append(buttons, headerButton{idUpdates, i18n.Get("updates.availableBadge"), intentUpdates})
-	}
-	buttons = append(buttons,
-		headerButton{idSettings, i18n.Get("header.settings"), intentOpenSettings},
-		headerButton{idSignOut, i18n.Get("header.signout"), intentSignOut},
-	)
-	widths := make([]int, len(buttons))
-	buttonsW := 0
-	for i, b := range buttons {
-		widths[i] = (&ui.Button{Text: b.text}).Width(ctx)
-		buttonsW += widths[i]
-	}
-	buttonsW += th.Gap / 2 * (len(buttons) - 1)
-	actionRect, rest := ui.CutRight(r, buttonsW)
-	cols := ui.Row(actionRect, th.Gap/2, widths...)
-	for i, b := range buttons {
-		btn := ui.Button{ID: b.id, Text: b.text, Variant: ui.ButtonSecondary}
-		if btn.Layout(ctx, cols[i]) {
-			*out = intent{kind: b.kind}
-		}
-	}
-
-	title, identity := ui.CutLeft(rest, ui.TextWidth(i18n.Get("workspaces.title"), th.Title, th.Font)+th.Pad)
-	ui.Label(ctx, title, i18n.Get("workspaces.title"), ui.LabelStyle{Scale: th.Title, Middle: true})
-	ui.Label(ctx, ui.InsetXY(identity, th.Gap, 0), a.identityLine(), ui.LabelStyle{
-		Color:  th.TextMuted,
-		Scale:  th.Small,
-		Align:  ui.AlignRight,
-		Middle: true,
-	})
 }
 
 // drawList draws the workspace rows.
@@ -1598,27 +1558,6 @@ func (a *App) statusColor(ws kwclient.Workspace) color.RGBA {
 	default:
 		return th.Warning
 	}
-}
-
-// identityLine is the "who am I" text in the header.
-func (a *App) identityLine() string {
-	if a.m.Identity == nil {
-		return a.m.Server
-	}
-	who := a.m.Identity.Email
-	if who == "" {
-		who = a.m.Identity.DisplayName
-	}
-	if who == "" {
-		who = i18n.Get("header.noAuth")
-	}
-	if a.m.Identity.Role != "" {
-		who += " (" + a.m.Identity.Role + ")"
-	}
-	if warn := sessionExpiryWarning(a.m.TokenExpiry, a.ctx.Input.Now); warn != "" {
-		who += "  ·  " + warn
-	}
-	return who + "  ·  " + a.m.Server
 }
 
 // sessionExpiryWarnBefore is how early the header starts counting down the

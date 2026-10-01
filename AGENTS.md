@@ -113,7 +113,7 @@ Implemented and working:
   namespace, container/VM/scratch type, catalog image filtered by type) over
   `POST /v1/workspaces` (`kwclient.CreateWorkspace`; taken names report
   `ErrAlreadyExists`).
-- **In-shell profile switching.** The header **Profiles** button and the
+- **In-shell profile switching.** **Profiles** in the header avatar menu and the
   server screen list every configured profile; switching rebuilds the client
   for the new instance, restores its token and verifies it, with no relaunch.
   `--profile` still pins a launch to one profile.

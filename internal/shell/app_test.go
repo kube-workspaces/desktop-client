@@ -418,20 +418,20 @@ func TestTokenExpiryIsDecodedAtSignIn(t *testing.T) {
 // TestExpiringTokenShowsCountdownInHeader: a token dying within the warning
 // window names its remaining time beside the identity; anything else stays
 // quiet.
-func TestExpiringTokenShowsCountdownInHeader(t *testing.T) {
+func TestExpiringTokenShowsCountdownInUserMenu(t *testing.T) {
 	r := newRig(savedProfile(), "stored-token")
 	r.start()
 
 	r.app.m.TokenExpiry = r.now.Add(30 * time.Minute)
 	r.step()
-	if got := r.app.identityLine(); !strings.Contains(got, "session expires in 30m") {
-		t.Fatalf("identity line = %q, want the countdown", got)
+	if got := strings.Join(r.app.userMenuInfo(), " · "); !strings.Contains(got, "session expires in 30m") {
+		t.Fatalf("user menu info = %q, want the countdown", got)
 	}
 
 	r.app.m.TokenExpiry = r.now.Add(23 * time.Hour)
 	r.step()
-	if got := r.app.identityLine(); strings.Contains(got, "expires") {
-		t.Fatalf("identity line = %q, want no countdown for a fresh token", got)
+	if got := strings.Join(r.app.userMenuInfo(), " · "); strings.Contains(got, "expires") {
+		t.Fatalf("user menu info = %q, want no countdown for a fresh token", got)
 	}
 }
 

@@ -181,7 +181,7 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.switchProfile(ctx, in.profile)
 	case intentProfilesClose:
 		a.m.CloseProfiles()
-		a.ctx.Focus().Set(idProfiles)
+		a.ctx.Focus().Set(idUserMenu)
 	case intentOpenSessions:
 		a.m.ShowSessionList()
 	case intentSessionsClose:
@@ -982,6 +982,7 @@ func (a *App) setStopped(ctx context.Context, ws kwclient.Workspace, stop bool) 
 // The profile is saved as current so the CLI and the next launch agree with
 // what the shell is showing.
 func (a *App) switchProfile(ctx context.Context, name string) {
+	a.closeUserMenu()
 	profiles, err := a.opts.Store.ListProfiles()
 	if err != nil {
 		a.m.Err = Describe(err)
@@ -1046,6 +1047,7 @@ func (a *App) switchProfile(ctx context.Context, name string) {
 // not mean retyping the server address. Held sessions are released: their
 // transports were authenticated by the session being forgotten.
 func (a *App) signOut() {
+	a.closeUserMenu()
 	a.cancelInFlight()
 	a.closeAllSessions()
 	if a.api != nil {
@@ -1339,6 +1341,7 @@ const (
 	idCreateSubmit    ui.FocusID = "create-submit"
 	idCreateClose     ui.FocusID = "create-close"
 
+	idUserMenu      ui.FocusID = "user-menu"
 	idProfiles      ui.FocusID = "profiles"
 	idProfilesClose ui.FocusID = "profiles-close"
 

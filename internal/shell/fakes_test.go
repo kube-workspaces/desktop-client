@@ -894,9 +894,16 @@ func (r *rig) typeText(s string) {
 	}
 }
 
-// focus places the keyboard focus directly, for tests that are about what a
-// control does rather than about how it is reached.
-func (r *rig) focus(id ui.FocusID) { r.app.ctx.Focus().Set(id) }
+// focus reaches account actions through their menu on the workspace screen,
+// then places keyboard focus directly for tests about the destination action.
+func (r *rig) focus(id ui.FocusID) {
+	if r.app.m.State == StateWorkspaces && !r.app.userMenuOpen &&
+		(id == idSettings || id == idProfiles || id == idSignOut || id == idUpdates) {
+		r.app.ctx.Focus().Set(idUserMenu)
+		r.clickFocused()
+	}
+	r.app.ctx.Focus().Set(id)
+}
 
 // clickFocused activates the focused control with Enter.
 func (r *rig) clickFocused() { r.press(keysym.KeyReturn, keysym.ModNone) }

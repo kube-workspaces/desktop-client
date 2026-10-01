@@ -202,6 +202,11 @@ type App struct {
 	dialer  SessionDialer
 	profile *config.Profile
 
+	userMenuOpen    bool
+	userMenuScroll  int
+	userMenuFocus   ui.FocusID
+	userMenuSwallow bool // consume the release of an outside-dismissal press
+
 	// sessions are the held transports, keyed by workspace key. Everything
 	// here belongs to the loop's goroutine, like the model.
 	sessions map[string]*sessionRecord
@@ -667,6 +672,9 @@ func (a *App) draw(ctx context.Context) error {
 		// leave the keyboard on a control that is no longer drawn, which is
 		// indistinguishable from the keyboard not working.
 		a.ctx.Focus().Clear()
+		if a.m.State == StateWorkspaces && (a.lastState == StateSettings || a.lastState == StateUpdates) {
+			a.ctx.Focus().Set(idUserMenu)
+		}
 		a.lastState = a.m.State
 	}
 
@@ -675,6 +683,10 @@ func (a *App) draw(ctx context.Context) error {
 	// background is deliberately not cleared and the list is not drawn, so the
 	// buffer still holds the frame the user last saw and the modal dims it.
 	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList || a.m.SSH != nil)
+	if a.m.State != StateWorkspaces || modal || a.m.CloseConfirm {
+		a.userMenuOpen = false
+		a.userMenuScroll = 0
+	}
 	if !modal {
 		a.canvas.Fill(a.canvas.Bounds(), a.opts.Theme.Background)
 	}
@@ -698,7 +710,7 @@ func (a *App) draw(ctx context.Context) error {
 		case modal:
 			intent = a.drawWorkspaceInfoModal(a.canvas.Bounds())
 		default:
-			intent = a.drawWorkspacesScreen(a.canvas.Bounds())
+			intent = a.drawWorkspacesWithUserMenu(a.canvas.Bounds())
 		}
 	case StateSettings:
 		intent = a.drawSettingsScreen(a.canvas.Bounds())
