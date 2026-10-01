@@ -283,23 +283,24 @@ type App struct {
 	aboutLogo *image.NRGBA
 
 	// The surface. img is reallocated on resize; canvas wraps it.
-	img           *image.RGBA
-	canvas        *ui.Canvas
-	texW, texH    int
-	surfW, surfH  int
-	in            ui.Input
-	events        []ui.Event
-	lastState     State
-	authorizeURL  string
-	cancelPending context.CancelFunc
-	results       chan func()
-	done          chan struct{}
-	inflight      atomic.Int64
-	dirty         bool
-	quit          bool
-	refreshing    bool
-	nextRefresh   time.Time
-	repaintAt     time.Time
+	img            *image.RGBA
+	canvas         *ui.Canvas
+	texW, texH     int
+	surfW, surfH   int
+	in             ui.Input
+	events         []ui.Event
+	lastState      State
+	authorizeURL   string
+	cancelPending  context.CancelFunc
+	results        chan func()
+	done           chan struct{}
+	inflight       atomic.Int64
+	dirty          bool
+	quit           bool
+	refreshing     bool
+	refreshStarted time.Time
+	nextRefresh    time.Time
+	repaintAt      time.Time
 }
 
 // New returns an App. It opens no window; see [App.Run].

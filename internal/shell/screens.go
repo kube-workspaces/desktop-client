@@ -316,43 +316,41 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 	header, content := ui.CutTop(content, ui.TextHeight(th.Title, th.Font)+th.Gap)
 	a.drawHeader(header)
 
-	content.Y += th.Gap
-	content.H -= th.Gap
+	headerGap := th.Gap + th.Gap/2
+	content.Y += headerGap
+	content.H -= headerGap
 
-	// Toolbar: filter on the left; new, sessions and refresh on the right.
+	// Toolbar: filter and refresh on the left; new and sessions on the right.
 	// All three are global — none of them acts on the selected workspace —
 	// so they live up here rather than down in the selection-contextual
 	// footer. The sessions switcher appears only while at least one
 	// session is held.
 	toolbar, content := ui.CutTop(content, th.ControlHeight)
-	refresh := ui.Button{ID: idRefresh, Text: i18n.Get("workspaces.refresh"), Variant: ui.ButtonSecondary}
-	refreshRect, rest := ui.CutRight(toolbar, refresh.Width(ctx))
+	rest := toolbar
 	if len(a.m.Sessions) > 0 {
 		sessions := ui.Button{ID: idSessions, Text: i18n.Sprintf("sessions.title", len(a.m.Sessions)), Variant: ui.ButtonSecondary}
-		rest = ui.CutRightGap(rest, th.Gap)
 		sessionsRect, remainder := ui.CutRight(rest, sessions.Width(ctx))
-		rest = remainder
+		rest = ui.CutRightGap(remainder, th.Gap)
 		if sessions.Layout(ctx, sessionsRect) {
 			out = intent{kind: intentOpenSessions}
 		}
 	}
 	// New opens the create form. It is always available: an empty list is
 	// exactly when creating is the thing to do.
-	newBtn := ui.Button{ID: idCreate, Text: i18n.Get("workspaces.new"), Variant: ui.ButtonSecondary}
+	newBtn := ui.NewWorkspaceButton{ID: idCreate}
+	newRect, rest := ui.CutRight(rest, th.ControlHeight)
 	rest = ui.CutRightGap(rest, th.Gap)
-	newRect, rest := ui.CutRight(rest, newBtn.Width(ctx))
 	if newBtn.Layout(ctx, newRect) {
 		out = intent{kind: intentCreateWorkspace}
 	}
-	filterRect, spinnerRect := ui.CutLeft(rest, min(360, rest.W-th.Gap))
+	filterRect, rest := ui.CutLeft(rest, min(360, max(0, rest.W-th.Gap-th.ControlHeight)))
+	refreshRect := ui.Rect{X: rest.X + th.Gap, Y: rest.Y, W: th.ControlHeight, H: th.ControlHeight}
 	if a.filterField.Layout(ctx, filterRect) {
 		out = intent{kind: intentActivate}
 	}
+	refresh := ui.RefreshButton{ID: idRefresh, Started: a.refreshStarted, Refreshing: a.refreshing}
 	if refresh.Layout(ctx, refreshRect) {
 		out = intent{kind: intentRefresh}
-	}
-	if a.refreshing {
-		ui.Spinner(ctx, ui.Inset(ui.Rect{X: spinnerRect.X + th.Gap, Y: spinnerRect.Y, W: th.ControlHeight, H: th.ControlHeight}, th.Gap/2), th.TextMuted)
 	}
 	a.m.Filter = a.filterField.Value()
 

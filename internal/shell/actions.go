@@ -551,6 +551,7 @@ func (a *App) refreshWorkspaces(ctx context.Context, manual bool) {
 		return
 	}
 	a.refreshing = true
+	a.refreshStarted = time.Now()
 	if manual {
 		a.nextRefresh = time.Time{}
 	}
