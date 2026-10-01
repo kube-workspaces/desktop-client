@@ -262,7 +262,7 @@ func entryID(e *sdl.TrayEntry) uintptr {
 //
 // The pixels are copied straight into an RGBA32 surface: that format is
 // byte-order R,G,B,A on every architecture this repo builds (see the
-// texture allocation in sdl.go), which is exactly Go's image.RGBA layout,
+// texture allocation in sdl.go), which is exactly Go's image.NRGBA layout,
 // so no byte swap is needed. The caller owns the surface.
 func trayIconSurface() (*sdl.Surface, error) {
 	if len(appIconPNG) == 0 {
@@ -272,7 +272,7 @@ func trayIconSurface() (*sdl.Surface, error) {
 	if err != nil {
 		return nil, err
 	}
-	small := scaleRGBA(img, trayIconSize)
+	small := scaleTrayIcon(img, trayIconSize)
 	surface, err := sdl.CreateSurface(small.Bounds().Dx(), small.Bounds().Dy(), sdl.PIXELFORMAT_RGBA32)
 	if err != nil {
 		return nil, err
@@ -286,23 +286,22 @@ func trayIconSurface() (*sdl.Surface, error) {
 	return surface, nil
 }
 
-// scaleRGBA renders img into a size×size RGBA with nearest-neighbour
+// scaleTrayIcon renders img into a size×size straight-alpha NRGBA with nearest-neighbour
 // sampling. Nearest is honest at these sizes: the source is a flat vector
 // cube, and a 32 px tray glyph wants crisp edges, not a smooth blur.
-func scaleRGBA(img image.Image, size int) *image.RGBA {
+func scaleTrayIcon(img image.Image, size int) *image.NRGBA {
 	b := img.Bounds()
 	sw, sh := b.Dx(), b.Dy()
-	out := image.NewRGBA(image.Rect(0, 0, size, size))
+	out := image.NewNRGBA(image.Rect(0, 0, size, size))
 	if sw <= 0 || sh <= 0 {
 		return out
 	}
 	for y := 0; y < size; y++ {
 		for x := 0; x < size; x++ {
-			// Alpha is forced opaque: the app icon is fully opaque, and
-			// a half-transparent cube would ghost over dark
-			// notification areas.
-			r, g, b, _ := img.At(b.Min.X+x*sw/size, b.Min.Y+y*sh/size).RGBA()
-			out.SetRGBA(x, y, color.RGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: 0xff})
+			// SDL needs straight alpha. RGBA() premultiplies colours, which
+			// would darken the antialiased edges if copied straight to SDL.
+			pixel := color.NRGBAModel.Convert(img.At(b.Min.X+x*sw/size, b.Min.Y+y*sh/size)).(color.NRGBA)
+			out.SetNRGBA(x, y, pixel)
 		}
 	}
 	return out

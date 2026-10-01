@@ -11,6 +11,7 @@ package i18n
 // Diagnostics (logf lines, %w error wraps) are deliberately not here: they
 // are for the operator's log, not the user's window.
 var english = map[string]string{
+	"app.alreadyRunning":     "Kube Workspaces is already running. Switch to its existing window or choose Open Kube Workspaces from the system tray.",
 	"updates.never":          "Never",
 	"updates.title":          "Updates",
 	"updates.availableBadge": "Update available",

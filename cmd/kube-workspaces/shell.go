@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -10,8 +11,11 @@ import (
 
 	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
 	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
+	"github.com/kube-workspaces/desktop-client/internal/instance"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/shell"
+	"github.com/kube-workspaces/desktop-client/internal/tray"
 	"github.com/kube-workspaces/desktop-client/internal/update"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
@@ -67,6 +71,28 @@ func runShell(ctx context.Context, args []string) error {
 	if err := checkUIScale(*uiScale); err != nil {
 		return err
 	}
+
+	// Claim the GUI before reading mutable settings or starting an updater.
+	// The lock is per user, shared across profiles and installed binary copies.
+	dir, err := config.Dir()
+	if err != nil {
+		return err
+	}
+	owner, err := instance.Acquire(ctx, dir)
+	if errors.Is(err, instance.ErrAlreadyRunning) {
+		runtime.LockOSThread()
+		if dialogErr := viewer.ShowMessage(windowTitle, i18n.Get("app.alreadyRunning")); dialogErr != nil {
+			return fmt.Errorf("%w (%v)", err, dialogErr)
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if owner == nil {
+		return nil // The existing shell accepted our activation request.
+	}
+	defer owner.Close()
 
 	// An unset size restores the last arrangement: the shell records its
 	// window on resize and on exit, so a relaunch opens where the user left
@@ -181,6 +207,7 @@ func runShell(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	owner.Start(func() { app.Handle(tray.Action{Kind: tray.ActionShow}) })
 
 	// SDL must be driven from the thread that initialised the video
 	// subsystem, and on macOS that must be the process's first thread. main()

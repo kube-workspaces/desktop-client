@@ -36,6 +36,16 @@ var appIconPNG []byte
 // panel renders it from these bytes rather than carrying a second copy.
 func AppIcon() []byte { return appIconPNG }
 
+// ShowMessage displays a native informational dialog without opening a shell.
+// The caller must own the main OS thread, just as for Backend.Open.
+func ShowMessage(title, message string) error {
+	if err := acquireSDL(); err != nil {
+		return err
+	}
+	defer releaseSDL()
+	return sdl.ShowSimpleMessageBox(sdl.MESSAGEBOX_INFORMATION, title, message, nil)
+}
+
 // wakeEventType is the event [SDLBackend.Wake] pushes.
 //
 // SDL_EVENT_USER is the first type reserved for the application, and SDL's own
@@ -665,6 +675,11 @@ func (b *SDLBackend) WindowID() uint32 { return uint32(b.windowID) }
 func (b *SDLBackend) Raise() error {
 	if b.window == nil {
 		return nil
+	}
+	if b.window.Flags()&sdl.WINDOW_MINIMIZED != 0 {
+		if err := b.window.Restore(); err != nil {
+			return fmt.Errorf("sdl restore window: %w", err)
+		}
 	}
 	if err := b.window.Raise(); err != nil {
 		return fmt.Errorf("sdl raise window: %w", err)

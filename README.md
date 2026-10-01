@@ -293,6 +293,13 @@ or a `.desktop` file:
 `--interval`, `-v`). `--ui-scale` pins the interface scale (0 follows the
 display; the Settings screen offers the same choice persistently).
 
+The graphical application is **single-instance per user**, across profiles and
+installed copies. Launching it again restores and requests focus for the running
+main window, including when hidden in the tray or minimized. If activation cannot
+be delivered, an already-running dialog points you to the existing window or tray
+menu. Window managers may restrict focus requests. CLI commands and embedded web
+children still run independently; a crash automatically releases the GUI lock.
+
 The shell walks through three screens — instance URL, sign-in, workspace list —
 and then opens a display session in its **own window**. The shell's window
 remains open and resumes control when the session ends.

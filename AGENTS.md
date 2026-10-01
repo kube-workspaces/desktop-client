@@ -75,6 +75,15 @@ Implemented and working:
   active/idle cadence. Explicit `--quality`/`--compress` selects fixed mode;
   `--adaptive-quality` can explicitly override that choice.
 - Graphical shell: instance/login/workspace-list screens.
+- **Single-instance GUI.** Default and explicit `shell` launches share a per-user
+  native file lock (`internal/instance`, flock on Linux/macOS, LockFileEx on
+  Windows). A second launch sends an authenticated loopback activation request,
+  then exits; the main-thread pump restores/raises the existing shell using its
+  tray action queue. Windows grants foreground permission from the launcher.
+  Undeliverable activation reports an already-running dialog. OS focus policies
+  still apply. Locks release on exit/crash; stale metadata does not prevent
+  startup. CLI commands and web children stay independent. Tray surfaces preserve
+  straight alpha, including the transparent background and antialiased edges.
 - **Shell text editing.** Fields select (Shift-arrow, drag, double-click word,
   triple-click all), copy/cut/paste through the host clipboard (Ctrl or Cmd),
   and take composed IME text; delete/replace acts on the selection first.

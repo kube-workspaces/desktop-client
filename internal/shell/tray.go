@@ -133,7 +133,12 @@ func (a *App) showShell() {
 		}
 		a.shellHidden = false
 	}
-	_ = a.be.Raise()
+	if err := a.be.Raise(); err != nil {
+		a.logf("show main window: %v", err)
+		if _, ok := a.be.(*viewer.SDLBackend); ok {
+			_ = viewer.ShowMessage(a.opts.Title, i18n.Get("app.alreadyRunning"))
+		}
+	}
 	a.dirty = true
 }
 

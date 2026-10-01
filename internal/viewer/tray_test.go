@@ -4,11 +4,48 @@
 package viewer
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
 	"reflect"
 	"testing"
 
 	"github.com/kube-workspaces/desktop-client/internal/tray"
 )
+
+func TestTrayIconPreservesStraightAlpha(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 3, 1))
+	img.SetNRGBA(0, 0, color.NRGBA{})
+	img.SetNRGBA(1, 0, color.NRGBA{R: 13, G: 148, B: 136, A: 128})
+	img.SetNRGBA(2, 0, color.NRGBA{R: 13, G: 148, B: 136, A: 255})
+	small := scaleTrayIcon(img, 3)
+	for x := range 3 {
+		if got, want := small.NRGBAAt(x, 0), img.NRGBAAt(x, 0); got != want {
+			t.Errorf("pixel %d = %v, want %v", x, got, want)
+		}
+	}
+}
+
+func TestEmbeddedTrayIconHasTransparentBackground(t *testing.T) {
+	img, err := png.Decode(bytes.NewReader(appIconPNG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	small := scaleTrayIcon(img, trayIconSize)
+	if small.NRGBAAt(0, 0).A != 0 {
+		t.Fatal("tray background is not transparent")
+	}
+	visible := false
+	for y := range trayIconSize {
+		for x := range trayIconSize {
+			visible = visible || small.NRGBAAt(x, y).A > 0
+		}
+	}
+	if !visible {
+		t.Fatal("tray glyph is invisible")
+	}
+}
 
 // TestTrayCallbackShape pins the trampoline's signature: Windows
 // (syscall.NewCallback, which purego delegates to) requires exactly one
