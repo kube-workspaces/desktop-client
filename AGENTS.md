@@ -148,11 +148,23 @@ Not implemented, and must not be described otherwise:
   draws native GTK, Cocoa or Win32 chrome around the browser through an
   authenticated loopback capability (`KW_CONNECTION_NAV_URL` /
   `KW_CONNECTION_NAV_TOKEN`) that accepts only Sessions/workspace-list
-  navigation. What is not yet done is running it against real guests and
-  real webview child processes on each platform; the GTK and Cocoa toolbars
-  have not been compiled or exercised anywhere, because this environment has
-  neither WebKitGTK 4.1 headers nor an Apple toolchain. Windows was compiled
-  with mingw (`make build-web-windows`).
+  navigation. What is not yet done is running it against real guests and a
+  real webview child process on each platform.
+  - Linux/GTK is exercised end to end: `KW_WEB_CHROME_NATIVE=1 go test
+    ./internal/webcmd -run WebChrome` drives the real child against a stub
+    instance under Xvfb and asserts the strip, fullscreen float, auto-hide,
+    reveal, drag and disconnect from the rendered pixels.
+  - Windows/Win32 chrome is exercised by `internal/web/toolbar_windows_test.go`
+    (`KW_WEB_CHROME_NATIVE=1 go test ./internal/web -run Win32Toolbar`): the
+    toolbar is built onto a synthetic `webview_widget` tree and asked where
+    every piece of chrome landed. It is verified under Wine 8 on Linux with a
+    mingw cross-build; WebView2 itself is not run under Wine, and real
+    WebView2 remains untested anywhere.
+  - macOS/Cocoa is compiled by the `cross` CI job on `macos-latest`, which is
+    the most that can be done without an Apple toolchain here. There is no
+    runtime acceptance for it anywhere yet; the GTK findings (hide on idle,
+    reveal handle, pin, drag) are the reference behaviour `toolbar_darwin.m`
+    has to match.
 
 - **Tier 0 audio.** `probe --audio` advertises the QEMU audio pseudo-encoding
   purely to detect whether the VM has a sound device. No Tier 0 decoder, no

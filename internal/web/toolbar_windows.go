@@ -6,7 +6,7 @@
 package web
 
 /*
-#cgo LDFLAGS: -luser32
+#cgo LDFLAGS: -luser32 -lgdi32
 #include <windows.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -25,11 +25,12 @@ static int kw_scale(KWToolbar *t,int n){HDC dc=GetDC(t->win);int dpi=GetDeviceCa
 static void kw_reveal(KWToolbar *t){t->until=GetTickCount64()+3000;ShowWindow(t->bar,SW_SHOW);ShowWindow(t->handle,SW_HIDE);}
 // The webview_widget child is ours to place: webview_go refills the whole
 // client area on WM_SIZE, so this runs after the original window procedure.
+// The reveal handle keeps the visibility kw_reveal and the idle timer give it:
+// the strip and the handle are never on screen at the same time.
 static void kw_layout(KWToolbar *t){RECT r;GetClientRect(t->win,&r);
  int bh=kw_scale(t,44),w=r.right,h=r.bottom,bw=t->full?kw_min(w,kw_scale(t,1040)):w,left=t->full?kw_max(0,kw_min((w-bw)/2+t->offset,w-bw)):0;
  SetWindowPos(t->web,NULL,0,t->full?0:bh,w,kw_max(1,h-(t->full?0:bh)),SWP_NOZORDER|SWP_NOACTIVATE);
  SetWindowPos(t->bar,HWND_TOP,left,0,bw,bh,SWP_NOACTIVATE);
- if(t->full)ShowWindow(t->handle,SW_SHOW);else ShowWindow(t->handle,SW_HIDE);
  SetWindowPos(t->handle,HWND_TOP,kw_max(0,(w-kw_scale(t,100))/2),0,kw_scale(t,100),kw_scale(t,22),SWP_NOACTIVATE);
  int x=bw-kw_scale(t,6);for(int a=6;a>=1;a--){if(!t->buttons[a])continue;int width=kw_scale(t,a==3?112:90);x-=width;MoveWindow(t->buttons[a],x,kw_scale(t,7),width,kw_scale(t,30),TRUE);x-=kw_scale(t,4);}
  MoveWindow(t->identity,kw_scale(t,24),kw_scale(t,13),kw_max(0,x-kw_scale(t,28)),kw_scale(t,24),TRUE);
