@@ -7,6 +7,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
@@ -53,6 +54,28 @@ func liveKeys(r *rig) []string {
 		out = append(out, e.key)
 	}
 	return out
+}
+
+func TestExplicitDisconnectReleasesOnlySelectedWindow(t *testing.T) {
+	r := liveWindowsRig(t)
+	openLive(t, r, "team/vm-a")
+	openLive(t, r, "team/vm-b")
+	w := r.app.live["team/vm-a"].window.(*fakeLiveWindow)
+	w.disposition, w.closed = connection.Release, true
+	r.step()
+	if r.app.sessions["team/vm-a"] != nil || r.app.isLive("team/vm-a") {
+		t.Fatal("explicit Disconnect parked the attachment")
+	}
+	if len(r.closed) != 1 || r.closed[0] != "team/vm-a" {
+		t.Fatalf("released handles=%v", r.closed)
+	}
+	if !r.app.isLive("team/vm-b") || r.app.sessions["team/vm-b"] == nil {
+		t.Fatal("Disconnect disturbed another window")
+	}
+	r.step()
+	if len(r.closed) != 1 {
+		t.Fatal("released the handle twice")
+	}
 }
 
 // TestShellStaysInteractiveBesideLiveWindows is the point of the whole plan:

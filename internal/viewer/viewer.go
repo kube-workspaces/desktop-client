@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
 	"github.com/kube-workspaces/desktop-client/internal/transport"
@@ -394,8 +395,9 @@ type Viewer struct {
 	focused bool
 	grabbed bool
 
-	presentDue time.Time
-	quit       bool
+	presentDue  time.Time
+	quit        bool
+	disposition connection.CloseDisposition
 
 	// srcErr and failedAt implement the linger: a terminal failure is shown
 	// for a moment before the window closes.
@@ -768,6 +770,17 @@ func (v *Viewer) DetachedClosed() bool { return v.quit }
 // DetachedResult is the terminal failure to report when the window closed,
 // or nil for a clean close.
 func (v *Viewer) DetachedResult() error { return v.srcErr }
+
+// CloseDisposition distinguishes an explicit Disconnect from window-close.
+// Like the detached window methods, it is owned by the render loop.
+func (v *Viewer) CloseDisposition() connection.CloseDisposition { return v.disposition }
+
+// RequestDisconnect ends this window and tells its owner to release the held
+// attachment. Toolbar commands and the quit hotkey share this path.
+func (v *Viewer) RequestDisconnect() {
+	v.disposition = connection.Release
+	v.quit = true
+}
 
 // WindowBackend returns the backend owning this window, for the pump's
 // routing and waiting.
@@ -1350,7 +1363,7 @@ func (v *Viewer) runHotkey(e EventKey) error {
 		return nil
 
 	default:
-		v.quit = true
+		v.RequestDisconnect()
 		return nil
 	}
 }

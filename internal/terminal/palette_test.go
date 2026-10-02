@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
@@ -50,5 +51,24 @@ func TestTerminalF11WorksWhileBusy(t *testing.T) {
 	}
 	if r.ds.callCount() != 0 {
 		t.Fatalf("dials = %d, want 0 (F11 is not consent)", r.ds.callCount())
+	}
+}
+
+func TestTerminalDisconnectIsDistinctFromWindowClose(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		r := newSeatRig(t, true)
+		r.step()
+		var ev viewer.Event = viewer.EventWindowClose{}
+		if explicit {
+			ev = viewer.EventKey{Rune: 'q', Down: true, Mods: keysym.ModControl | keysym.ModAlt}
+		}
+		r.w.handleEvent(ev)
+		d := &Detached{w: r.w}
+		if !d.Closed() || (d.CloseDisposition() == connection.Release) != explicit {
+			t.Fatalf("explicit=%v: closed=%v disposition=%v", explicit, d.Closed(), d.CloseDisposition())
+		}
+		if r.ds.callCount() != 0 {
+			t.Fatal("closing the busy window dialled/took over the seat")
+		}
 	}
 }

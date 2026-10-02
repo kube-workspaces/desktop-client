@@ -114,9 +114,11 @@ Implemented and working:
   opening a workspace registers a live window with the single main-thread
   pump (`internal/shell/windows.go`) instead of parking the shell inside it.
   Closing a session window parks it (the transport is held — RFB reuses it
-  without redialling; terminal and Tier 1 re-establish on resume), the
-  footer's **Sessions** switcher focuses an open window or resumes (or
-  disconnects) a parked one, and sign-out, profile switch, server change and
+  without redialling; terminal and Tier 1 re-establish on resume).
+  **Ctrl+Alt+Q** explicitly disconnects and releases that attachment rather
+  than parking it. The footer's **Sessions** switcher focuses an open window
+  or resumes (or disconnects) a parked one, and sign-out, profile switch,
+  server change and
   process exit release everything. Closing the shell window with sessions
   open quits the application — held sessions never outlive the process — and
   hands every slot back. Dial/open are split behind `shell.SessionDialer`;
@@ -136,6 +138,13 @@ Implemented and working:
   Session windows keep following the guest.
 
 Not implemented, and must not be described otherwise:
+
+- **Interactive connection toolbar integration.** The transport-neutral
+  `internal/connection` model and themed `ui.ConnectionToolbar` prototype exist;
+  `go run ./cmd/toolbar-preview --output <path.png>` renders review examples.
+  Rendering/input routing in live session windows, fullscreen auto-hide/drag,
+  and the web-child toolbar integration remain ahead. Explicit disconnect
+  lifecycle handling is implemented for RFB, Tier 1 and integrated terminals.
 
 - **Tier 0 audio.** `probe --audio` advertises the QEMU audio pseudo-encoding
   purely to detect whether the VM has a sound device. No Tier 0 decoder, no

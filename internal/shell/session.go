@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
@@ -117,7 +118,7 @@ func (a *App) closeAllSessions() {
 // the pump and the shell stays on the list — so several sessions stay live
 // side by side. A clean window close parks the session (it stays connected
 // in the background); a mid-flight failure closes it and reports.
-// Explicit disconnects happen in the sessions modal.
+// Explicit disconnects happen in the sessions modal or the window's quit chord.
 //
 // It runs on the loop's goroutine, which is the goroutine that owns every
 // window, which is what the viewer requires.
@@ -218,6 +219,10 @@ func (w *viewerLiveWindow) Closed() bool { return w.view.DetachedClosed() }
 // Result implements [liveWindow].
 func (w *viewerLiveWindow) Result() error { return w.view.DetachedResult() }
 
+func (w *viewerLiveWindow) CloseDisposition() connection.CloseDisposition {
+	return w.view.CloseDisposition()
+}
+
 // Close implements [liveWindow].
 func (w *viewerLiveWindow) Close() { w.view.CloseDetached() }
 
@@ -250,9 +255,12 @@ func (w *terminalLiveWindow) IdleWait(now time.Time) time.Duration {
 func (w *terminalLiveWindow) Closed() bool { return w.det.Closed() }
 
 // Result implements [liveWindow]: a terminal has no terminal failure — a
-// dropped bridge redials, a clean shell exit ends the window — so closing
-// one always parks.
+// dropped bridge redials, a clean shell exit ends the window.
 func (w *terminalLiveWindow) Result() error { return nil }
+
+func (w *terminalLiveWindow) CloseDisposition() connection.CloseDisposition {
+	return w.det.CloseDisposition()
+}
 
 // Close implements [liveWindow].
 func (w *terminalLiveWindow) Close() { w.det.Close() }
@@ -670,8 +678,9 @@ type tier1LiveWindow struct {
 	det    *viewer.Tier1Detached
 	fb     liveWindow
 
-	closed bool
-	result error
+	closed      bool
+	result      error
+	disposition connection.CloseDisposition
 }
 
 // Step implements [liveWindow].
@@ -691,6 +700,7 @@ func (w *tier1LiveWindow) Step(ctx context.Context, now time.Time, events []view
 		return nil
 	}
 	res := session.MapTier1Result(ctx, w.det.Result())
+	w.disposition = w.det.CloseDisposition()
 	w.det.Close()
 	w.det = nil
 	if res == nil || ctx.Err() != nil || errors.Is(res, session.ErrNoFallback) {
@@ -742,6 +752,13 @@ func (w *tier1LiveWindow) Result() error {
 		return w.fb.Result()
 	}
 	return w.result
+}
+
+func (w *tier1LiveWindow) CloseDisposition() connection.CloseDisposition {
+	if w.fb != nil {
+		return w.fb.CloseDisposition()
+	}
+	return w.disposition
 }
 
 // Close implements [liveWindow].
@@ -798,7 +815,7 @@ func (h *tier1Handle) Close() {
 
 // observerHandle is a held shared-display observer session: one membership,
 // one supervised stream, any number of sequential windows. The membership
-// survives window closes by design (a disconnect keeps the participant id),
+// survives parked window closes by design (Disconnect leaves the membership),
 // so a resume re-attaches the same participant instead of re-joining.
 type observerHandle struct {
 	client        API

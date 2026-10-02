@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
@@ -35,8 +36,10 @@ type liveWindow interface {
 	// the quit chord, cancellation, or a lingered terminal failure.
 	Closed() bool
 	// Result is the terminal failure to report when the window closed, or
-	// nil for a clean close (which parks the held transport).
+	// nil for a clean close (whose disposition determines park or release).
 	Result() error
+	// CloseDisposition distinguishes explicit Disconnect from close-to-park.
+	CloseDisposition() connection.CloseDisposition
 	// Close tears the window down.
 	Close()
 	// WindowBackend returns the backend owning this window, for the pump's
@@ -183,9 +186,9 @@ func (a *App) waitPump(timeout time.Duration) {
 }
 
 // stepLive steps every open session window with its own routed events and
-// parks the ones that closed: a clean close keeps the transport held (the
-// switcher resumes it), a failure releases it and reports. A window whose
-// step itself fails is treated as a failed session.
+// finishes the ones that closed: ordinary close keeps the transport held,
+// explicit Disconnect releases it, and a failure releases it and reports.
+// A window whose step itself fails is treated as a failed session.
 func (a *App) stepLive(ctx context.Context, now time.Time) error {
 	for _, e := range a.liveSorted() {
 		// The entry may already be gone: closing one window parks it, and
@@ -207,10 +210,9 @@ func (a *App) stepLive(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// parkLive unregisters a closed session window. A clean close parks the
-// transport exactly as the old blocking loop did; a terminal failure
-// releases it and reports. Cancellation on the way out parks quietly: the
-// deferred teardown hands every slot back together.
+// parkLive unregisters a closed window, parking its transport unless the user
+// requested Disconnect. A terminal failure releases it and reports.
+// Cancellation on the way out defers release to the process teardown.
 func (a *App) parkLive(ctx context.Context, key string) {
 	e, ok := a.live[key]
 	if !ok {
@@ -218,6 +220,7 @@ func (a *App) parkLive(ctx context.Context, key string) {
 	}
 	delete(a.live, key)
 	res := e.window.Result()
+	disposition := e.window.CloseDisposition()
 	e.window.Close()
 	if ctx.Err() != nil {
 		a.quit = true
@@ -226,6 +229,11 @@ func (a *App) parkLive(ctx context.Context, key string) {
 	if res != nil {
 		a.closeSession(key)
 		a.m.SessionEnded(res)
+		a.dirty = true
+		return
+	}
+	if disposition == connection.Release {
+		a.closeSessionEntry(ctx, key)
 		a.dirty = true
 		return
 	}

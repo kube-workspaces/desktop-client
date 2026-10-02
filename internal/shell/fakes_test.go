@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
@@ -784,24 +785,26 @@ func (h *fakeHandle) Kind() string { return h.kind }
 // steps to nothing, never closes on its own, and records raises and closes
 // so multi-window tests can assert on the pump without a display.
 type fakeLiveWindow struct {
-	key    string
-	closed bool
-	res    error
-	raises int
-	steps  int
+	key         string
+	closed      bool
+	res         error
+	raises      int
+	steps       int
+	disposition connection.CloseDisposition
 }
 
 func (w *fakeLiveWindow) Step(context.Context, time.Time, []viewer.Event) error {
 	w.steps++
 	return nil
 }
-func (w *fakeLiveWindow) IdleWait(time.Time) time.Duration { return time.Second }
-func (w *fakeLiveWindow) Closed() bool                     { return w.closed }
-func (w *fakeLiveWindow) Result() error                    { return w.res }
-func (w *fakeLiveWindow) Close()                           { w.closed = true }
-func (w *fakeLiveWindow) WindowBackend() viewer.Backend    { return nil }
-func (w *fakeLiveWindow) Raise() error                     { w.raises++; return nil }
-func (w *fakeLiveWindow) ReleaseInput()                    {}
+func (w *fakeLiveWindow) IdleWait(time.Time) time.Duration              { return time.Second }
+func (w *fakeLiveWindow) Closed() bool                                  { return w.closed }
+func (w *fakeLiveWindow) Result() error                                 { return w.res }
+func (w *fakeLiveWindow) CloseDisposition() connection.CloseDisposition { return w.disposition }
+func (w *fakeLiveWindow) Close()                                        { w.closed = true }
+func (w *fakeLiveWindow) WindowBackend() viewer.Backend                 { return nil }
+func (w *fakeLiveWindow) Raise() error                                  { w.raises++; return nil }
+func (w *fakeLiveWindow) ReleaseInput()                                 {}
 
 // --- test rig ---------------------------------------------------------------
 

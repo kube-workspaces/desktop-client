@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
 )
@@ -430,7 +431,7 @@ func (d *Tier1Detached) Step(now time.Time, events []Event) error {
 	d.w.syncGrab()
 	if d.w.quit {
 		// The result is recorded for Result; Step itself stays clean so
-		// the pump parks the window rather than failing the session.
+		// the pump applies its close disposition rather than failing the session.
 		_ = d.finish(nil)
 		return nil
 	}
@@ -475,6 +476,12 @@ func (d *Tier1Detached) Closed() bool {
 // for a clean close (quit, cancellation, or a producer that ended because
 // the window was already going away).
 func (d *Tier1Detached) Result() error { return d.result }
+
+// CloseDisposition distinguishes explicit Disconnect from window-close.
+func (d *Tier1Detached) CloseDisposition() connection.CloseDisposition { return d.w.disposition }
+
+// RequestDisconnect is the common path for toolbar and hotkey disconnects.
+func (d *Tier1Detached) RequestDisconnect() { d.w.requestDisconnect() }
 
 // Backend returns the backend owning this window, for the pump's routing
 // and waiting.
@@ -553,12 +560,13 @@ type tier1Window struct {
 
 	audio AudioSink
 
-	events  []Event
-	pinned  bool
-	quit    bool
-	mods    keysym.Tracker
-	held    []keysym.Keysym
-	swallow map[hotkeyID]bool
+	events      []Event
+	pinned      bool
+	quit        bool
+	disposition connection.CloseDisposition
+	mods        keysym.Tracker
+	held        []keysym.Keysym
+	swallow     map[hotkeyID]bool
 
 	buttons    Buttons
 	ptrX, ptrY int
@@ -799,9 +807,14 @@ func (w *tier1Window) runHotkey(e EventKey) error {
 		return w.sendChord(keysym.ChordCtrlAltDel)
 
 	default:
-		w.quit = true
+		w.requestDisconnect()
 		return nil
 	}
+}
+
+func (w *tier1Window) requestDisconnect() {
+	w.disposition = connection.Release
+	w.quit = true
 }
 
 // sendChord injects a synthetic key sequence the host would otherwise

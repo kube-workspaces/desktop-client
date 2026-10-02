@@ -482,6 +482,10 @@ Every other subcommand takes `--profile <name>` to act on a non-active profile.
 | `Ctrl+Alt+Del` | Same, where the host lets it through (X11 and most Wayland compositors; never Windows) |
 | `Ctrl+Alt+Q` | Disconnect |
 
+For shell-launched display and terminal windows, **Ctrl+Alt+Q releases that
+connection** and removes it from Sessions. Closing the window normally parks
+its session for later resumption. Both actions leave the workspace running.
+
 These are host hotkeys: they are acted on locally and never forwarded to the
 guest. They work while disconnected too, so a session stuck behind a
 "Reconnecting…" overlay can still be left without reaching for the terminal.

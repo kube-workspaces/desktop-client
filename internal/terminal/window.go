@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
@@ -89,7 +90,8 @@ type window struct {
 	winW, winH int
 
 	// quit ends the loop without retrying.
-	quit bool
+	quit        bool
+	disposition connection.CloseDisposition
 
 	// resize debounce, owned by the loop goroutine.
 	resizing bool
@@ -259,9 +261,19 @@ func (d *Detached) Closed() bool {
 
 // Result is always nil: a terminal has no terminal failure to report — a
 // dropped bridge redials inside the window, and a clean shell exit ends it
-// — so closing one always parks. It exists so the pump can treat every
-// live window alike.
+// — so the pump uses CloseDisposition to distinguish Disconnect from park.
 func (d *Detached) Result() error { return nil }
+
+// CloseDisposition distinguishes explicit Disconnect from window-close.
+func (d *Detached) CloseDisposition() connection.CloseDisposition { return d.w.disposition }
+
+// RequestDisconnect ends the window and releases its held shell entry.
+func (d *Detached) RequestDisconnect() { d.w.requestDisconnect() }
+
+func (w *window) requestDisconnect() {
+	w.disposition = connection.Release
+	w.quit = true
+}
 
 // Close tears the window down.
 func (d *Detached) Close() { d.w.closeWindow() }
@@ -554,7 +566,7 @@ func (w *window) handleEvent(e viewer.Event) {
 		}
 		out, quit := w.in.handle(e)
 		if quit {
-			w.quit = true
+			w.requestDisconnect()
 			return
 		}
 		if len(out) == 0 {
