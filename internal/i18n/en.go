@@ -12,6 +12,7 @@ package i18n
 // are for the operator's log, not the user's window.
 var english = map[string]string{
 	"toolbar.fullscreen":         "Fullscreen",
+	"toolbar.host-input":         "Release input to host",
 	"toolbar.windowed":           "Windowed",
 	"toolbar.sessions":           "Sessions",
 	"toolbar.workspace-list":     "Workspace list",

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 
+	"github.com/kube-workspaces/desktop-client/internal/chrome"
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
@@ -31,7 +33,8 @@ type Options struct {
 
 	// Title is the window title. It is shown plain while connected and with
 	// " — reconnecting" appended while the session is without a connection.
-	Title string
+	Title   string
+	Surface connection.Surface
 
 	// QuitRune is the letter that ends the session when pressed with Ctrl+Alt;
 	// zero means 'q'. Esc is deliberately left alone so it reaches the shell:
@@ -100,7 +103,7 @@ func buildWindow(dial Dial, opts Options) (*window, error) {
 	}
 	be := opts.Backend
 	if be == nil {
-		be = viewer.NewSDLBackend()
+		be = chrome.New(viewer.NewSDLBackend())
 	}
 	theme := opts.Theme
 	if theme == nil {
@@ -129,6 +132,7 @@ func buildWindow(dial Dial, opts Options) (*window, error) {
 	}
 
 	return &window{
+		surface:   opts.Surface,
 		be:        be,
 		emu:       emu,
 		ren:       newRenderer(defaultCols, defaultRows, scale),

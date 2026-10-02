@@ -139,12 +139,20 @@ Implemented and working:
 
 Not implemented, and must not be described otherwise:
 
-- **Interactive connection toolbar integration.** The transport-neutral
-  `internal/connection` model and themed `ui.ConnectionToolbar` prototype exist;
-  `go run ./cmd/toolbar-preview --output <path.png>` renders review examples.
-  Rendering/input routing in live session windows, fullscreen auto-hide/drag,
-  and the web-child toolbar integration remain ahead. Explicit disconnect
-  lifecycle handling is implemented for RFB, Tier 1 and integrated terminals.
+- **Live display acceptance of the connection toolbar.** The toolbar is
+  implemented and wired: `internal/chrome.Backend` wraps an SDL backend and
+  draws the chrome above the content, routing local input only while the
+  pointer or keys are over it (fullscreen auto-hide after 3 s, reveal handle,
+  pin, drag). RFB, Selkies/Tier 1, observers and integrated terminals supply
+  their own snapshots and action handlers, and `internal/web`'s child window
+  draws native GTK, Cocoa or Win32 chrome around the browser through an
+  authenticated loopback capability (`KW_CONNECTION_NAV_URL` /
+  `KW_CONNECTION_NAV_TOKEN`) that accepts only Sessions/workspace-list
+  navigation. What is not yet done is running it against real guests and
+  real webview child processes on each platform; the GTK and Cocoa toolbars
+  have not been compiled or exercised anywhere, because this environment has
+  neither WebKitGTK 4.1 headers nor an Apple toolchain. Windows was compiled
+  with mingw (`make build-web-windows`).
 
 - **Tier 0 audio.** `probe --audio` advertises the QEMU audio pseudo-encoding
   purely to detect whether the VM has a sound device. No Tier 0 decoder, no

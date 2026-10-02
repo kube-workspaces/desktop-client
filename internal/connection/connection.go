@@ -58,6 +58,8 @@ type Snapshot struct {
 	Clipboard    bool
 	ResizeGuest  bool
 	Muted        bool
+	FPS, Kbps    float64
+	HasMetrics   bool
 }
 
 // Action identifies a command shared by toolbar items and hotkeys.
@@ -76,6 +78,7 @@ const (
 	SharedControl Action = "shared-control"
 	Paste         Action = "paste"
 	CopySelection Action = "copy-selection"
+	HostInput     Action = "host-input"
 )
 
 // Availability distinguishes an unsupported action from a temporarily
@@ -99,7 +102,7 @@ func (s Snapshot) Availability(a Action) Availability {
 		supported = true
 	case Sessions, WorkspaceList:
 		supported = c.Shell
-	case FitDesktop:
+	case FitDesktop, HostInput:
 		supported = desktop
 	case SpecialKeys:
 		supported, needsLive, mutatesGuest = desktop && c.SpecialKeys, true, true
@@ -131,7 +134,7 @@ func (s Snapshot) Availability(a Action) Availability {
 // Tools is the stable menu order across surfaces, omitting unsupported tools.
 func (s Snapshot) Tools() []Action {
 	var out []Action
-	for _, a := range []Action{WorkspaceList, SpecialKeys, ClipboardSync, FitDesktop, GuestResize, Audio, SharedControl, Paste, CopySelection} {
+	for _, a := range []Action{WorkspaceList, HostInput, SpecialKeys, ClipboardSync, FitDesktop, GuestResize, Audio, SharedControl, Paste, CopySelection} {
 		if s.Availability(a).Visible {
 			out = append(out, a)
 		}

@@ -25,6 +25,11 @@ func Run(title, url string) error {
 	defer w.Destroy()
 	w.SetTitle(title)
 	w.SetSize(1280, 800, webview.HintNone)
+	cleanup, err := installToolbar(w, title, url)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	if b, ok := launchBoundsFromEnv(); ok {
 		centerOnLaunchDisplay(w.Window(), b)
 	}

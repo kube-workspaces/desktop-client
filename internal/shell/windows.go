@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/chrome"
 	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
@@ -112,7 +113,7 @@ func (a *App) sdlTargets() ([]*viewer.SDLBackend, map[*viewer.SDLBackend]*liveEn
 	byBackend := make(map[*viewer.SDLBackend]*liveEntry, len(a.live))
 	targets = append(targets, shell)
 	for _, e := range a.liveSorted() {
-		be, ok := e.window.WindowBackend().(*viewer.SDLBackend)
+		be, ok := viewer.SDLBackendFor(e.window.WindowBackend())
 		if !ok || be == nil {
 			return nil, nil, nil, false
 		}
@@ -198,6 +199,17 @@ func (a *App) stepLive(ctx context.Context, now time.Time) error {
 			continue
 		}
 		evs := e.pending
+		if b, ok := e.window.WindowBackend().(*chrome.Backend); ok {
+			b.SetTheme(a.settings.Style, a.resolveMode())
+			b.SetNavigation(func(action connection.Action) {
+				_ = a.be.Show()
+				_ = a.be.Raise()
+				if action == connection.Sessions {
+					a.m.ShowSessionList()
+				}
+				a.dirty = true
+			})
+		}
 		e.pending = e.pending[:0]
 		if err := e.window.Step(ctx, now, evs); err != nil {
 			a.closeLiveFailed(e.key, err)

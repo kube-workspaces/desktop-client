@@ -17,12 +17,13 @@ import (
 type ConnectionToolbar struct {
 	Menu   string // "", "tools", or "connection"
 	Pinned bool
+	Offset int // horizontal fullscreen drag offset in drawable pixels
 }
 
 // ToolbarLayout identifies client-owned pixels and the remaining content area.
 // Fullscreen chrome floats, so showing it never changes Content.
 type ToolbarLayout struct {
-	Bar, Panel, Content Rect
+	Bar, Panel, Content, Grip Rect
 }
 
 // Layout draws the toolbar and returns at most one requested session action.
@@ -54,6 +55,7 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	if s.Fullscreen {
 		bar.W = min(bar.W, max(wideWidth, 32*th.ControlHeight))
 		bar.X += (bounds.W - bar.W) / 2
+		bar.X = max(bounds.X, min(bar.X+t.Offset, bounds.X+bounds.W-bar.W))
 		bar.Y += th.Gap
 		content = bounds
 	}
@@ -69,6 +71,12 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		identity += " · " + i18n.Get("toolbar.viewOnly")
 	}
 	inner := Inset(bar, th.Pad)
+	if s.Fullscreen {
+		out.Grip = Rect{X: inner.X, Y: inner.Y, W: th.Pad, H: rowH}
+		Label(ctx, out.Grip, "::", LabelStyle{Scale: th.Small, Middle: true})
+		inner.X += th.Pad + th.Gap
+		inner.W -= th.Pad + th.Gap
+	}
 	y := inner.Y
 	if narrow {
 		Label(ctx, Rect{X: inner.X, Y: y, W: inner.W, H: LineHeight(th.Small, th.Font)}, identity, LabelStyle{Scale: th.Small})
@@ -131,6 +139,9 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	ctx.Canvas.StrokeRounded(panel, th.Radius, th.BorderWidth, th.Border)
 	if t.Menu == "connection" {
 		lines := []string{identity, i18n.Get("toolbar.transport") + ": " + s.Transport, i18n.Get("toolbar.disconnectHint")}
+		if s.HasMetrics && s.State == connection.Connected {
+			lines[1] += fmt.Sprintf(" · %.0f fps · %.0f kbit/s", s.FPS, s.Kbps)
+		}
 		for n, line := range lines {
 			Label(ctx, Rect{X: panel.X + th.Pad, Y: panel.Y + th.Pad + n*LineHeight(th.Small, th.Font), W: panel.W - 2*th.Pad, H: LineHeight(th.Small, th.Font)}, line, LabelStyle{Scale: th.Small})
 		}

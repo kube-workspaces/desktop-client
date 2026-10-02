@@ -481,6 +481,7 @@ Every other subcommand takes `--profile <name>` to act on a non-active profile.
 | `Ctrl+Alt+End` | Send Ctrl-Alt-Del to the guest |
 | `Ctrl+Alt+Del` | Same, where the host lets it through (X11 and most Wayland compositors; never Windows) |
 | `Ctrl+Alt+Q` | Disconnect |
+| `Ctrl+Alt+Shift+T` | Reveal the connection toolbar in fullscreen |
 
 For shell-launched display and terminal windows, **Ctrl+Alt+Q releases that
 connection** and removes it from Sessions. Closing the window normally parks
@@ -493,6 +494,37 @@ guest. They work while disconnected too, so a session stuck behind a
 The clipboard is synchronised in both directions. Host-to-guest is polled twice
 a second, because no windowing system offers a reliable cross-platform
 "clipboard changed" signal.
+
+## The connection toolbar
+
+Every window that is a live connection carries the same strip: displays,
+integrated terminals (container exec, VM serial, VM SSH) and the browser window
+of a container or scratch workspace. It shows who you are connected to and
+whether the connection is healthy, and it carries the controls that only make
+sense for that surface:
+
+- **All surfaces** — fullscreen, the session list, the workspace list,
+  connection details, and Disconnect.
+- **Displays** — fit-to-window, guest resize, clipboard sync on/off, audio
+  mute, shared control (take/release), and the metrics the transport actually
+  reports (FPS, bitrate). Tier 0 shows what QEMU gives us; Tier 1 shows
+  Selkies' own counters.
+- **Terminals** — paste from the host clipboard.
+- **Browser windows** — the same common controls, drawn as native window
+  chrome outside the page rather than as HTML inside it.
+
+In fullscreen the strip floats over the content and hides itself after three
+seconds so nothing covers the workspace. Move the pointer back to the top edge
+— or press `Ctrl+Alt+Shift+T` — to bring it back, **Pin** to keep it up, or
+drag it sideways to get it out of the way. Whatever is under the pointer is the
+window's own input: while the pointer or a held key is over the strip, nothing
+reaches the workspace. `Esc` returns input to the guest.
+
+The browser window is a separate process so the browser engine never shares a
+thread with the shell. It can ask the shell for the session list or the
+workspace list over a loopback capability passed in its own environment; that
+capability accepts navigation only — never workspace operations, credentials or
+commands.
 
 ## The display model — two tiers
 

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/chrome"
 	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
 	"github.com/kube-workspaces/desktop-client/internal/reconnect"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
@@ -128,7 +129,7 @@ func runConnect(ctx context.Context, args []string) error {
 		if !*autoReconnect {
 			tier1Config.RecoveryBudget = -1
 		}
-		tier1 := session.RunTier1(ctx, client, ns, name, agentBase, viewer.NewSDLBackend(), tier1Config)
+		tier1 := session.RunTier1(ctx, client, ns, name, agentBase, chrome.New(viewer.NewSDLBackend()), tier1Config)
 		if tier1 == nil {
 			return nil
 		}
@@ -160,7 +161,7 @@ func runConnect(ctx context.Context, args []string) error {
 
 	// One viewer, one window, for the whole session — however many connections
 	// that turns out to span.
-	view := viewer.New(viewer.NewSDLBackend(), cfg)
+	view := viewer.New(chrome.New(viewer.NewSDLBackend()), cfg)
 	ui := &sessionUI{ns: ns, name: name, view: view, previous: session.State(-1)}
 
 	runCtx, cancel := context.WithCancel(ctx)

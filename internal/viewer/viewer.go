@@ -395,9 +395,10 @@ type Viewer struct {
 	focused bool
 	grabbed bool
 
-	presentDue  time.Time
-	quit        bool
-	disposition connection.CloseDisposition
+	presentDue                               time.Time
+	quit                                     bool
+	disposition                              connection.CloseDisposition
+	clipboardDisabled, resizeDisabled, muted bool
 
 	// srcErr and failedAt implement the linger: a terminal failure is shown
 	// for a moment before the window closes.
@@ -962,6 +963,10 @@ func (v *Viewer) step(now time.Time) error {
 func (v *Viewer) stepExternal(now time.Time, events []Event) error {
 	v.syncConn(now)
 	v.syncCursor()
+	events = FilterConnectionInput(v.be, now, v.connectionSnapshot(), events)
+	if chrome, ok := v.be.(interface{ ConnectionNeedsPresent() bool }); ok && chrome.ConnectionNeedsPresent() {
+		v.markPresent()
+	}
 
 	for _, ev := range events {
 		if err := v.handleEvent(now, ev); err != nil {
@@ -1181,6 +1186,8 @@ func (v *Viewer) checkFailure(now time.Time) {
 
 func (v *Viewer) handleEvent(now time.Time, ev Event) error {
 	switch e := ev.(type) {
+	case EventConnectionAction:
+		return v.connectionAction(e.Action)
 	case EventQuit:
 		v.quit = true
 		return nil
@@ -1571,7 +1578,7 @@ func (v *Viewer) forgetInput() {
 func (v *Viewer) scheduleGuestResize(now time.Time, w, h int) {
 	// A view-only participant must not even ask: the resize is a guest
 	// mutation, and the window still scales the picture locally.
-	if v.readOnly() {
+	if v.readOnly() || v.resizeDisabled {
 		return
 	}
 	// Odd sizes are rounded down: virtio-gpu's EDID modes and QEMU's surface
@@ -1587,6 +1594,10 @@ func (v *Viewer) scheduleGuestResize(now time.Time, w, h int) {
 }
 
 func (v *Viewer) applyGuestResize(now time.Time) error {
+	if v.resizeDisabled || v.readOnly() {
+		v.resizePending = false
+		return nil
+	}
 	if !v.resizePending || now.Before(v.resizeDue) {
 		return nil
 	}
@@ -1654,7 +1665,7 @@ func (v *Viewer) syncAudio() {
 	audio := v.inbox.audio
 	v.inbox.audio = nil
 	v.inbox.Unlock()
-	if len(audio) == 0 {
+	if len(audio) == 0 || v.muted {
 		return
 	}
 	v.audioSink.PlayPCM(audio)
@@ -1715,6 +1726,9 @@ func (v *Viewer) syncClipboard(now time.Time) error {
 	v.inbox.cutText, v.inbox.hasCutText = "", false
 	v.inbox.Unlock()
 
+	if v.clipboardDisabled {
+		return nil
+	}
 	if has {
 		if err := v.be.SetClipboard(text); err != nil {
 			return fmt.Errorf("viewer: set host clipboard: %w", err)
@@ -1813,7 +1827,8 @@ func (v *Viewer) redraw(now time.Time) error {
 	if err != nil {
 		return err
 	}
-	if overlay.Empty() {
+	_, hasChrome := v.be.(ConnectionChrome)
+	if overlay.Empty() && !hasChrome {
 		// No status plate: the session is live, so the quality pill owns
 		// the shared overlay texture. A plate up means reconnecting or
 		// worse, and it takes precedence — reset the pill so it cannot

@@ -290,6 +290,7 @@ func RunTier1(ctx context.Context, be Backend, inp Tier1Input,
 		d.w.events = be.PollEvents(d.w.events)
 		events := d.w.events
 		d.w.events = d.w.events[:0]
+		events = FilterConnectionInput(be, time.Now(), d.w.connectionSnapshot(), events)
 		for _, ev := range events {
 			if herr := d.w.handleEvent(time.Now(), ev); herr != nil {
 				return d.finish(herr)
@@ -423,6 +424,7 @@ func (d *Tier1Detached) Step(now time.Time, events []Event) error {
 		return err
 	}
 	d.w.syncGeneration()
+	events = FilterConnectionInput(d.w.be, now, d.w.connectionSnapshot(), events)
 	for _, ev := range events {
 		if err := d.w.handleEvent(now, ev); err != nil {
 			return d.finish(err)
@@ -560,13 +562,14 @@ type tier1Window struct {
 
 	audio AudioSink
 
-	events      []Event
-	pinned      bool
-	quit        bool
-	disposition connection.CloseDisposition
-	mods        keysym.Tracker
-	held        []keysym.Keysym
-	swallow     map[hotkeyID]bool
+	events                   []Event
+	pinned                   bool
+	quit                     bool
+	disposition              connection.CloseDisposition
+	clipboardDisabled, muted bool
+	mods                     keysym.Tracker
+	held                     []keysym.Keysym
+	swallow                  map[hotkeyID]bool
 
 	buttons    Buttons
 	ptrX, ptrY int
@@ -685,6 +688,8 @@ func (w *tier1Window) sinkHasWork() bool {
 
 func (w *tier1Window) handleEvent(now time.Time, ev Event) error {
 	switch e := ev.(type) {
+	case EventConnectionAction:
+		return w.connectionAction(e.Action)
 	case EventQuit:
 		w.quit = true
 		return nil
@@ -949,6 +954,12 @@ func (w *tier1Window) applyGuestResize(now time.Time) error {
 // syncGuestClipboard moves clipboard content in both directions: guest pushes
 // land on the host, and the host clipboard is sampled for the guest.
 func (w *tier1Window) syncGuestClipboard(now time.Time) error {
+	if w.clipboardDisabled {
+		if w.sink != nil {
+			_, _ = w.sink.takeClipboard()
+		}
+		return nil
+	}
 	if w.sink != nil {
 		if text, ok := w.sink.takeClipboard(); ok {
 			if err := w.be.SetClipboard(text); err != nil {
@@ -990,7 +1001,7 @@ func (w *tier1Window) syncGuestClipboard(now time.Time) error {
 // (or the connecting plate) at the letterboxed rectangle.
 func (w *tier1Window) presentFrame(now time.Time) error {
 	frame, pcm := w.sink.frames.take()
-	if w.audio != nil && len(pcm) > 0 {
+	if w.audio != nil && len(pcm) > 0 && !w.muted {
 		w.audio.PlayPCM(pcm)
 	}
 

@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/tray"
@@ -120,7 +121,8 @@ type Options struct {
 	// beside this executable (releases), otherwise this binary's own `web`
 	// subcommand (developer copies). The profile pin travels with the spawn so
 	// the child opens the very instance the shell shows. Nil means [spawnWeb].
-	OpenWeb func(profile, namespace, name string) error
+	OpenWeb   func(profile, namespace, name string) error
+	nativeWeb bool
 
 	// Theme overrides the palette. Nil means [ui.DefaultTheme].
 	Theme *ui.Theme
@@ -182,6 +184,7 @@ func (o *Options) applyDefaults() {
 	}
 	if o.OpenWeb == nil {
 		o.OpenWeb = spawnWeb
+		o.nativeWeb = true
 	}
 }
 
@@ -632,6 +635,7 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 	}
 
 	// Every open session window steps beside the shell, on the same thread.
+	a.drainWebNavigation()
 	if err := a.stepLive(ctx, now); err != nil {
 		return err
 	}
@@ -776,6 +780,29 @@ func (a *App) draw(ctx context.Context) error {
 		a.checkUpdate(ctx, false)
 	}
 	return nil
+}
+
+// drainWebNavigation applies the navigation requests an embedded web child
+// made over its authenticated loopback capability. A webview window is an OS
+// process outside the pump, so it cannot raise itself: the shell comes forward
+// and answers the request here, on the next step.
+func (a *App) drainWebNavigation() {
+	if !a.opts.nativeWeb {
+		return
+	}
+	for {
+		select {
+		case action := <-webNavigationEvents:
+			_ = a.be.Show()
+			_ = a.be.Raise()
+			if action == connection.Sessions {
+				a.m.ShowSessionList()
+			}
+			a.dirty = true
+		default:
+			return
+		}
+	}
 }
 
 // present uploads the canvas and shows it.

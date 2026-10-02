@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/kube-workspaces/desktop-client/internal/chrome"
 	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
@@ -101,6 +102,9 @@ func (a *App) closeSession(key string) {
 // server's single-seat slots are handed back. Windows go first so the
 // guests are told their keys are up while the connections are still open.
 func (a *App) closeAllSessions() {
+	if a.opts.nativeWeb {
+		closeWebChildren()
+	}
 	a.closeAllLiveWindows()
 	a.closePopup()
 	for key, rec := range a.sessions {
@@ -437,7 +441,7 @@ func (h *exclusiveHandle) newView(ctx context.Context) *viewer.Viewer {
 		ScaleQuality:    h.opts.ScaleQuality,
 		Logf:            h.opts.Logf,
 	}
-	view := viewer.New(viewer.NewSDLBackend(), cfg)
+	view := viewer.New(chrome.New(viewer.NewSDLBackend()), cfg)
 	// Match the CLI consent flow, including after Tier 1 falls back.
 	view.SetTakeoverHandler(func() error {
 		res, err := h.client.VNCTakeover(ctx, h.ws.Namespace, h.ws.Name)
@@ -543,6 +547,7 @@ func (h *terminalHandle) Open(ctx context.Context) (liveWindow, error) {
 		title += " — " + h.kind
 	}
 	det, err := terminal.OpenDetached(ctx, dial, terminal.Options{
+		Surface:   connection.Surface(h.kind),
 		Title:     title,
 		Theme:     h.opts.Theme,
 		Scale:     h.opts.Scale,
@@ -657,7 +662,7 @@ func (h *tier1Handle) Open(ctx context.Context) (liveWindow, error) {
 		agentBase = *h.ws.RemoteDesktop.Path
 	}
 	live, err := session.OpenTier1(ctx, h.client, h.ws.Namespace, h.ws.Name, agentBase,
-		viewer.NewSDLBackend(), session.Tier1Config{
+		chrome.New(viewer.NewSDLBackend()), session.Tier1Config{
 			Title:        h.ws.Key(),
 			Audio:        true,
 			ScaleQuality: h.opts.ScaleQuality,
@@ -900,7 +905,7 @@ func dialObserverSession(ctx context.Context, client API, ws kwclient.Workspace,
 // Open implements [SessionHandle]: it returns a fresh live read-only
 // window over the held membership.
 func (h *observerHandle) Open(ctx context.Context) (liveWindow, error) {
-	view := viewer.New(viewer.NewSDLBackend(), viewer.Config{
+	view := viewer.New(chrome.New(viewer.NewSDLBackend()), viewer.Config{
 		AdaptiveQuality: !h.opts.FixedQuality,
 		Title:           h.ws.Key() + i18n.Get("workspaces.observer"),
 		ReadOnly:        true,

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/tray"
@@ -788,7 +789,32 @@ func (a *App) openWeb(ctx context.Context, ws kwclient.Workspace) {
 	if a.profile != nil {
 		profile = a.profile.Name
 	}
+	if a.opts.nativeWeb {
+		nav, err := connection.StartNavigation(func(action connection.Action) bool {
+			select {
+			case webNavigationEvents <- action:
+				a.be.Wake()
+				return true
+			default:
+				return false
+			}
+		})
+		if err != nil {
+			a.m.Err = i18n.Sprintf("workspaces.viewFailed", err)
+			return
+		}
+		webLive.Lock()
+		webLive.navigation[ws.Key()] = nav
+		webLive.Unlock()
+	}
 	if err := a.opts.OpenWeb(profile, ws.Namespace, ws.Name); err != nil {
+		webLive.Lock()
+		nav := webLive.navigation[ws.Key()]
+		delete(webLive.navigation, ws.Key())
+		webLive.Unlock()
+		if nav != nil {
+			nav.Close()
+		}
 		a.m.Notice = ""
 		a.m.Err = i18n.Sprintf("workspaces.viewFailed", err)
 		return
@@ -1265,13 +1291,22 @@ func spawnWebExe(exe, profile, namespace, name, launchDisplay string) error {
 		cmd = exec.Command(exe, append([]string{"web"}, append(flags, positional...)...)...)
 	}
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
 	if launchDisplay != "" {
-		cmd.Env = append(os.Environ(), launchDisplayEnv+"="+launchDisplay)
+		cmd.Env = append(cmd.Env, launchDisplayEnv+"="+launchDisplay)
 	}
+	key := namespace + "/" + name
+	webLive.Lock()
+	if nav := webLive.navigation[key]; nav != nil {
+		cmd.Env = append(cmd.Env, connection.NavigationURLEnv+"="+nav.URL, connection.NavigationTokenEnv+"="+nav.Token)
+	}
+	webLive.Unlock()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", what, err)
 	}
-	key := namespace + "/" + name
+	webLive.Lock()
+	webLive.processes[key] = cmd.Process
+	webLive.Unlock()
 	webChildStarted(key)
 	go func() { defer webChildExited(key); _ = cmd.Wait() }()
 	return nil
@@ -1287,9 +1322,25 @@ func spawnWebExe(exe, profile, namespace, name, launchDisplay string) error {
 // of duplicating it.
 var webLive = struct {
 	sync.Mutex
-	keys map[string]int
-	n    int
-}{keys: make(map[string]int)}
+	keys       map[string]int
+	n          int
+	navigation map[string]*connection.Navigation
+	processes  map[string]*os.Process
+}{keys: make(map[string]int), navigation: make(map[string]*connection.Navigation), processes: make(map[string]*os.Process)}
+
+var webNavigationEvents = make(chan connection.Action, 32)
+
+func closeWebChildren() {
+	webLive.Lock()
+	defer webLive.Unlock()
+	for _, p := range webLive.processes {
+		_ = p.Kill()
+	}
+	for key, n := range webLive.navigation {
+		n.Close()
+		delete(webLive.navigation, key)
+	}
+}
 
 // webChildStarted records a spawned child for key.
 func webChildStarted(key string) {
@@ -1310,6 +1361,13 @@ func webChildExited(key string) {
 	}
 	if webLive.keys[key] == 1 {
 		delete(webLive.keys, key)
+		delete(webLive.processes, key)
+		// A custom OpenWeb owns no navigation endpoint, so the child was
+		// launched without one.
+		if nav := webLive.navigation[key]; nav != nil {
+			nav.Close()
+			delete(webLive.navigation, key)
+		}
 	} else {
 		webLive.keys[key]--
 	}

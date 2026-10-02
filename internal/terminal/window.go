@@ -58,6 +58,7 @@ const (
 // through [window.mu]-guarded state and the backend's Wake mechanism, which is
 // exactly the shape the viewer's own loop uses.
 type window struct {
+	surface   connection.Surface
 	be        viewer.Backend
 	emu       *Emulator
 	ren       *renderer
@@ -147,6 +148,7 @@ func (w *window) run(ctx context.Context) error {
 		}
 
 		evs = w.be.WaitEvents(evs[:0], w.nextWait(now))
+		evs = w.filterEvents(now, evs)
 		for _, e := range evs {
 			w.handleEvent(e)
 			if w.quit {
@@ -196,6 +198,7 @@ func (w *window) openWindow(ctx context.Context) error {
 // and calls [Detached.Step], which delegates here.
 func (w *window) stepExternal(now time.Time, events []viewer.Event) {
 	w.process(now)
+	events = w.filterEvents(now, events)
 	for _, e := range events {
 		w.handleEvent(e)
 		if w.quit {
@@ -538,6 +541,22 @@ func (w *window) statusNow() (viewer.Status, string) {
 // handleEvent translates one backend event into state or bytes.
 func (w *window) handleEvent(e viewer.Event) {
 	switch ev := e.(type) {
+	case viewer.EventConnectionAction:
+		if !w.connectionSnapshot().Availability(ev.Action).Enabled {
+			return
+		}
+		switch ev.Action {
+		case connection.Fullscreen:
+			w.toggleFullscreen()
+		case connection.Disconnect:
+			w.requestDisconnect()
+		case connection.Paste:
+			text, err := w.be.Clipboard()
+			if err == nil {
+				w.handleEvent(viewer.EventText{Text: text})
+			}
+		}
+		return
 	case viewer.EventQuit:
 		w.quit = true
 	case viewer.EventWindowClose:
@@ -582,6 +601,20 @@ func (w *window) handleEvent(e viewer.Event) {
 			w.onWireClosed(false, err)
 		}
 	}
+}
+
+func (w *window) connectionSnapshot() connection.Snapshot {
+	status, _ := w.statusNow()
+	surface := w.surface
+	if surface == "" {
+		surface = connection.Console
+	}
+	return connection.Snapshot{Workspace: w.title, Surface: surface, State: viewer.ConnectionState(status),
+		Transport: string(surface), Capabilities: connection.Capabilities{Paste: true}}
+}
+
+func (w *window) filterEvents(now time.Time, events []viewer.Event) []viewer.Event {
+	return viewer.FilterConnectionInput(w.be, now, w.connectionSnapshot(), events)
 }
 
 // scheduleResize updates the window size and, when the resulting grid would

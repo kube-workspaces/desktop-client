@@ -121,6 +121,7 @@ type SDLBackend struct {
 	// message over it: the whole point of the frozen frame is that the pixels
 	// survive until a new connection replaces them.
 	overlay *sdl.Texture
+	chrome  *sdl.Texture
 
 	scale ScaleQuality
 
@@ -414,6 +415,10 @@ func (b *SDLBackend) Close() {
 		b.overlay.Destroy()
 		b.overlay = nil
 	}
+	if b.chrome != nil {
+		b.chrome.Destroy()
+		b.chrome = nil
+	}
 	if b.texture != nil {
 		b.texture.Destroy()
 		b.texture = nil
@@ -542,6 +547,11 @@ func updateTexture(texture *sdl.Texture, r Rect, pix []byte, stride int) error {
 // Present clears the window, draws the framebuffer texture into frame, applies
 // the overlay, and shows the result.
 func (b *SDLBackend) Present(frame Rect, ov Overlay) error {
+	return b.PresentChrome(frame, ov, Rect{})
+}
+
+// PresentChrome composes content, status and client chrome before swapping.
+func (b *SDLBackend) PresentChrome(frame Rect, ov Overlay, chrome Rect) error {
 	if b.renderer == nil {
 		return fmt.Errorf("viewer: SDL backend is not open")
 	}
@@ -561,10 +571,44 @@ func (b *SDLBackend) Present(frame Rect, ov Overlay) error {
 	if err := b.drawOverlay(ov); err != nil {
 		return err
 	}
+	if b.chrome != nil && !chrome.Empty() {
+		r := sdl.FRect{X: float32(chrome.X), Y: float32(chrome.Y), W: float32(chrome.W), H: float32(chrome.H)}
+		if err := b.renderer.RenderTexture(b.chrome, nil, &r); err != nil {
+			return fmt.Errorf("sdl render chrome: %w", err)
+		}
+	}
 	if err := b.renderer.Present(); err != nil {
 		return fmt.Errorf("sdl present: %w", err)
 	}
 	return nil
+}
+
+// SetChromeSize allocates independently of the status plate's texture.
+func (b *SDLBackend) SetChromeSize(w, h int) error {
+	if b.renderer == nil || w <= 0 || h <= 0 {
+		return fmt.Errorf("viewer: invalid chrome surface %dx%d", w, h)
+	}
+	if b.chrome != nil {
+		b.chrome.Destroy()
+		b.chrome = nil
+	}
+	t, err := b.renderer.CreateTexture(sdl.PIXELFORMAT_RGBA32, sdl.TEXTUREACCESS_STREAMING, w, h)
+	if err != nil {
+		return err
+	}
+	if err := t.SetBlendMode(sdl.BLENDMODE_BLEND); err != nil {
+		t.Destroy()
+		return err
+	}
+	b.chrome = t
+	return nil
+}
+
+func (b *SDLBackend) UploadChrome(r Rect, pix []byte, stride int) error {
+	if b.chrome == nil {
+		return fmt.Errorf("viewer: no chrome texture")
+	}
+	return updateTexture(b.chrome, r, pix, stride)
 }
 
 // drawOverlay dims the frame and draws the status plate over it.
