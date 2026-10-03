@@ -16,7 +16,7 @@ typedef struct {
  HWND win,web,bar,handle,identity,buttons[7];
  WNDPROC original;uintptr_t token;
  BOOL full,pin,drag;LONG_PTR style;RECT saved;
- int offset,dragx;ULONGLONG until;wchar_t *details;
+ int offset,dragx;ULONGLONG until;wchar_t *details,*pinText,*unpinText,*fullscreenText,*windowedText;
 } KWToolbar;
 static int kw_min(int a,int b){return a<b?a:b;}
 static int kw_max(int a,int b){return a>b?a:b;}
@@ -43,9 +43,9 @@ static void kw_action(KWToolbar *t,int a){
    SetWindowPos(t->win,HWND_TOP,mi.rcMonitor.left,mi.rcMonitor.top,mi.rcMonitor.right-mi.rcMonitor.left,mi.rcMonitor.bottom-mi.rcMonitor.top,SWP_FRAMECHANGED);}
   else{SetWindowLongPtrW(t->win,GWL_STYLE,t->style);
    SetWindowPos(t->win,NULL,t->saved.left,t->saved.top,t->saved.right-t->saved.left,t->saved.bottom-t->saved.top,SWP_FRAMECHANGED|SWP_NOZORDER);}
-  SetWindowTextW(t->buttons[1],t->full?L"Windowed":L"Fullscreen");kw_layout(t);kw_reveal(t);}
+  SetWindowTextW(t->buttons[1],t->full?t->windowedText:t->fullscreenText);kw_layout(t);kw_reveal(t);}
  else if(a==4)MessageBoxW(t->win,t->details,L"Connection",MB_OK|MB_ICONINFORMATION);
- else if(a==5){t->pin=!t->pin;SetWindowTextW(t->buttons[5],t->pin?L"Unpin":L"Pin");kw_reveal(t);}
+ else if(a==5){t->pin=!t->pin;SetWindowTextW(t->buttons[5],t->pin?t->unpinText:t->pinText);kw_reveal(t);}
  else if(a==7)kw_reveal(t);
  else goWebToolbarAction(t->token,a);
 }
@@ -81,21 +81,28 @@ static KWToolbar *kw_attach(void *win,uintptr_t token,const char *labels,const c
  KWToolbar *t=calloc(1,sizeof(*t));t->win=window;t->web=web;t->token=token;t->details=kw_wide(details);
  t->bar=CreateWindowExW(WS_EX_CONTROLPARENT,L"STATIC",L"",WS_CHILD|WS_VISIBLE,0,0,0,0,window,NULL,GetModuleHandleW(NULL),NULL);
  SetWindowLongPtrW(t->bar,GWLP_USERDATA,(LONG_PTR)t);SetWindowLongPtrW(t->bar,GWLP_WNDPROC,(LONG_PTR)kw_bar_proc);
- char *copy=_strdup(labels);char *parts[7];int n=0;parts[n++]=copy;
- for(char *p=copy;*p&&n<7;p++)if(*p=='\n'){*p=0;parts[n++]=p+1;}
- wchar_t *title=kw_wide(parts[0]);t->identity=CreateWindowExW(0,L"STATIC",title,WS_CHILD|WS_VISIBLE|SS_LEFTNOWORDWRAP,0,0,0,0,t->bar,NULL,NULL,NULL);free(title);
+ char *copy=_strdup(labels);char *parts[10];int n=0;parts[n++]=copy;
+ for(char *p=copy;*p&&n<10;p++)if(*p=='\n'){*p=0;parts[n++]=p+1;}
+ // The alternate titles the chrome needs once it has relabelled a button in
+ // place. The fallbacks only matter if a caller sends a short label list.
+ char *pinText=n>5&&parts[5][0]?parts[5]:"Pin",*unpinText=n>8&&parts[8][0]?parts[8]:"Unpin";
+ char *fullscreenText=n>1&&parts[1][0]?parts[1]:"Fullscreen",*windowedText=n>9&&parts[9][0]?parts[9]:"Windowed";
+ char *tools=n>7&&parts[7][0]?parts[7]:"Tools";
+ wchar_t *toolswide=kw_wide(tools);
+ t->pinText=kw_wide(pinText);t->unpinText=kw_wide(unpinText);t->fullscreenText=kw_wide(fullscreenText);t->windowedText=kw_wide(windowedText);
+ wchar_t *title=kw_wide(parts[0]);t->identity=CreateWindowExW(0,L"STATIC",title,WS_CHILD|WS_VISIBLE|SS_LEFTNOWORDWRAP|SS_ENDELLIPSIS,0,0,0,0,t->bar,NULL,NULL,NULL);free(title);
  for(int a=1;a<=6;a++){if(a>=n||!parts[a][0])continue;
   wchar_t *text=kw_wide(parts[a]);t->buttons[a]=CreateWindowExW(0,L"BUTTON",text,WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON,0,0,0,0,t->bar,(HMENU)(intptr_t)a,NULL,NULL);
   SendMessageW(t->buttons[a],WM_SETFONT,(WPARAM)GetStockObject(DEFAULT_GUI_FONT),TRUE);free(text);}
  free(copy);
- t->handle=CreateWindowExW(0,L"BUTTON",L"Tools",WS_CHILD|WS_TABSTOP,0,0,0,0,window,(HMENU)7,NULL,NULL);
+ t->handle=CreateWindowExW(0,L"BUTTON",toolswide,WS_CHILD|WS_TABSTOP,0,0,0,0,window,(HMENU)7,NULL,NULL);free(toolswide);
  SendMessageW(t->handle,WM_SETFONT,(WPARAM)GetStockObject(DEFAULT_GUI_FONT),TRUE);
  SetPropW(window,L"KW_TOOLBAR",t);t->original=(WNDPROC)SetWindowLongPtrW(window,GWLP_WNDPROC,(LONG_PTR)kw_window_proc);
  SetTimer(window,12304,100,NULL);kw_hotkeys(t,TRUE);kw_layout(t);kw_reveal(t);ShowWindow(t->bar,SW_SHOW);return t;
 }
 static void kw_detach(KWToolbar *t){if(!t)return;
  if(IsWindow(t->win)){kw_hotkeys(t,FALSE);KillTimer(t->win,12304);SetWindowLongPtrW(t->win,GWLP_WNDPROC,(LONG_PTR)t->original);RemovePropW(t->win,L"KW_TOOLBAR");DestroyWindow(t->bar);DestroyWindow(t->handle);}
- free(t->details);free(t);
+ free(t->details);free(t->pinText);free(t->unpinText);free(t->fullscreenText);free(t->windowedText);free(t);
 }
 */
 import "C"

@@ -34,8 +34,15 @@ func installToolbar(w webview.WebView, title, rawURL string) (func(), error) {
 	if u, err := url.Parse(rawURL); err == nil {
 		origin = u.Scheme + "://" + u.Host
 	}
+	// The line-separated contract with the native side, by position: the
+	// identity, then one line per button action, then the strings the chrome
+	// needs later and cannot derive from a button title it already replaced —
+	// the reveal handle, the unpin label and the windowed label. The buttons
+	// relabel themselves in place, so passing both halves is what keeps the
+	// native toolbars translatable like the shell's.
 	labels := []string{title + " · " + i18n.Get("toolbar.surface.web"), i18n.Get("toolbar.fullscreen"),
-		i18n.Get("toolbar.sessions"), i18n.Get("toolbar.workspace-list"), i18n.Get("toolbar.connection"), i18n.Get("toolbar.pin"), i18n.Get("toolbar.disconnect")}
+		i18n.Get("toolbar.sessions"), i18n.Get("toolbar.workspace-list"), i18n.Get("toolbar.connection"), i18n.Get("toolbar.pin"), i18n.Get("toolbar.disconnect"),
+		i18n.Get("toolbar.tools"), i18n.Get("toolbar.unpin"), i18n.Get("toolbar.windowed")}
 	if endpoint == "" {
 		labels[2], labels[3] = "", ""
 	}

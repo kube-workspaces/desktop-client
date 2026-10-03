@@ -153,18 +153,30 @@ Not implemented, and must not be described otherwise:
   - Linux/GTK is exercised end to end: `KW_WEB_CHROME_NATIVE=1 go test
     ./internal/webcmd -run WebChrome` drives the real child against a stub
     instance under Xvfb and asserts the strip, fullscreen float, auto-hide,
-    reveal, drag and disconnect from the rendered pixels.
+    reveal, drag and disconnect from the rendered pixels. It needs a window
+    manager running (fullscreen is a request the WM honours) and asserts that
+    focus inside the strip keeps it up across the idle delay.
   - Windows/Win32 chrome is exercised by `internal/web/toolbar_windows_test.go`
     (`KW_WEB_CHROME_NATIVE=1 go test ./internal/web -run Win32Toolbar`): the
     toolbar is built onto a synthetic `webview_widget` tree and asked where
-    every piece of chrome landed. It is verified under Wine 8 on Linux with a
-    mingw cross-build; WebView2 itself is not run under Wine, and real
-    WebView2 remains untested anywhere.
+    every piece of chrome landed, including that focus inside the strip holds
+    it up and that pressing the reveal handle brings it back. It is verified
+    under Wine 8 on Linux from a mingw cross-build; the cross-build itself is
+    verified through `make build-web-windows` (go-winres resources, VCS
+    stamping and the gdi32 link). WebView2 itself is not run under Wine, and
+    real WebView2 remains untested anywhere.
   - macOS/Cocoa is compiled by the `cross` CI job on `macos-latest`, which is
-    the most that can be done without an Apple toolchain here. There is no
-    runtime acceptance for it anywhere yet; the GTK findings (hide on idle,
-    reveal handle, pin, drag) are the reference behaviour `toolbar_darwin.m`
-    has to match.
+    the most that can be done without an Apple toolchain here. It is reviewed
+    against the behaviour the two verified toolbars assert (hide on idle,
+    focus holds it up, reveal handle, pin, drag, relabel in place) and parses
+    against a hand-written AppKit API stub under gcc's Objective-C, which
+    catches typos and unbalanced code but proves nothing about AppKit itself.
+    There is no runtime acceptance for it anywhere yet.
+  The label list the child sends is positional: the identity, one line per
+  button action, then the strings the chrome needs after it has relabelled a
+  button in place (the reveal handle, unpin and windowed). Those come from
+  `internal/i18n`, so the native toolbars stay translatable; a new action means
+  a new line, and each platform keeps its own fallbacks for a short list.
 
 - **Tier 0 audio.** `probe --audio` advertises the QEMU audio pseudo-encoding
   purely to detect whether the VM has a sound device. No Tier 0 decoder, no

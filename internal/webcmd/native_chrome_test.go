@@ -497,6 +497,18 @@ func TestWebChromeNative(t *testing.T) {
 			revealedWidth, revealedStart, hiddenWidth)
 	}
 
+	// Focus inside the strip is the other thing that holds it up, and the one
+	// the idle delay must not take away: the reveal hotkey leaves focus on the
+	// fullscreen button, so with the pointer parked on the page the strip is
+	// still owed a full idle delay's grace. gtk_window_get_focus answers the
+	// toplevel when nothing inside it holds focus, which is what makes this an
+	// assertion rather than an assumption.
+	xrun(t, "mousemove", strconv.Itoa(full.W/2), strconv.Itoa(full.H/2))
+	time.Sleep(4500 * time.Millisecond)
+	if _, focusedWidth := run(screenshot(t, window), 6); focusedWidth < 900 {
+		t.Errorf("the strip auto-hid although it held keyboard focus (%dpx of chrome across the top)", focusedWidth)
+	}
+
 	// The grip drags the floating strip along the top edge, and the strip
 	// stays on screen afterwards.
 	dragFrom := start + 14

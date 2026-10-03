@@ -69,7 +69,7 @@ const (
 	timerIdle        = 12304
 
 	// The window text of the reveal handle kw_attach creates in fullscreen.
-	handleText = "Tools"
+	handleText = "Show tools"
 )
 
 var (
@@ -160,7 +160,11 @@ func TestWin32Toolbar(t *testing.T) {
 	token := cgo.NewHandle(func(action int) { actions = append(actions, action) })
 	t.Cleanup(token.Delete)
 
-	labels := "code · Webview\nFullscreen\nSessions\nWorkspace list\nConnection\nPin\nDisconnect"
+	// The label contract installToolbar sends: the identity, one line per
+	// button, then the three strings the chrome cannot derive from a button
+	// title it replaced in place. The last three are deliberately not the English
+	// the toolbar used to hardcode, so a literal left in the C fails here.
+	labels := "code · Webview\nFullscreen\nSessions\nWorkspace list\nConnection\nPin\nDisconnect\nShow tools\nUnpin toolbar\nBack to window"
 	detach, err := attachNativeToolbar(hwndPtr(host), uintptr(token), labels, "code\nTransport: Webview")
 	if err != nil {
 		t.Fatalf("attachNativeToolbar: %v", err)
@@ -183,6 +187,7 @@ func TestWin32Toolbar(t *testing.T) {
 	}
 	fullscreenButton := buttonWith(t, bar, "Fullscreen")
 	pinButton := buttonWith(t, bar, "Pin")
+	const windowedText, unpinText = "Back to window", "Unpin toolbar"
 
 	// Windowed: the strip spans the client area and the page is pushed down by
 	// exactly the strip, with the reveal handle out of the way.
@@ -223,8 +228,8 @@ func TestWin32Toolbar(t *testing.T) {
 	if visible(t, handle) {
 		t.Error("the reveal handle is shown alongside the strip")
 	}
-	if got := windowText(t, fullscreenButton); got != "Windowed" {
-		t.Errorf("fullscreen toggle now reads %q, want %q", got, "Windowed")
+	if got := windowText(t, fullscreenButton); got != windowedText {
+		t.Errorf("fullscreen toggle now reads %q, want the windowed label %q", got, windowedText)
 	}
 
 	// Drag: grabbing the strip 40px in and moving the pointer 100px right moves
@@ -249,8 +254,8 @@ func TestWin32Toolbar(t *testing.T) {
 
 	// Pin: the strip survives the idle window that hides an unpinned one.
 	sendCommand(t, bar, 5)
-	if got := windowText(t, pinButton); got != "Unpin" {
-		t.Fatalf("pin toggle now reads %q, want %q", got, "Unpin")
+	if got := windowText(t, pinButton); got != unpinText {
+		t.Fatalf("pin toggle now reads %q, want the unpin label %q", got, unpinText)
 	}
 	awayFromBar(t, host)
 	idle(t, host)
@@ -277,6 +282,34 @@ func TestWin32Toolbar(t *testing.T) {
 	sendMessage(t, host, wmHotkey, hotkeyReveal, 0)
 	if !visible(t, bar) {
 		t.Fatal("the reveal hotkey did not bring the strip back")
+	}
+	if visible(t, handle) {
+		t.Error("the reveal handle is still shown alongside the strip")
+	}
+
+	// Focus inside the strip is the other thing that holds it up, and the one
+	// that outlives the reveal window: the hotkey leaves focus on the fullscreen
+	// button, so with the pointer off the chrome the strip must still be there
+	// once the idle delay has passed.
+	awayFromBar(t, host)
+	idle(t, host)
+	if !visible(t, bar) {
+		t.Error("the strip auto-hid although it held keyboard focus")
+	}
+	if visible(t, handle) {
+		t.Error("the reveal handle came back while the strip still held focus")
+	}
+
+	// Only focus leaving the strip hands it over: pressing the reveal handle
+	// brings it back for a pointer that has no hover to reveal from.
+	setFocus(t, page)
+	idle(t, host)
+	if visible(t, bar) {
+		t.Fatal("the strip did not auto-hide once focus moved back to the page")
+	}
+	sendMessage(t, host, wmCommand, 7, 0)
+	if !visible(t, bar) {
+		t.Error("pressing the reveal handle did not bring the strip back")
 	}
 	if visible(t, handle) {
 		t.Error("the reveal handle is still shown alongside the strip")
