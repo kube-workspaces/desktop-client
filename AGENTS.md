@@ -165,13 +165,15 @@ Not implemented, and must not be described otherwise:
     verified through `make build-web-windows` (go-winres resources, VCS
     stamping and the gdi32 link). WebView2 itself is not run under Wine, and
     real WebView2 remains untested anywhere.
-  - macOS/Cocoa is compiled by the `cross` CI job on `macos-latest`, which is
-    the most that can be done without an Apple toolchain here. It is reviewed
-    against the behaviour the two verified toolbars assert (hide on idle,
-    focus holds it up, reveal handle, pin, drag, relabel in place) and parses
-    against a hand-written AppKit API stub under gcc's Objective-C, which
-    catches typos and unbalanced code but proves nothing about AppKit itself.
-    There is no runtime acceptance for it anywhere yet.
+  - macOS/Cocoa is compiled against the real AppKit SDK by the `macos-latest`
+    jobs — `go build ./...` plus `go test ./...` with cgo in CI, and the
+    darwin/amd64 and darwin/arm64 web children in the Build workflow — so the
+    Objective-C here is compiler-checked, not just parsed. What none of that
+    covers is behaviour: the toolbar is reviewed against the two verified
+    platforms (hide on idle, focus holds it up, reveal handle, pin, drag,
+    relabel in place) and parses against a hand-written AppKit stub under
+    gcc's Objective-C, but there is no runtime acceptance for it anywhere yet.
+    It needs a macOS runner with a GUI session.
   The label list the child sends is positional: the identity, one line per
   button action, then the strings the chrome needs after it has relabelled a
   button in place (the reveal handle, unpin and windowed). Those come from
