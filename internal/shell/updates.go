@@ -41,6 +41,8 @@ type updateState struct {
 	prepared *update.Prepared
 	msi      *update.MSIPackage
 	bytes    atomic.Int64
+	scroll   int
+	focus    ui.FocusID
 }
 
 // drawStandaloneSettings draws the top-left settings entry point for the
@@ -339,17 +341,44 @@ func (a *App) stopUpdates() {
 
 func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 	th, ctx := a.opts.Theme, a.ctx
-	card := ui.CenterRect(bounds, cardWidth, 0)
-	card.Y = bounds.Y + th.Pad
+	available := ui.InsetXY(bounds, th.Pad, 0)
+	card := ui.CenterRect(available, min(available.W, max(cardWidth, 320*th.Body)), 0)
+	card.Y = bounds.Y + th.Pad*2
+	card.H = max(0, bounds.Y+bounds.H-card.Y-th.Pad)
 	body := ui.NewStack(card, th.Gap)
 	ui.Label(ctx, body.Next(ui.LineHeight(th.Title, th.Font)), i18n.Get("updates.title"), ui.LabelStyle{Scale: th.Title})
+	body.Skip(th.Gap / 2)
+	view := body.Rest()
+	view.H = max(0, view.H-th.ControlHeight-2*th.Pad)
+	if ctx.Input.Hovering(view) {
+		a.updates.scroll = max(0, a.updates.scroll-ctx.Input.Wheel.Y*th.ControlHeight)
+	}
+	originalInput := ctx.Input
+	if !ctx.Input.Mouse.In(view) {
+		ctx.Input.Mouse = ui.Point{X: -1, Y: -1}
+		ctx.Input.Pressed, ctx.Input.Released, ctx.Input.Down = false, false, false
+	}
+	ctx.Canvas.PushClip(view)
+	scrolled := view
+	scrolled.Y -= a.updates.scroll
+	body = ui.NewStack(scrolled, th.Gap)
+	focusedRect := ui.Rect{}
+	radius := max(th.Radius, th.ControlHeight/3)
 	a.verSel.Layout(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.current", a.opts.Version), ui.SelectableStyle{})
 	last := i18n.Get("updates.never")
 	if a.updates.last != 0 {
 		last = time.Unix(a.updates.last, 0).Format(time.RFC3339)
 	}
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.checked", last), ui.LabelStyle{})
-	statusRect := body.Next(ui.LineHeight(th.Body, th.Font) * 3)
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Small, th.Font)), i18n.Sprintf("updates.checked", last), ui.LabelStyle{Scale: th.Small, Color: th.TextMuted})
+	body.Skip(th.Gap / 2)
+	statusPanel := body.Next(ui.LineHeight(th.Body, th.Font)*3 + 2*th.Pad)
+	statusFill, statusInk := th.Surface, th.Text
+	if a.updates.failed {
+		statusFill, statusInk = th.DangerSurface, th.Danger
+	}
+	ctx.Canvas.FillRounded(statusPanel, radius, statusFill)
+	ctx.Canvas.StrokeRounded(statusPanel, radius, th.BorderWidth, th.Border)
+	statusRect := ui.Inset(statusPanel, th.Pad)
 	if a.updates.upToDate && !a.updates.busy {
 		size := ui.TextHeight(th.Body, th.Font) + 2*th.Body
 		icon, rest := ui.CutLeft(statusRect, size+th.Gap/2)
@@ -361,28 +390,36 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 		ui.CheckMark(ctx, ui.Rect{X: icon.X, Y: icon.Y + dy, W: size, H: size}, th.Success)
 		a.statusSel.Layout(ctx, rest, a.updates.status, ui.SelectableStyle{})
 	} else {
-		a.statusSel.Layout(ctx, statusRect, a.updates.status, ui.SelectableStyle{})
+		if a.updates.busy {
+			size := ui.TextHeight(th.Body, th.Font) + 2*th.Body
+			icon, rest := ui.CutLeft(statusRect, size+th.Gap)
+			ui.Spinner(ctx, ui.Rect{X: icon.X, Y: icon.Y, W: size, H: size}, th.Accent)
+			statusRect = rest
+		}
+		a.statusSel.Layout(ctx, statusRect, a.updates.status, ui.SelectableStyle{Color: statusInk})
 	}
 	// The Copy button tracks failures, not text: it is there while an
 	// error is showing so installer exit codes and log paths paste
 	// straight into a bug report, and it leaves with the error when a
 	// new check (or anything else) replaces it.
 	if a.updates.failed {
-		copyBtn := ui.Button{ID: idCopyStatus, Text: i18n.Get("common.copy"), Variant: ui.ButtonSecondary}
-		if copyBtn.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, copyBtn.Width(ctx), 0)[0]) {
+		copyBtn := ui.Button{ID: idCopyStatus, Text: i18n.Get("common.copy"), Variant: ui.ButtonSecondary, Smooth: true}
+		copyRect := ui.Row(body.Next(th.ControlHeight), th.Gap, copyBtn.Width(ctx), 0)[0]
+		if copyBtn.Layout(ctx, copyRect) {
 			ctx.Copy(a.updates.status)
+		}
+		if ctx.Focused(idCopyStatus) {
+			focusedRect = copyRect
 		}
 	}
 	if a.updates.busy {
-		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.bytes", a.updates.bytes.Load()), ui.LabelStyle{})
+		ui.Label(ctx, body.Next(ui.LineHeight(th.Small, th.Font)), i18n.Sprintf("updates.bytes", a.updates.bytes.Load()), ui.LabelStyle{Scale: th.Small, Color: th.TextMuted})
 		asset, err := a.updates.result.Release.AssetFor(runtime.GOOS, runtime.GOARCH)
 		if err == nil && asset.Size > 0 {
 			bar := body.Next(th.Gap)
-			a.canvas.Fill(bar, th.TextMuted)
+			ctx.Canvas.FillRounded(bar, bar.H/2, th.SurfaceAlt)
 			bar.W = int(float64(bar.W) * min(1, float64(a.updates.bytes.Load())/float64(asset.Size)))
-			a.canvas.Fill(bar, th.Text)
-		} else {
-			ui.Spinner(ctx, body.Next(th.ControlHeight), th.TextMuted)
+			ctx.Canvas.FillRounded(bar, bar.H/2, th.Accent)
 		}
 	}
 	// Release notes for the pending update, rendered from the release's
@@ -391,34 +428,61 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 	// around it is install text and checksums, not changelog.
 	if raw := a.updateDisplayNotes(); raw != "" {
 		if notes := updateNotesPreview(raw, updateNotesLines); notes != "" {
+			body.Skip(th.Gap / 2)
 			ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)), i18n.Sprintf("updates.whatsNew", a.updates.result.Latest), ui.LabelStyle{Scale: th.Body})
-			ui.Markdown(ctx, body.Next(ui.MarkdownHeight(notes, th.Small, th.Font, card.W)), notes, ui.MarkdownStyle{Scale: th.Small})
+			notesPanel := body.Next(ui.MarkdownHeight(notes, th.Small, th.Font, max(0, card.W-2*th.Pad)) + 2*th.Pad)
+			ctx.Canvas.FillRounded(notesPanel, radius, th.Surface)
+			ctx.Canvas.StrokeRounded(notesPanel, radius, th.BorderWidth, th.Border)
+			ui.Markdown(ctx, ui.Inset(notesPanel, th.Pad), notes, ui.MarkdownStyle{Scale: th.Small})
 		}
 	}
 	var out intent
 	managed := a.updatePolicy().Managed
-	label := "updates.autoOff"
+	body.Skip(th.Gap / 2)
+	label := "settings.trayOff"
 	if a.updates.auto {
-		label = "updates.autoOn"
+		label = "settings.trayOn"
+	}
+	autoRect := body.Next(th.ControlHeight + th.Gap)
+	auto := ui.Toggle{ID: "update-auto", Label: i18n.Get("updates.auto"), State: i18n.Get(label), Checked: a.updates.auto, Disabled: managed}
+	if auto.Layout(ctx, autoRect) {
+		out = intent{kind: intentToggleUpdate}
+	}
+	if ctx.Focused(auto.ID) {
+		focusedRect = autoRect
 	}
 	for _, b := range []struct {
 		id, text string
 		kind     intentKind
 		disabled bool
 	}{
-		{"update-auto", i18n.Get(label), intentToggleUpdate, managed},
 		{"update-check", i18n.Get("updates.check"), intentCheckUpdate, managed || a.updates.busy || a.updates.prepared != nil || a.updates.msi != nil},
 		{"update-download", i18n.Get("updates.download"), intentDownloadUpdate, managed || a.updates.busy || !a.updates.result.Available || a.updates.prepared != nil || a.updates.msi != nil},
 		{"update-restart", i18n.Get("updates.restart"), intentRestartUpdate, managed || (a.updates.prepared == nil && a.updates.msi == nil) || len(a.sessions) != 0 || webChildCount() != 0},
-		{"update-back", i18n.Get("settings.done"), intentSettingsDone, false},
 	} {
-		button := ui.Button{ID: ui.FocusID(b.id), Text: b.text, Disabled: b.disabled}
-		if button.Layout(ctx, body.Next(th.ControlHeight)) {
+		variant := ui.ButtonSecondary
+		if b.kind == intentDownloadUpdate || b.kind == intentRestartUpdate && !b.disabled {
+			variant = ui.ButtonPrimary
+		}
+		button := ui.Button{ID: ui.FocusID(b.id), Text: b.text, Disabled: b.disabled, Variant: variant, Smooth: true}
+		r := body.Next(th.ControlHeight)
+		if button.Layout(ctx, r) {
 			out = intent{kind: b.kind}
+		}
+		if ctx.Focused(button.ID) {
+			focusedRect = r
 		}
 	}
 	if len(a.sessions) != 0 || webChildCount() != 0 {
-		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2), i18n.Get("updates.sessions"), ui.LabelStyle{Wrap: true})
+		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2), i18n.Get("updates.sessions"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	}
+	a.finishPreferenceScroll(view, body.Rest().Y, &a.updates.scroll, &a.updates.focus, focusedRect)
+	ctx.Canvas.PopClip()
+	ctx.Input = originalInput
+	ui.Divider(ctx, ui.Rect{X: card.X, Y: view.Y + view.H + th.Pad/2, W: card.W, H: 1})
+	done := ui.Button{ID: "update-back", Text: i18n.Get("settings.done"), Variant: ui.ButtonPrimary, Smooth: true}
+	if done.Layout(ctx, ui.Rect{X: card.X, Y: view.Y + view.H + th.Pad, W: min(card.W, 160), H: th.ControlHeight}) {
+		out = intent{kind: intentSettingsDone}
 	}
 	if ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentSettingsDone}

@@ -56,10 +56,15 @@ func (a *App) finishStartup(status autostart.Status, err error) {
 }
 
 func (a *App) finishSettingsScroll(view ui.Rect, bottom int) {
-	contentHeight := bottom + a.settingsScroll - view.Y
-	scroll := a.settingsScroll
-	if focus := a.ctx.Focus().Focus(); focus != a.settingsFocus {
-		r := a.settingsFocusedRect
+	a.finishPreferenceScroll(view, bottom, &a.settingsScroll, &a.settingsFocus, a.settingsFocusedRect)
+}
+
+// finishPreferenceScroll keeps a preference page's focused control visible.
+func (a *App) finishPreferenceScroll(view ui.Rect, bottom int, offset *int, previousFocus *ui.FocusID, focusedRect ui.Rect) {
+	contentHeight := bottom + *offset - view.Y
+	scroll := *offset
+	if focus := a.ctx.Focus().Focus(); focus != *previousFocus {
+		r := focusedRect
 		if r.H > 0 {
 			if r.Y < view.Y {
 				scroll -= view.Y - r.Y
@@ -67,11 +72,11 @@ func (a *App) finishSettingsScroll(view ui.Rect, bottom int) {
 				scroll += r.Y + r.H - view.Y - view.H
 			}
 		}
-		a.settingsFocus = focus
+		*previousFocus = focus
 	}
 	scroll = max(0, min(scroll, contentHeight-view.H))
-	if scroll != a.settingsScroll {
-		a.settingsScroll = scroll
+	if scroll != *offset {
+		*offset = scroll
 		a.ctx.Repaint()
 	}
 	if contentHeight > view.H {

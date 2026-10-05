@@ -401,9 +401,10 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	ctx := a.ctx
 	var out intent
 
-	card := ui.CenterRect(bounds, cardWidth, 0)
-	card.Y = bounds.Y + bounds.H/6
-	card.H = bounds.H - card.Y - th.Pad
+	available := ui.InsetXY(bounds, th.Pad, 0)
+	card := ui.CenterRect(available, min(available.W, max(cardWidth, 320*th.Body)), 0)
+	card.Y = bounds.Y + th.Pad*2
+	card.H = bounds.Y + bounds.H - card.Y - th.Pad
 	body := ui.NewStack(card, th.Gap)
 
 	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), i18n.Get("settings.title"), ui.LabelStyle{Scale: th.Title})
@@ -483,22 +484,20 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	}
 
 	body.Skip(th.Pad)
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("settings.tray"), ui.LabelStyle{
-		Color: th.TextMuted, Scale: th.Small,
-	})
-	trayRow := body.Next(th.ControlHeight)
-	trayIdx := 0
-	if !a.settings.Tray {
-		trayIdx = 1
+	trayRow := body.Next(th.ControlHeight + th.Gap)
+	trayState := i18n.Get("settings.trayOff")
+	if a.settings.Tray {
+		trayState = i18n.Get("settings.trayOn")
 	}
-	if picked := a.drawChoice(ctx, trayRow, trayIdx, []styleOption{
-		{id: idTrayOn, label: i18n.Get("settings.trayOn")},
-		{id: idTrayOff, label: i18n.Get("settings.trayOff")},
-	}); picked != trayIdx {
-		a.applySettings(Settings{Style: a.settings.Style, Mode: a.settings.Mode, UIScale: a.settings.UIScale, Tray: picked == 0})
+	trayToggle := ui.Toggle{ID: idTrayOn, Label: i18n.Get("settings.tray"), State: trayState, Checked: a.settings.Tray}
+	if trayToggle.Layout(ctx, trayRow) {
+		a.applySettings(Settings{Style: a.settings.Style, Mode: a.settings.Mode, UIScale: a.settings.UIScale, Tray: trayToggle.Checked})
 		a.saveSettings()
 		// The tray follows the setting on the next frame: reconcileTray
 		// creates or destroys it in Step, on the loop's goroutine.
+	}
+	if ctx.Focused(idTrayOn) {
+		a.settingsFocusedRect = trayRow
 	}
 	// --no-tray wins over the stored choice for this run, so say so when
 	// the row claims an icon that will not appear.
@@ -507,24 +506,26 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 			i18n.Get("settings.trayFlagNote"), ui.LabelStyle{Color: th.TextMuted})
 	}
 
-	body.Skip(th.Pad)
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("settings.startup"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
-	startupText := i18n.Get("settings.startupOff")
+	body.Skip(th.Gap / 2)
+	startupText := i18n.Get("settings.trayOff")
 	if a.startup.status.Enabled {
-		startupText = i18n.Get("settings.startupOn")
+		startupText = i18n.Get("settings.trayOn")
 	}
 	if a.startup.busy {
-		startupText = i18n.Get("settings.startupBusy")
+		startupText = ""
 	}
-	startupRow := body.Next(th.ControlHeight)
-	startupButton := ui.Button{ID: idStartup, Text: startupText, Disabled: a.startup.busy}
-	if startupButton.Layout(ctx, startupRow) {
+	startupRow := body.Next(th.ControlHeight + th.Gap)
+	startupToggle := ui.Toggle{ID: idStartup, Label: i18n.Get("settings.startup"), State: startupText, Checked: a.startup.status.Enabled, Disabled: a.startup.busy, Busy: a.startup.busy}
+	if startupToggle.Layout(ctx, startupRow) {
 		a.toggleStartup()
 	}
 	if ctx.Focused(idStartup) {
 		a.settingsFocusedRect = startupRow
 	}
 	note, ink := i18n.Get("settings.startupNote"), th.TextMuted
+	if a.startup.busy {
+		note = i18n.Get("settings.startupBusy")
+	}
 	if a.startup.status.NeedsApproval {
 		note = i18n.Get("settings.startupApproval")
 	}
@@ -540,9 +541,9 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	ctx.Canvas.PopClip()
 	ctx.Input = originalInput
 
-	done := ui.Button{ID: idSettingsDone, Text: i18n.Get("settings.done"), Variant: ui.ButtonPrimary}
+	done := ui.Button{ID: idSettingsDone, Text: i18n.Get("settings.done"), Variant: ui.ButtonPrimary, Smooth: true}
 	buttons := ui.Row(ui.Rect{X: card.X, Y: view.Y + view.H + th.Pad, W: card.W, H: th.ControlHeight}, th.Gap, 160, 0)
-	updates := ui.Button{ID: idUpdates, Text: i18n.Get("updates.title"), Disabled: a.opts.Updater == nil}
+	updates := ui.Button{ID: idUpdates, Text: i18n.Get("updates.title"), Disabled: a.opts.Updater == nil, Smooth: true}
 	if updates.Layout(ctx, buttons[1]) {
 		out = intent{kind: intentUpdates}
 	}
@@ -555,21 +556,24 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	return out
 }
 
-// drawChoice renders a one-of-N choice as a row of buttons and returns the
+// drawChoice renders a one-of-N choice as a segmented rail and returns the
 // index of the option selected after this frame.
 //
-// The selected option carries the accent, the others the ordinary surface, so
+// The selected option carries the accent, the others sit quietly on the rail, so
 // a user can tell which is which without reading any label twice: a settings
-// screen is two of these rows side by side. The option labels are mapped to
+// screen can be scanned at a glance. The option labels are mapped to
 // ids so the focus ring (and therefore keyboard navigation) treats each pill
 // as its own control.
 func (a *App) drawChoice(ctx *ui.Context, r ui.Rect, selected int, opts []styleOption) int {
-	th := a.opts.Theme
+	th := ctx.Theme
 	widths := make([]int, len(opts)) // Row spreads every zero over the free space
-	cols := ui.Row(r, th.Gap, widths...)
+	radius := max(th.Radius, r.H/3)
+	ctx.Canvas.FillRounded(r, radius, th.Surface)
+	ctx.Canvas.StrokeRounded(r, radius, th.BorderWidth, th.Border)
+	cols := ui.Row(ui.Inset(r, max(2, th.Body)), max(2, th.Gap/3), widths...)
 	chosen := selected
 	for i, o := range opts {
-		b := ui.Button{ID: o.id, Text: o.label, Variant: ui.ButtonSecondary}
+		b := ui.Button{ID: o.id, Text: o.label, Variant: ui.ButtonQuiet, Smooth: true}
 		if i == selected {
 			b.Variant = ui.ButtonPrimary
 		}

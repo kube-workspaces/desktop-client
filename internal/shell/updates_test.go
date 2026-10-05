@@ -447,6 +447,43 @@ func TestUpdatesEscapeReturnsToOrigin(t *testing.T) {
 	}
 }
 
+func TestUpdatesToggleAndScrollingWithReleaseNotes(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	r.app.opts.Version = "v1.0.0"
+	r.app.opts.Updater = &fakeUpdater{}
+	r.start()
+	r.app.updates.result.Release.Changes = "- First improvement\n- Second improvement\n- Third improvement\n- Fourth improvement\n- Fifth improvement"
+	r.be.resize(DefaultWidth, 450)
+	r.focus(idUpdates)
+	r.clickFocused()
+	r.settle()
+	r.focus("update-auto")
+	r.app.dirty = true
+	r.settle()
+	if r.app.updates.scroll <= 0 {
+		t.Fatal("focus did not scroll past release notes to the automatic-checks toggle")
+	}
+	previous := r.app.updates.auto
+	r.clickFocused()
+	r.settle()
+	if r.app.updates.auto == previous || r.store.settings.AutoUpdateEnabled() != r.app.updates.auto {
+		t.Fatal("automatic-checks toggle did not persist its new state")
+	}
+	r.app.opts.UpdatePolicy = func() (bool, bool) { return true, false }
+	r.focus("update-auto")
+	r.clickFocused()
+	r.settle()
+	if r.app.updates.auto == previous {
+		t.Fatal("package-managed automatic-checks toggle accepted activation")
+	}
+	r.focus("update-back")
+	r.clickFocused()
+	r.settle()
+	if r.app.m.State == StateUpdates {
+		t.Fatal("fixed Done button did not close the scrolled updates page")
+	}
+}
+
 // TestBadgeAndSettingsBothReachable proves an available update adds a badge
 // button without removing Settings: both the header and the standalone
 // entry point offer the two side by side.

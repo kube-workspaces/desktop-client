@@ -131,6 +131,8 @@ type Button struct {
 	Scale int
 	// Raised opts into layered depth and pressed travel for workspace actions.
 	Raised bool
+	// Smooth uses softer corners and a subtle inner highlight without travel.
+	Smooth bool
 }
 
 // Width returns the button's intrinsic width: its label plus symmetric
@@ -177,6 +179,9 @@ func (b *Button) Layout(ctx *Context, r Rect) bool {
 		// capsule. Deriving it from the control keeps the shape at every DPI.
 		radius = max(radius, r.H/4)
 	}
+	if b.Smooth {
+		radius = max(radius, r.H/3)
+	}
 
 	if b.Raised && !b.Disabled && !held && b.Variant != ButtonQuiet && fill != Transparent {
 		ctx.Canvas.FillRounded(Rect{X: r.X, Y: r.Y + max(buttonShadowOffset, th.Body), W: r.W, H: r.H}, radius, buttonShadow)
@@ -203,6 +208,12 @@ func (b *Button) Layout(ctx *Context, r Rect) bool {
 	}
 	if focused {
 		ctx.Canvas.StrokeRounded(face, radius, th.FocusWidth, th.Focus)
+	}
+	if b.Smooth && !held && !b.Disabled && fill != Transparent {
+		inner := Inset(face, th.BorderWidth)
+		ctx.Canvas.PushClip(Rect{X: inner.X, Y: inner.Y, W: inner.W, H: max(1, radius/2)})
+		ctx.Canvas.StrokeRounded(inner, max(0, radius-th.BorderWidth), 1, buttonHighlight)
+		ctx.Canvas.PopClip()
 	}
 
 	Label(ctx, InsetXY(face, th.Gap, 0), b.Text, LabelStyle{
@@ -233,7 +244,7 @@ func (b *Button) colors(th *Theme, hovered, held bool) (fill, ink, border color.
 		}
 		if held {
 			fill = th.Accent
-			if b.Raised {
+			if b.Raised || b.Smooth {
 				fill = or(th.AccentPressed, th.Accent)
 			}
 		}
@@ -262,7 +273,7 @@ func (b *Button) colors(th *Theme, hovered, held bool) (fill, ink, border color.
 		border = th.Border
 		if hovered {
 			border = th.BorderStrong
-			if b.Raised {
+			if b.Raised || b.Smooth {
 				fill = th.SurfaceSelected
 			}
 		}
