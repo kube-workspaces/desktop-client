@@ -22,6 +22,37 @@ connect.
 > in each release's notes. Until then, expect warnings until the binaries gain a
 > reputation through repeated downloads.
 
+## Start at login
+
+**Settings → Start at login** opts this installation into starting the graphical
+shell when you sign in to your desktop. It is off by default and applies only
+to your OS user; no administrator access is needed. Startup uses your default
+profile and opens the normal shell window. It does not reconnect workspaces or
+replay arguments from the launch that enabled it.
+
+- **Windows:** a named entry under your user account's
+  `Software\Microsoft\Windows\CurrentVersion\Run`. If Windows Settings or Task
+  Manager disables the entry, the client respects that veto and asks you to
+  enable it in the OS startup settings.
+- **Linux:** an XDG desktop entry at
+  `$XDG_CONFIG_HOME/autostart/kube-workspaces.desktop` (normally
+  `~/.config/autostart/`). This works with desktop sessions implementing XDG
+  autostart; minimal window-manager setups may require their own startup
+  configuration. AppImages register the outer `.AppImage` file, rather than
+  their temporary mount. Flatpak uses the desktop's Background portal, which
+  may request permission; its setting records the last confirmed portal
+  response because the portal has no autostart-status query.
+- **macOS 13+:** Apple's `SMAppService` main-app login item, visible in System
+  Settings → General → Login Items. Run the installed **Kube Workspaces.app**
+  bundle to enable this; bare development executables are not supported. If
+  macOS requires approval, Settings tells you to approve the item in the OS.
+
+Changes take effect at the next graphical login. Removing or disabling startup
+outside the app is not automatically repaired. If you move an archive install
+or AppImage, turn startup off and back on from its new location. Windows/macOS
+runtime acceptance for startup registration is still pending; all six shell
+targets are cross-build checked.
+
 ## Updates
 
 Release builds check GitHub Releases after the first shell frame, at most once

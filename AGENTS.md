@@ -136,6 +136,16 @@ Implemented and working:
   rate limit) and on exit into the settings file; `shell --width/--height`
   default to 0, meaning "restore the last size", and an explicit flag wins.
   Session windows keep following the guest.
+- **Start at login.** Settings offers opt-in per-user graphical startup through
+  `internal/autostart`: HKCU Run on Windows (respecting StartupApproved vetoes),
+  XDG autostart on Linux (persistent outer path for AppImages; Background portal
+  for Flatpak), and SMAppService mainAppService on macOS 13+ from the .app bundle
+  via purego/objc, with no cgo. Registration state is read when Settings opens;
+  launching never re-registers an externally removed item. The Flatpak portal
+  has no status query, so only confirmed portal responses are cached there.
+  Startup opens the default-profile shell, with no replayed CLI arguments.
+  Linux file lifecycle and portal protocol have automated coverage; Windows
+  and macOS runtime registration/approval acceptance remain unverified.
 
 Not implemented, and must not be described otherwise:
 
@@ -258,6 +268,7 @@ process separation.
 | `internal/keysym/` | Backend-neutral key enumeration → X11 keysyms, modifier tracking and chords (Ctrl-Alt-Del). Imports no windowing library |
 | `internal/wsio/` | Adapts a `*websocket.Conn` to `io.ReadWriteCloser`, flattening message boundaries back into a byte stream |
 | `internal/config/` | Instance profiles (JSON in the user config dir) and session tokens (OS keychain, with an opt-in file fallback) |
+| `internal/autostart/` | Opt-in per-user graphical login startup: Windows Run, Linux XDG/Flatpak portal, macOS SMAppService via purego |
 | `internal/session/` | Glue: workspace name → dialled bridge → RFB handshake. Also the reconnect supervisor, the shared-display supervisor (`SharedDisplay`) and the retry classifier (`Classify`) |
 | `internal/reconnect/` | Capped exponential backoff with full jitter. Stdlib only; injectable randomness so the schedule is tested exactly |
 | `internal/viewer/` | The session viewer: `Backend` interface + backend-neutral events (`backend.go`), the SDL3 implementation (`sdl.go`, the **only** file importing an SDL binding, including the multi-window routed poll), the session loop as open/step/close (`viewer.go`, `tier1.go`) behind the pump contract, damage tracking, overlay and bitmap font |

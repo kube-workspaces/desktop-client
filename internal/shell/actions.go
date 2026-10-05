@@ -236,6 +236,7 @@ func (a *App) act(ctx context.Context, in intent) {
 		}
 		a.m.Err, a.m.Notice = "", ""
 		a.m.State = StateSettings
+		a.refreshStartup()
 	case intentSettingsDone:
 		a.m.State = a.settingsReturn
 	case intentUpdates:
@@ -1518,6 +1519,7 @@ const (
 	idSettingsDone     ui.FocusID = "settings-done"
 	idTrayOn           ui.FocusID = "tray-on"
 	idTrayOff          ui.FocusID = "tray-off"
+	idStartup          ui.FocusID = "startup"
 
 	idAbout      ui.FocusID = "about"
 	idAboutClose ui.FocusID = "about-close"

@@ -412,6 +412,24 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 		i18n.Get("settings.subtitle"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 	body.Skip(th.Pad)
 
+	// Keep navigation fixed while the preferences scroll on small / HiDPI
+	// windows. Keyboard traversal reveals the focused preference too.
+	view := body.Rest()
+	view.H = max(0, view.H-th.ControlHeight-2*th.Pad-ui.LineHeight(th.Small, th.Font))
+	if ctx.Input.Hovering(view) {
+		a.settingsScroll = max(0, a.settingsScroll-ctx.Input.Wheel.Y*th.ControlHeight)
+	}
+	originalInput := ctx.Input
+	if !ctx.Input.Mouse.In(view) {
+		ctx.Input.Mouse = ui.Point{X: -1, Y: -1}
+		ctx.Input.Pressed, ctx.Input.Released, ctx.Input.Down = false, false, false
+	}
+	ctx.Canvas.PushClip(view)
+	scrolled := view
+	scrolled.Y -= a.settingsScroll
+	body = ui.NewStack(scrolled, th.Gap)
+	a.settingsFocusedRect = ui.Rect{}
+
 	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("settings.style"), ui.LabelStyle{
 		Color: th.TextMuted, Scale: th.Small,
 	})
@@ -490,8 +508,40 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	}
 
 	body.Skip(th.Pad)
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("settings.startup"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	startupText := i18n.Get("settings.startupOff")
+	if a.startup.status.Enabled {
+		startupText = i18n.Get("settings.startupOn")
+	}
+	if a.startup.busy {
+		startupText = i18n.Get("settings.startupBusy")
+	}
+	startupRow := body.Next(th.ControlHeight)
+	startupButton := ui.Button{ID: idStartup, Text: startupText, Disabled: a.startup.busy}
+	if startupButton.Layout(ctx, startupRow) {
+		a.toggleStartup()
+	}
+	if ctx.Focused(idStartup) {
+		a.settingsFocusedRect = startupRow
+	}
+	note, ink := i18n.Get("settings.startupNote"), th.TextMuted
+	if a.startup.status.NeedsApproval {
+		note = i18n.Get("settings.startupApproval")
+	}
+	if a.startup.err != "" {
+		note, ink = a.startup.err, th.Danger
+	}
+	noteHeight := max(1, len(ui.Wrap(note, th.Small, th.Font, view.W))) * ui.LineHeight(th.Small, th.Font)
+	ui.Label(ctx, body.Next(noteHeight), note, ui.LabelStyle{Color: ink, Scale: th.Small, Wrap: true})
+	if ctx.Focused(idStartup) {
+		a.settingsFocusedRect.H += th.Gap + noteHeight
+	}
+	a.finishSettingsScroll(view, body.Rest().Y)
+	ctx.Canvas.PopClip()
+	ctx.Input = originalInput
+
 	done := ui.Button{ID: idSettingsDone, Text: i18n.Get("settings.done"), Variant: ui.ButtonPrimary}
-	buttons := ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)
+	buttons := ui.Row(ui.Rect{X: card.X, Y: view.Y + view.H + th.Pad, W: card.W, H: th.ControlHeight}, th.Gap, 160, 0)
 	updates := ui.Button{ID: idUpdates, Text: i18n.Get("updates.title"), Disabled: a.opts.Updater == nil}
 	if updates.Layout(ctx, buttons[1]) {
 		out = intent{kind: intentUpdates}
@@ -525,6 +575,9 @@ func (a *App) drawChoice(ctx *ui.Context, r ui.Rect, selected int, opts []styleO
 		}
 		if b.Layout(ctx, cols[i]) {
 			chosen = i
+		}
+		if a.m.State == StateSettings && ctx.Focused(o.id) {
+			a.settingsFocusedRect = cols[i]
 		}
 	}
 	return chosen

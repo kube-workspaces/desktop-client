@@ -38,6 +38,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/autostart"
 	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
@@ -87,6 +88,8 @@ const (
 
 // Options configures an [App]. Backend and NewClient are required.
 type Options struct {
+	// Autostart manages per-user graphical login startup. Nil uses the OS.
+	Autostart     autostart.Service
 	Version       string
 	Updater       UpdateService
 	UpdatePolicy  func() (managed, envDisabled bool)
@@ -161,6 +164,9 @@ type Options struct {
 }
 
 func (o *Options) applyDefaults() {
+	if o.Autostart == nil {
+		o.Autostart = autostart.Native{}
+	}
 	if o.Store == nil {
 		o.Store = ConfigStore{}
 	}
@@ -227,8 +233,12 @@ type App struct {
 
 	// settings is the client's own appearance. It is applied as a theme at
 	// startup and whenever the settings screen changes it.
-	settings       Settings
-	settingsReturn State
+	settings            Settings
+	settingsReturn      State
+	startup             startupState
+	settingsScroll      int
+	settingsFocus       ui.FocusID
+	settingsFocusedRect ui.Rect
 
 	// geomW/geomH cache the shell window's last seen size for the geometry
 	// persistence below; geomSavedAt rate-limits the writes.
