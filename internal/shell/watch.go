@@ -122,6 +122,8 @@ func (a *App) checkWatchIdentity(ctx context.Context, now time.Time) {
 				a.m.Expired()
 				a.closeAllSessions()
 				a.stopWorkspaceWatch()
+			} else if err == nil {
+				a.m.Identity = identity
 			}
 		}
 	})

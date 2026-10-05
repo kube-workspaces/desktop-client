@@ -209,6 +209,7 @@ type App struct {
 	userMenuScroll  int
 	userMenuFocus   ui.FocusID
 	userMenuSwallow bool // consume the release of an outside-dismissal press
+	avatar          avatarState
 
 	// sessions are the held transports, keyed by workspace key. Everything
 	// here belongs to the loop's goroutine, like the model.
@@ -405,6 +406,7 @@ func (a *App) Run(ctx context.Context) error {
 	defer close(a.done)
 	defer a.stopUpdates()
 	defer a.stopWorkspaceWatch()
+	defer a.stopAvatar()
 	ctx, cancelUpdates := context.WithCancel(ctx)
 	defer cancelUpdates()
 
@@ -655,6 +657,7 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 // tick handles everything that happens because time passed rather than because
 // the user did something: the list refresh and a deferred repaint.
 func (a *App) tick(ctx context.Context, now time.Time) {
+	a.reconcileAvatar(ctx)
 	a.reconcileWorkspaceWatch(ctx)
 	a.checkWatchIdentity(ctx, now)
 	if a.updates.busy || a.m.State == StateUpdates {

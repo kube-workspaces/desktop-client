@@ -138,11 +138,17 @@ func (a *App) drawAvatar(r ui.Rect) bool {
 		fill = th.AccentPressed
 	}
 	ctx.Canvas.FillRounded(r, r.H/2, fill)
+	if !a.drawAvatarImage(ui.Inset(r, th.BorderWidth)) {
+		if initials := avatarInitials(a.m.Identity); initials != "" {
+			ui.Label(ctx, r, initials, ui.LabelStyle{Scale: th.Body, Color: th.Text, Align: ui.AlignCenter, Middle: true})
+		} else {
+			a.drawMenuIcon(ui.Inset(r, max(1, r.H/5)), "person", th.Text)
+		}
+	}
 	ctx.Canvas.StrokeRounded(r, r.H/2, th.BorderWidth, th.BorderStrong)
 	if ctx.Focused(idUserMenu) {
 		ctx.Canvas.StrokeRounded(r, r.H/2, th.FocusWidth, th.Focus)
 	}
-	a.drawMenuIcon(ui.Inset(r, max(1, r.H/5)), "person", th.Text)
 	warning := sessionExpiryWarning(a.m.TokenExpiry, ctx.Input.Now) != ""
 	if a.updates.result.Available || warning {
 		d := max(6, r.H/3)

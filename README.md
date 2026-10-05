@@ -233,7 +233,24 @@ window — `login`, `logout`, `profile`, `whoami`, `list`, `probe`, `screenshot`
 
 ## Building
 
-Requires Go 1.26+. No code generation, no container image, no system packages.
+Requires Go 1.26+. The cgo-free shell build needs no code generation,
+container image or system development packages.
+
+On Linux, the embedded-webview child and default repository-wide Go checks
+(`go build ./...`, `go vet ./...`, `go test -race ./...`, and `golangci-lint run`)
+also compile the cgo webview backend. Install its development dependencies
+once on Debian 12 / Ubuntu 24.04 or newer:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+pkg-config --modversion gtk+-3.0 webkit2gtk-4.1
+```
+
+The runtime library alone is not enough for development: the `-dev` package
+provides the headers and `pkg-config` metadata. The backend targets WebKitGTK
+**4.1**; installing the older 4.0 development package will not satisfy it.
+For shell-only builds, `make build` and `make build-all` keep cgo disabled.
 
 ```bash
 make build          # -> bin/kube-workspaces (shell + CLI, cgo-free)
