@@ -756,6 +756,53 @@ func TestTrayShowRestoresHiddenWindow(t *testing.T) {
 	}
 }
 
+func TestTrayLeftClickTogglesMainWindowWithLiveSession(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.m.Open(lookupMust(t, r, "team/vm-a"))
+	r.settle()
+	w := r.app.live["team/vm-a"].window.(*fakeLiveWindow)
+	raises := r.be.raises
+	for i := range 4 {
+		steps := w.steps
+		r.app.Handle(tray.Action{Kind: tray.ActionToggle})
+		r.step()
+		wantHidden := i%2 == 0
+		if r.app.shellHidden != wantHidden || r.be.isHidden() != wantHidden {
+			t.Fatalf("click %d: hidden = %v, want %v", i+1, r.app.shellHidden, wantHidden)
+		}
+		if !wantHidden {
+			raises++
+		}
+		if r.be.raises != raises {
+			t.Fatalf("click %d: raises = %d, want %d", i+1, r.be.raises, raises)
+		}
+		if !r.app.isLive("team/vm-a") || w.steps <= steps || r.app.quit {
+			t.Fatal("toggle interrupted the live session or quit")
+		}
+	}
+	// The context menu's explicit Open action still raises a visible window.
+	r.app.Handle(tray.Action{Kind: tray.ActionShow})
+	r.step()
+	if r.app.shellHidden || r.be.raises != raises+1 {
+		t.Fatal("menu Open action did not raise the visible main window")
+	}
+}
+
+type invisibleShellBackend struct{ viewer.Backend }
+
+func (invisibleShellBackend) Visible() bool { return false }
+
+func TestTrayLeftClickRestoresWindowHiddenOutsideShell(t *testing.T) {
+	r, _ := trayRig(t)
+	r.app.be = invisibleShellBackend{r.app.be}
+	raises, shows := r.be.raises, r.be.shows
+	r.app.Handle(tray.Action{Kind: tray.ActionToggle})
+	r.step()
+	if r.app.shellHidden || r.be.raises != raises+1 || r.be.shows != shows+1 {
+		t.Fatal("left click did not show and raise the externally hidden/minimized window")
+	}
+}
+
 // TestDisableTrayWhileHiddenRestores: switching the tray off while the
 // window is hidden in it shows the window first — otherwise the process
 // would run on with no way back in.

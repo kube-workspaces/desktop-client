@@ -16,8 +16,8 @@ import (
 )
 
 // This file is the shell's side of the system-tray icon: lifetime,
-// menu contents, and what a menu click does. The native menu itself lives
-// in internal/viewer (tray.go); the pure menu rules live in internal/tray.
+// menu contents, and what an icon or menu click does. Native SDL adapters
+// live in internal/viewer; Linux's notifier and menu rules live in internal/tray.
 // Everything here runs on the loop's goroutine except [App.Handle], which
 // runs on the tray's thread and only queues.
 
@@ -42,7 +42,7 @@ func (a *App) Handle(action tray.Action) {
 }
 
 // newTray builds the native tray behind the TrayNew seam when tests inject
-// one, or the real SDL tray when the shell's own window is an SDL one. A
+// one, or the native tray when the shell's own window is an SDL one. A
 // fake backend (tests) gets no tray: calling into the SDL binding without
 // a loaded library would take the process down, and headless runs have no
 // notification area anyway.
@@ -53,7 +53,7 @@ func (a *App) newTray() tray.Backend {
 	if _, ok := a.be.(*viewer.SDLBackend); !ok {
 		return nil
 	}
-	t, err := viewer.NewSDLTray(a)
+	t, err := viewer.NewTray(a)
 	if err != nil {
 		a.logf("tray: %v", err)
 		return nil
@@ -126,7 +126,7 @@ func (a *App) hideShellToTray() {
 // already-visible window only raises, so the tray's opener needs no state
 // of its own.
 func (a *App) showShell() {
-	if a.shellHidden {
+	if !a.shellVisible() {
 		if err := a.be.Show(); err != nil {
 			a.logf("tray: show window: %v", err)
 			return
@@ -140,6 +140,16 @@ func (a *App) showShell() {
 		}
 	}
 	a.dirty = true
+}
+
+func (a *App) shellVisible() bool {
+	if a.shellHidden {
+		return false
+	}
+	if be, ok := a.be.(interface{ Visible() bool }); ok {
+		return be.Visible()
+	}
+	return true
 }
 
 // closeTray destroys the tray on the way out. A hidden main window is
@@ -222,13 +232,22 @@ func (a *App) ensureShellVisible() {
 	}
 }
 
-// applyTrayAction performs one menu click: Show restores the main window,
+// applyTrayAction performs one icon or menu click: Toggle toggles visibility,
+// Show restores the main window,
 // About opens its popup, Quit quits through the same flag the window-close
 // path sets, and Open focuses, picks or opens the workspace.
 func (a *App) applyTrayAction(ctx context.Context, action tray.Action) {
 	switch action.Kind {
 	case tray.ActionShow:
 		a.showShell()
+	case tray.ActionToggle:
+		// A minimized window is not visible, even when it was not hidden
+		// through our own minimize-to-tray path.
+		if a.shellVisible() {
+			a.hideShellToTray()
+		} else {
+			a.showShell()
+		}
 	case tray.ActionAbout:
 		a.openAboutPopup()
 	case tray.ActionQuit:

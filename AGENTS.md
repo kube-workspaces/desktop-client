@@ -88,6 +88,13 @@ Implemented and working:
   still apply. Locks release on exit/crash; stale metadata does not prevent
   startup. CLI commands and web children stay independent. Tray surfaces preserve
   straight alpha, including the transparent background and antialiased edges.
+  A single left tray-icon click toggles the main window (hide when visible,
+  show/restore and raise when hidden or minimized); right click opens the menu.
+  Windows subclasses SDL's tray window, macOS routes the status-item button,
+  and Linux exports StatusNotifierItem/DBusMenu directly because SDL's
+  AppIndicator backend has no primary-click callback. Linux click/menu wire
+  handling is tested on an isolated D-Bus; desktop-host behaviour and the
+  Windows/macOS click adapters still need native desktop acceptance.
 - **Shell text editing.** Fields select (Shift-arrow, drag, double-click word,
   triple-click all), copy/cut/paste through the host clipboard (Ctrl or Cmd),
   and take composed IME text; delete/replace acts on the selection first.

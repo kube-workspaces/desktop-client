@@ -80,8 +80,9 @@ type SDLTray struct {
 	// cb and cbFunc are the menu-click trampoline. The uintptr handed to
 	// SDL points at a purego closure that must stay reachable: if it is
 	// garbage-collected the next click jumps nowhere.
-	cb     sdl.TrayCallback
-	cbFunc trayCallbackFunc
+	cb         sdl.TrayCallback
+	cbFunc     trayCallbackFunc
+	clickClose func()
 }
 
 var _ tray.Backend = (*SDLTray)(nil)
@@ -160,6 +161,12 @@ func NewSDLTray(handler tray.Handler) (t *SDLTray, err error) {
 			}
 		}
 	}
+	cleanup, err := installTrayClicks(unsafe.Pointer(tr), handler)
+	if err != nil {
+		t.Close()
+		return nil, err
+	}
+	t.clickClose = cleanup
 	return t, nil
 }
 
@@ -226,6 +233,10 @@ func (t *SDLTray) Close() {
 	if t == nil {
 		return
 	}
+	if t.clickClose != nil {
+		t.clickClose()
+		t.clickClose = nil
+	}
 	if t.tray != nil {
 		t.tray.Destroy()
 		t.tray = nil
@@ -265,14 +276,10 @@ func entryID(e *sdl.TrayEntry) uintptr {
 // texture allocation in sdl.go), which is exactly Go's image.NRGBA layout,
 // so no byte swap is needed. The caller owns the surface.
 func trayIconSurface() (*sdl.Surface, error) {
-	if len(appIconPNG) == 0 {
-		return nil, errors.New("viewer: no embedded icon")
-	}
-	img, err := png.Decode(bytes.NewReader(appIconPNG))
+	small, err := trayIconImage()
 	if err != nil {
 		return nil, err
 	}
-	small := scaleTrayIcon(img, trayIconSize)
 	surface, err := sdl.CreateSurface(small.Bounds().Dx(), small.Bounds().Dy(), sdl.PIXELFORMAT_RGBA32)
 	if err != nil {
 		return nil, err
@@ -284,6 +291,17 @@ func trayIconSurface() (*sdl.Surface, error) {
 	}
 	copy(pix, small.Pix)
 	return surface, nil
+}
+
+func trayIconImage() (*image.NRGBA, error) {
+	if len(appIconPNG) == 0 {
+		return nil, errors.New("viewer: no embedded icon")
+	}
+	img, err := png.Decode(bytes.NewReader(appIconPNG))
+	if err != nil {
+		return nil, err
+	}
+	return scaleTrayIcon(img, trayIconSize), nil
 }
 
 // scaleTrayIcon renders img into a size×size straight-alpha NRGBA with nearest-neighbour

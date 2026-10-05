@@ -746,6 +746,11 @@ func (b *SDLBackend) Hide() error {
 	return nil
 }
 
+// Visible reports whether the main window is shown and not minimized.
+func (b *SDLBackend) Visible() bool {
+	return b.window != nil && b.window.Flags()&(sdl.WINDOW_HIDDEN|sdl.WINDOW_MINIMIZED) == 0
+}
+
 func (b *SDLBackend) Show() error {
 	if b.window == nil {
 		return nil

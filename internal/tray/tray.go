@@ -1,14 +1,14 @@
 // Copyright The kube-workspaces Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package tray is the system-tray menu's pure-Go model: which workspaces are
+// Package tray is the system-tray menu's model: which workspaces are
 // listed, which open modes each one offers, and the actions a menu click
 // produces.
 //
-// It imports nothing but the standard library, so the menu rules are unit
-// tested without a display. The native menu itself lives in
-// internal/viewer (tray.go), which is the only place an SDL tray object may
-// exist; the shell owns the policy (which workspaces, what a click does) and
+// The menu rules use only the standard library and are tested without a
+// display. The native Linux backend exports StatusNotifierItem/DBusMenu;
+// internal/viewer owns the SDL trays on Windows and macOS. The shell owns
+// the policy (which workspaces, what a click does) and
 // drives both through the [Backend] and [Handler] seams.
 package tray
 
@@ -79,7 +79,7 @@ type Target struct {
 	Tier1 bool
 }
 
-// ActionKind names what a tray menu click asks for.
+// ActionKind names what a tray icon or menu click asks for.
 type ActionKind int
 
 const (
@@ -94,16 +94,18 @@ const (
 	ActionAbout
 	// ActionQuit asks the application to quit.
 	ActionQuit
+	// ActionToggle toggles the main window's visibility from a left icon click.
+	ActionToggle
 )
 
-// Action is one tray menu click, delivered to the shell.
+// Action is one tray icon or menu click, delivered to the shell.
 type Action struct {
 	Kind ActionKind
 	// Key names the workspace for ActionOpen; it is empty otherwise.
 	Key string
 }
 
-// Handler receives tray menu clicks.
+// Handler receives tray icon and menu clicks.
 //
 // It is called on the tray's thread, not the shell's loop goroutine, so an
 // implementation must be safe for concurrent use — queue the action and wake
