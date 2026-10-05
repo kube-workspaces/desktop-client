@@ -20,6 +20,13 @@ type MediaSink struct {
 	Audio func([]byte)
 }
 
+// DecoderAvailable reports whether this process can decode the pinned wire
+// format natively. It is the transport's preflight: a caller asks before
+// claiming a guest display, so an absent codec never costs an ownership claim.
+// It is deliberately not the interactive selector — deciding which transport a
+// workspace gets is the session layer's call.
+func DecoderAvailable() error { return media.ProbeVideo() }
+
 // DecodeStats distinguishes decoding from receiving and from presentation.
 type DecodeStats struct {
 	VideoFrames  uint64  `json:"decoded_video_frames"`

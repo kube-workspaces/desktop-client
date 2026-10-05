@@ -335,6 +335,18 @@ func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observe
 		}, nil
 	default:
 		if ws.RemoteDesktop != nil && ws.RemoteDesktop.Protocol == "selkies" {
+			// A process that cannot decode the pinned wire format has no Tier 1
+			// to offer, and asking anyway costs the display: the claim is held
+			// past the failure, the Tier 0 fallback below can collide with it,
+			// and the user is prompted to take over their own session. The
+			// transport is chosen here, before any window and any dial, so a
+			// missing codec costs nothing but a slower stream.
+			if err := session.Tier1Available(); err != nil {
+				if d.opts.Logf != nil {
+					d.opts.Logf("workspace %s advertises Selkies but this build cannot decode it (%v); using Tier 0", ws.Key(), err)
+				}
+				return dialExclusiveSession(ctx, d.client, ws, d.opts)
+			}
 			if d.opts.Logf != nil {
 				d.opts.Logf("workspace %s advertises Selkies Tier 1 transport", ws.Key())
 			}

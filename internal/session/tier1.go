@@ -28,6 +28,32 @@ import (
 // errors.Is and surface the error instead of falling back.
 var ErrNoFallback = errors.New("tier 1 refused; not falling back")
 
+// tier1Probe is the transport's preflight for native decode. It is a variable so
+// a test can stand in for a build without the FFmpeg libraries; production
+// always resolves the real decoder.
+var tier1Probe = selkies.DecoderAvailable
+
+// Tier1Available reports whether this process can run a Tier 1 session at all.
+// The session layer asks it before choosing a transport, so a build without the
+// pinned FFmpeg libraries opens the Tier 0 display directly instead of claiming
+// a guest display it cannot decode.
+func Tier1Available() error { return tier1Probe() }
+
+// requireDecoder refuses Tier 1 before anything remote is touched. Claiming a
+// guest display only to fail on the first frame costs the user the display: the
+// claim is held until the agent's fencing interval expires, so the Tier 0
+// fallback that follows can collide with the session this client just abandoned,
+// and the next attempt asks the user to take over from themselves. A missing
+// codec is a property of this executable, not of the guest, so it is worth
+// knowing before the dial rather than after it. The error stays recoverable —
+// Tier 0 is exactly the right answer for it.
+func requireDecoder() error {
+	if err := tier1Probe(); err != nil {
+		return fmt.Errorf("tier 1 unavailable; Tier 0 fallback: %w", err)
+	}
+	return nil
+}
+
 // tier1EstablishmentBudget bounds the Tier 1 handshake and first-frame wait
 // before the caller gives up and files the attempt as a recoverable failure
 // (plan §7.2: a 5-second establishment deadline).
@@ -112,6 +138,9 @@ func RunTier1(ctx context.Context, client *kwclient.Client, ns, name, agentBase 
 	if be == nil {
 		return fmt.Errorf("session: Tier 1 has no window")
 	}
+	if err := requireDecoder(); err != nil {
+		return err
+	}
 
 	requests := make(chan struct{}, 1)
 	input := &tier1Input{}
@@ -183,6 +212,9 @@ type Tier1Live struct {
 func OpenTier1(ctx context.Context, client *kwclient.Client, ns, name, agentBase string, be viewer.Backend, cfg Tier1Config) (*Tier1Live, error) {
 	if be == nil {
 		return nil, fmt.Errorf("session: Tier 1 has no window")
+	}
+	if err := requireDecoder(); err != nil {
+		return nil, err
 	}
 
 	requests := make(chan struct{}, 1)

@@ -19,9 +19,13 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
+
 	"github.com/gorilla/websocket"
+
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
+	"github.com/kube-workspaces/desktop-client/internal/media"
 	"github.com/kube-workspaces/desktop-client/internal/selkies"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
@@ -593,4 +597,85 @@ func TestRunTier1QuitReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clean quit must return nil, got %v", err)
 	}
+}
+
+// A build that cannot decode the pinned wire format must not touch the guest at
+// all. Claiming a display only to fail on the first frame leaves the claim held
+// until the agent's fencing interval expires, which is what made the next
+// attempt ask the user to take over from themselves.
+func TestTier1PreflightRefusesBeforeAnyDial(t *testing.T) {
+	dials := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dials++
+		http.Error(w, "must not be reached", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	restore := tier1Probe
+	tier1Probe = func() error {
+		return fmt.Errorf("%w: could not load %v: %v", media.ErrUnavailable, codecNamesForTest, "not found")
+	}
+	defer func() { tier1Probe = restore }()
+
+	err := RunTier1(context.Background(), tier1Client(t, srv.URL), "demo", "vm-a", "", &fakeTier1Backend{}, baseTier1())
+	if err == nil {
+		t.Fatal("RunTier1 without a decoder returned nil")
+	}
+	// Recoverable, because Tier 0 is the right answer for a missing codec: the
+	// caller must still be allowed to open the display the other way.
+	if errors.Is(err, ErrNoFallback) {
+		t.Errorf("preflight refusal = %v, want the recoverable classification", err)
+	}
+	if !errors.Is(err, media.ErrUnavailable) {
+		t.Errorf("preflight refusal = %v, want the decoder error preserved", err)
+	}
+	if dials != 0 {
+		t.Errorf("the guest was dialled %d times before the preflight refused", dials)
+	}
+}
+
+// OpenTier1 is the detached path the shell uses, and it must refuse the same
+// way: the shell's own error handling surfaces an Open failure rather than
+// falling back, so a claim here would never be recovered.
+func TestOpenTier1PreflightRefusesBeforeAnyDial(t *testing.T) {
+	dials := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dials++
+		http.Error(w, "must not be reached", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	restore := tier1Probe
+	tier1Probe = func() error { return media.ErrUnavailable }
+	defer func() { tier1Probe = restore }()
+
+	if _, err := OpenTier1(context.Background(), tier1Client(t, srv.URL), "demo", "vm-a", "", &fakeTier1Backend{}, baseTier1()); err == nil {
+		t.Fatal("OpenTier1 without a decoder returned no error")
+	}
+	if dials != 0 {
+		t.Errorf("the guest was dialled %d times before the preflight refused", dials)
+	}
+}
+
+// Tier1Available is what the session layer asks before choosing a transport, so
+// it must agree with the preflight rather than re-decide.
+func TestTier1AvailableMatchesThePreflight(t *testing.T) {
+	restore := tier1Probe
+	defer func() { tier1Probe = restore }()
+	tier1Probe = func() error { return nil }
+	if err := Tier1Available(); err != nil {
+		t.Errorf("Tier1Available = %v, want nil when the probe passes", err)
+	}
+	boom := errors.New("no codec")
+	tier1Probe = func() error { return boom }
+	if err := Tier1Available(); !errors.Is(err, boom) {
+		t.Errorf("Tier1Available = %v, want the probe's own error", err)
+	}
+}
+
+var codecNamesForTest = "avcodec-59.dll"
+
+func init() {
+	// Tests assume Tier 1 is decodable unless they explicitly stub tier1Probe.
+	tier1Probe = func() error { return nil }
 }

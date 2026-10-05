@@ -21,12 +21,19 @@ var ErrUnavailable = errors.New("native media decoder unavailable")
 type library struct{ handle uintptr }
 
 func load(names ...string) (*library, error) {
+	// Every candidate is tried because a platform may ship either spelling, but
+	// the last failure is kept: "the file is not there" and "the file is there
+	// and one of its own dependencies is missing" look identical without it,
+	// and those need different fixes.
+	var last error
 	for _, name := range names {
-		if h, err := openLibrary(name); err == nil {
+		h, err := openLibrary(name)
+		if err == nil {
 			return &library{h}, nil
 		}
+		last = err
 	}
-	return nil, fmt.Errorf("%w: could not load %v", ErrUnavailable, names)
+	return nil, fmt.Errorf("%w: could not load %v: %v", ErrUnavailable, names, last)
 }
 
 func (l *library) bind(fn any, name string) error {
