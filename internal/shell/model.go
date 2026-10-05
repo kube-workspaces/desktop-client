@@ -35,6 +35,8 @@ const (
 	// on this computer, not on any instance.
 	StateSettings
 	StateUpdates
+	// StateProfile shows the signed-in platform account and its credentials.
+	StateProfile
 	// StateSession means a session window is opening. It is transient: the
 	// next step dials (or resumes) the transport, registers the live
 	// window with the pump, and returns to StateWorkspaces with the new
@@ -55,6 +57,8 @@ func (s State) String() string {
 		return "settings"
 	case StateUpdates:
 		return "updates"
+	case StateProfile:
+		return "profile"
 	case StateSession:
 		return "session"
 	default:

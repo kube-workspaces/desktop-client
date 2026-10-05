@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -61,7 +62,7 @@ func (c *Client) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
 	var out struct {
 		Devices []DeviceInfo `json:"devices"`
 	}
-	if err := c.doJSON(ctx, requestSpec{method: http.MethodGet, path: "/auth/device/list"}, &out); err != nil {
+	if err := c.doJSON(ctx, requestSpec{method: http.MethodGet, path: "/auth/device/list", query: url.Values{"scope": {"own"}}}, &out); err != nil {
 		return nil, err
 	}
 	return out.Devices, nil

@@ -21,6 +21,7 @@ type userMenuAction struct {
 
 func (a *App) userMenuActions() []userMenuAction {
 	rows := []userMenuAction{
+		{idAccount, i18n.Get("account.title"), "person", intentOpenAccount},
 		{idSettings, i18n.Get("header.settings"), "gear", intentOpenSettings},
 		{idProfiles, i18n.Get("header.profiles"), "users", intentOpenProfiles},
 	}
@@ -99,7 +100,7 @@ func (a *App) drawWorkspacesWithUserMenu(bounds ui.Rect) intent {
 			// Opening Enter/click must not activate the first menu action too.
 			input := ctx.Input
 			ctx.Input = ui.Input{Now: input.Now}
-			ctx.Focus().Set(idSettings)
+			ctx.Focus().Set(idAccount)
 			out = a.drawUserMenu(bounds, anchor)
 			ctx.Input = input
 		} else {

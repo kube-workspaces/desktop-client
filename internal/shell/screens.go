@@ -407,16 +407,19 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	card.H = bounds.Y + bounds.H - card.Y - th.Pad
 	body := ui.NewStack(card, th.Gap)
 
-	ui.Label(ctx, body.Next(ui.TextHeight(th.Title, th.Font)), i18n.Get("settings.title"), ui.LabelStyle{Scale: th.Title})
+	heading := body.Next(max(ui.TextHeight(th.Title, th.Font), th.ControlHeight))
+	// Match the right edge of the buttons inside the segmented preference rails.
+	heading.W = max(0, heading.W-max(2, th.Body))
+	closePage := a.drawPageHeader(heading, i18n.Get("settings.title"), idSettingsDone)
 	body.Skip(th.Gap / 2)
 	ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*2),
 		i18n.Get("settings.subtitle"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 	body.Skip(th.Pad)
 
-	// Keep navigation fixed while the preferences scroll on small / HiDPI
+	// Keep the heading and close control fixed while preferences scroll on small / HiDPI
 	// windows. Keyboard traversal reveals the focused preference too.
 	view := body.Rest()
-	view.H = max(0, view.H-th.ControlHeight-2*th.Pad-ui.LineHeight(th.Small, th.Font))
+	view.H = max(0, view.H-th.Pad-ui.LineHeight(th.Small, th.Font))
 	if ctx.Input.Hovering(view) {
 		a.settingsScroll = max(0, a.settingsScroll-ctx.Input.Wheel.Y*th.ControlHeight)
 	}
@@ -537,17 +540,27 @@ func (a *App) drawSettingsScreen(bounds ui.Rect) intent {
 	if ctx.Focused(idStartup) {
 		a.settingsFocusedRect.H += th.Gap + noteHeight
 	}
+
+	body.Skip(th.Pad)
+	ui.Label(ctx, body.Next(ui.TextHeight(th.Small, th.Font)+2), i18n.Get("settings.updates"), ui.LabelStyle{
+		Color: th.TextMuted, Scale: th.Small,
+	})
+	versionText := i18n.Sprintf("updates.current", a.opts.Version)
+	versionHeight := max(1, len(ui.Wrap(versionText, th.Body, th.Font, view.W))) * ui.LineHeight(th.Body, th.Font)
+	ui.Label(ctx, body.Next(versionHeight), versionText, ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+	updatesRow := body.Next(th.ControlHeight)
+	updates := ui.Button{ID: idUpdates, Text: i18n.Get("updates.check"), Disabled: a.opts.Updater == nil, Smooth: true}
+	if updates.Layout(ctx, updatesRow) {
+		out = intent{kind: intentUpdatesAndCheck}
+	}
+	if ctx.Focused(idUpdates) {
+		a.settingsFocusedRect = updatesRow
+	}
 	a.finishSettingsScroll(view, body.Rest().Y)
 	ctx.Canvas.PopClip()
 	ctx.Input = originalInput
 
-	done := ui.Button{ID: idSettingsDone, Text: i18n.Get("settings.done"), Variant: ui.ButtonPrimary, Smooth: true}
-	buttons := ui.Row(ui.Rect{X: card.X, Y: view.Y + view.H + th.Pad, W: card.W, H: th.ControlHeight}, th.Gap, 160, 0)
-	updates := ui.Button{ID: idUpdates, Text: i18n.Get("updates.title"), Disabled: a.opts.Updater == nil, Smooth: true}
-	if updates.Layout(ctx, buttons[1]) {
-		out = intent{kind: intentUpdates}
-	}
-	if done.Layout(ctx, buttons[0]) ||
+	if closePage ||
 		ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentSettingsDone}
 	}

@@ -139,6 +139,12 @@ Implemented and working:
   server screen list every configured profile; switching rebuilds the client
   for the new instance, restores its token and verifies it, with no relaunch.
   `--profile` still pins a launch to one profile.
+- **Account Profile.** **Profile** in the avatar menu opens a native account
+  view matching the frontend `/profile` sections: avatar, identity, role/SSO,
+  personal and accessible namespaces (switchable and persisted per instance),
+  SSH public keys (add/delete), the user's own registered devices (confirmed
+  revocation), and groups. Local-auth instances also offer a password-change
+  form. This is separate from the **Profiles** instance switcher.
 - **Window size persistence.** The shell records its window on resize (5 s
   rate limit) and on exit into the settings file; `shell --width/--height`
   default to 0, meaning "restore the last size", and an explicit flag wins.

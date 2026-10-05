@@ -403,9 +403,11 @@ func containsColor(img *image.RGBA, col color.RGBA) bool {
 // not one level up.
 func TestUpdatesFromSettingsDoneExitsSettings(t *testing.T) {
 	r := newRig(savedProfile(), "token")
-	// The Updates button disables itself without an update service.
-	r.app.opts.Updater = &fakeUpdater{}
+	// Check for updates disables itself without an update service.
+	u := &fakeUpdater{}
+	r.app.opts.Updater = u
 	r.start()
+	checksBefore := u.checks.Load()
 	r.app.m.State = StateWorkspaces
 	r.app.dirty = true
 	r.step()
@@ -417,8 +419,12 @@ func TestUpdatesFromSettingsDoneExitsSettings(t *testing.T) {
 	}
 	r.focus(idUpdates)
 	r.clickFocused()
+	r.settle()
 	if r.app.m.State != StateUpdates {
-		t.Fatalf("the Settings Updates button led to %v, want Updates", r.app.m.State)
+		t.Fatalf("the Settings Check for updates button led to %v, want Updates", r.app.m.State)
+	}
+	if got := u.checks.Load(); got != checksBefore+1 {
+		t.Fatalf("Settings did not automatically check for updates: checks = %d, want %d", got, checksBefore+1)
 	}
 	r.focus(ui.FocusID("update-back"))
 	r.clickFocused()
@@ -453,7 +459,7 @@ func TestUpdatesToggleAndScrollingWithReleaseNotes(t *testing.T) {
 	r.app.opts.Updater = &fakeUpdater{}
 	r.start()
 	r.app.updates.result.Release.Changes = "- First improvement\n- Second improvement\n- Third improvement\n- Fourth improvement\n- Fifth improvement"
-	r.be.resize(DefaultWidth, 450)
+	r.be.resize(DefaultWidth, 350)
 	r.focus(idUpdates)
 	r.clickFocused()
 	r.settle()
@@ -480,7 +486,7 @@ func TestUpdatesToggleAndScrollingWithReleaseNotes(t *testing.T) {
 	r.clickFocused()
 	r.settle()
 	if r.app.m.State == StateUpdates {
-		t.Fatal("fixed Done button did not close the scrolled updates page")
+		t.Fatal("header X button did not close the scrolled updates page")
 	}
 }
 

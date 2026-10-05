@@ -37,6 +37,12 @@ type API interface {
 	// LoginBrowser runs the loopback + PKCE flow in the system browser.
 	LoginBrowser(ctx context.Context, opts *kwclient.BrowserLoginOptions) (*kwclient.BrowserLogin, error)
 	CreateDeviceToken(ctx context.Context, name string) (*kwclient.DeviceToken, error)
+	ListDevices(ctx context.Context) ([]kwclient.DeviceInfo, error)
+	RevokeDevice(ctx context.Context, deviceID string) error
+	ListSSHKeys(ctx context.Context) ([]kwclient.SSHKey, error)
+	CreateSSHKey(ctx context.Context, payload kwclient.CreateSSHKeyPayload) (*kwclient.SSHKey, error)
+	DeleteSSHKey(ctx context.Context, namespace, name string) error
+	ChangePassword(ctx context.Context, current, next string) error
 	// Me reports who the server thinks the session belongs to.
 	Me(ctx context.Context) (*kwclient.Identity, error)
 

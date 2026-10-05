@@ -42,9 +42,10 @@ func TestUserMenuKeyboardAndFocus(t *testing.T) {
 		t.Fatalf("closed header traversal = %v", order)
 	}
 	openUserMenu(t, r)
-	if got := r.app.ctx.Focus().Order(); !slices.Equal(got, []ui.FocusID{idSettings, idProfiles, idSignOut}) {
+	if got := r.app.ctx.Focus().Order(); !slices.Equal(got, []ui.FocusID{idAccount, idSettings, idProfiles, idSignOut}) {
 		t.Fatalf("popup traversal includes background controls: %v", got)
 	}
+	r.press(keysym.KeyDown, keysym.ModNone)
 	r.press(keysym.KeyDown, keysym.ModNone)
 	if !r.app.ctx.Focused(idProfiles) {
 		t.Fatal("Down did not reach Profiles")
@@ -66,6 +67,7 @@ func TestUserMenuKeyboardAndFocus(t *testing.T) {
 		t.Fatal("closing Profiles did not restore avatar focus")
 	}
 	openUserMenu(t, r)
+	r.focus(idSettings)
 	r.clickFocused()
 	if r.app.m.State != StateSettings || r.app.userMenuOpen {
 		t.Fatal("Settings did not close the menu and navigate")
@@ -172,8 +174,9 @@ func TestUserMenuLongInfoScrollsAndActionsRemainReachable(t *testing.T) {
 	r.app.m.Server = "https://" + strings.Repeat("endpoint-", 40) + ".example.com"
 	openUserMenu(t, r)
 	if r.app.userMenuScroll <= 0 {
-		t.Fatalf("focused Settings not brought into view past long account info (focus=%s, body=%d)", r.app.ctx.Focus().Focus(), r.app.opts.Theme.Body)
+		t.Fatalf("focused Profile not brought into view past long account info (focus=%s, body=%d)", r.app.ctx.Focus().Focus(), r.app.opts.Theme.Body)
 	}
+	r.press(keysym.KeyDown, keysym.ModNone)
 	r.press(keysym.KeyDown, keysym.ModNone)
 	r.clickFocused()
 	if !r.app.m.Profiles {

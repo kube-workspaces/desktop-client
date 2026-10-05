@@ -133,6 +133,8 @@ type Button struct {
 	Raised bool
 	// Smooth uses softer corners and a subtle inner highlight without travel.
 	Smooth bool
+	// Round uses a circular face when laid out in a square.
+	Round bool
 }
 
 // Width returns the button's intrinsic width: its label plus symmetric
@@ -181,6 +183,9 @@ func (b *Button) Layout(ctx *Context, r Rect) bool {
 	}
 	if b.Smooth {
 		radius = max(radius, r.H/3)
+	}
+	if b.Round {
+		radius = min(r.W, r.H) / 2
 	}
 
 	if b.Raised && !b.Disabled && !held && b.Variant != ButtonQuiet && fill != Transparent {

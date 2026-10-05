@@ -65,6 +65,13 @@ const (
 	intentCreateSubmit
 	intentCreateClose
 	intentOpenProfiles
+	intentOpenAccount
+	intentAccountDone
+	intentAccountNamespace
+	intentAccountAddKey
+	intentAccountDeleteKey
+	intentAccountRevoke
+	intentAccountPassword
 	intentSwitchProfile
 	intentProfilesClose
 	intentOpenSessions
@@ -78,6 +85,7 @@ const (
 	intentOpenSettings
 	intentSettingsDone
 	intentUpdates
+	intentUpdatesAndCheck
 	intentCheckUpdate
 	intentDownloadUpdate
 	intentRestartUpdate
@@ -178,6 +186,16 @@ func (a *App) act(ctx context.Context, in intent) {
 	case intentOpenProfiles:
 		a.loadProfiles()
 		a.m.ShowProfiles()
+	case intentOpenAccount:
+		a.openAccount(ctx)
+	case intentAccountDone:
+		a.account = nil
+		a.m.State = StateWorkspaces
+		a.refreshWorkspaces(ctx, false)
+	case intentAccountNamespace:
+		a.accountNamespace(ctx, in.profile)
+	case intentAccountAddKey, intentAccountDeleteKey, intentAccountRevoke, intentAccountPassword:
+		a.mutateAccount(ctx, in)
 	case intentSwitchProfile:
 		a.switchProfile(ctx, in.profile)
 	case intentProfilesClose:
@@ -239,8 +257,8 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.refreshStartup()
 	case intentSettingsDone:
 		a.m.State = a.settingsReturn
-	case intentUpdates:
-		// Reachable two ways: the Updates button on the Settings screen, and
+	case intentUpdates, intentUpdatesAndCheck:
+		// Reachable two ways: Check for updates on the Settings screen, and
 		// the "Update available" badge, which lands here directly. The second
 		// arrives from outside Settings, so it must record the return state
 		// the Settings button records — Done returns there, and without it
@@ -251,6 +269,9 @@ func (a *App) act(ctx context.Context, in intent) {
 		}
 		a.m.Err, a.m.Notice = "", ""
 		a.m.State = StateUpdates
+		if in.kind == intentUpdatesAndCheck {
+			a.checkUpdate(ctx, true)
+		}
 	case intentCheckUpdate:
 		a.checkUpdate(ctx, true)
 	case intentDownloadUpdate:
@@ -1499,6 +1520,7 @@ const (
 
 	idUserMenu      ui.FocusID = "user-menu"
 	idProfiles      ui.FocusID = "profiles"
+	idAccount       ui.FocusID = "account"
 	idProfilesClose ui.FocusID = "profiles-close"
 
 	idSessions      ui.FocusID = "sessions"

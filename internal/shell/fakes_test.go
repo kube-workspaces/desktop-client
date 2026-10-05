@@ -923,7 +923,7 @@ func (r *rig) typeText(s string) {
 // then places keyboard focus directly for tests about the destination action.
 func (r *rig) focus(id ui.FocusID) {
 	if r.app.m.State == StateWorkspaces && !r.app.userMenuOpen &&
-		(id == idSettings || id == idProfiles || id == idSignOut || id == idUpdates) {
+		(id == idAccount || id == idSettings || id == idProfiles || id == idSignOut || id == idUpdates) {
 		r.app.ctx.Focus().Set(idUserMenu)
 		r.clickFocused()
 	}

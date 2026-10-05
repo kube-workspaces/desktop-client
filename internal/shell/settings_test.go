@@ -260,7 +260,7 @@ func TestSettingsScreenSwitchesToHighContrast(t *testing.T) {
 	}
 }
 
-func TestSettingsScreenDoneCloses(t *testing.T) {
+func TestSettingsScreenClose(t *testing.T) {
 	r := newRig(savedProfile(), "stored-token")
 	r.api.set(func(f *fakeAPI) {
 		f.workspaces = []kwclient.Workspace{workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}
@@ -278,6 +278,6 @@ func TestSettingsScreenDoneCloses(t *testing.T) {
 	r.clickFocused()
 	r.settle()
 	if r.app.m.State != StateWorkspaces {
-		t.Fatalf("Done left the shell on %v", r.app.m.State)
+		t.Fatalf("Close left the shell on %v", r.app.m.State)
 	}
 }

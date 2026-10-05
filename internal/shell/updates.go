@@ -346,10 +346,11 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 	card.Y = bounds.Y + th.Pad*2
 	card.H = max(0, bounds.Y+bounds.H-card.Y-th.Pad)
 	body := ui.NewStack(card, th.Gap)
-	ui.Label(ctx, body.Next(ui.LineHeight(th.Title, th.Font)), i18n.Get("updates.title"), ui.LabelStyle{Scale: th.Title})
+	heading := body.Next(max(ui.TextHeight(th.Title, th.Font), th.ControlHeight))
+	heading.W = max(0, heading.W-max(2, th.Body))
+	closePage := a.drawPageHeader(heading, i18n.Get("updates.title"), "update-back")
 	body.Skip(th.Gap / 2)
 	view := body.Rest()
-	view.H = max(0, view.H-th.ControlHeight-2*th.Pad)
 	if ctx.Input.Hovering(view) {
 		a.updates.scroll = max(0, a.updates.scroll-ctx.Input.Wheel.Y*th.ControlHeight)
 	}
@@ -479,12 +480,7 @@ func (a *App) drawUpdatesScreen(bounds ui.Rect) intent {
 	a.finishPreferenceScroll(view, body.Rest().Y, &a.updates.scroll, &a.updates.focus, focusedRect)
 	ctx.Canvas.PopClip()
 	ctx.Input = originalInput
-	ui.Divider(ctx, ui.Rect{X: card.X, Y: view.Y + view.H + th.Pad/2, W: card.W, H: 1})
-	done := ui.Button{ID: "update-back", Text: i18n.Get("settings.done"), Variant: ui.ButtonPrimary, Smooth: true}
-	if done.Layout(ctx, ui.Rect{X: card.X, Y: view.Y + view.H + th.Pad, W: min(card.W, 160), H: th.ControlHeight}) {
-		out = intent{kind: intentSettingsDone}
-	}
-	if ctx.Input.KeyPressed(keysym.KeyEscape) {
+	if closePage || ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentSettingsDone}
 	}
 	return out

@@ -235,6 +235,7 @@ type App struct {
 	// startup and whenever the settings screen changes it.
 	settings            Settings
 	settingsReturn      State
+	account             *accountView
 	startup             startupState
 	settingsScroll      int
 	settingsFocus       ui.FocusID
@@ -710,10 +711,13 @@ func (a *App) draw(ctx context.Context) error {
 		// leave the keyboard on a control that is no longer drawn, which is
 		// indistinguishable from the keyboard not working.
 		a.ctx.Focus().Clear()
-		if a.m.State == StateWorkspaces && (a.lastState == StateSettings || a.lastState == StateUpdates) {
+		if a.m.State == StateWorkspaces && (a.lastState == StateSettings || a.lastState == StateUpdates || a.lastState == StateProfile) {
 			a.ctx.Focus().Set(idUserMenu)
 		}
 		a.lastState = a.m.State
+		if a.m.State != StateProfile {
+			a.account = nil
+		}
 	}
 
 	a.ctx.Begin(a.canvas, a.in)
@@ -754,6 +758,8 @@ func (a *App) draw(ctx context.Context) error {
 		intent = a.drawSettingsScreen(a.canvas.Bounds())
 	case StateUpdates:
 		intent = a.drawUpdatesScreen(a.canvas.Bounds())
+	case StateProfile:
+		intent = a.drawAccountScreen(a.canvas.Bounds())
 	}
 	if a.m.State == StateServer || a.m.State == StateLogin {
 		if kind := a.drawStandaloneSettings(a.canvas.Bounds()); kind != intentNone {
