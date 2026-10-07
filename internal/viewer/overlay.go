@@ -27,8 +27,8 @@ const (
 	// StatusReconnecting means the connection dropped and another attempt is
 	// pending. The last frame stays on screen, dimmed.
 	StatusReconnecting
-	// StatusDisplayInUse means another client holds the workspace's single
-	// display slot. The overlay offers the user an interactive take-over
+	// StatusDisplayInUse means the workspace's single display slot remains
+	// held. The overlay offers the user an interactive take-over
 	// while it waits; the window stays closable throughout.
 	StatusDisplayInUse
 	// StatusFailed is terminal: the reason is shown and the viewer exits
@@ -64,7 +64,7 @@ func (s Status) Text() string {
 	case StatusReconnecting:
 		return "Reconnecting…"
 	case StatusDisplayInUse:
-		return "Display in use by another session"
+		return "Display connection is still in use"
 	case StatusFailed:
 		return "Reconnecting failed"
 	default:
@@ -157,7 +157,7 @@ func statusLines(s Status, detail string) []string {
 		return []string{s.Text() + " — " + detail}
 
 	case StatusDisplayInUse:
-		lines := []string{s.Text(), "Waiting for it to be released"}
+		lines := []string{s.Text(), "Waiting for release; retrying automatically"}
 		if detail != "" {
 			lines = append(lines, detail)
 		}

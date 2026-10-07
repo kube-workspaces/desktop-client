@@ -147,3 +147,35 @@ func TestStatusAndChromeAreSeparateLayers(t *testing.T) {
 		t.Fatal("content/status/chrome composition incorrect")
 	}
 }
+
+func TestTypeClipboardToolRestoresGuestFocusBeforeAction(t *testing.T) {
+	b, _, now := rig(t, false)
+	b.snapshot.Capabilities.TypeClipboard = true
+	b.bar.Menu = "tools"
+	b.local = true
+	b.render(now, nil)
+	// Host input is the first row; Type clipboard is the second supported tool.
+	p, th := b.layout.Panel, b.ctx.Theme
+	x, y := p.X+th.Pad+10, p.Y+th.Pad+th.ControlHeight+th.Gap+10
+	out := b.FilterConnectionEvents(now, []viewer.Event{
+		viewer.EventPointer{X: x, Y: y, Buttons: viewer.ButtonLeft},
+		viewer.EventPointer{X: x, Y: y},
+	})
+	focused, actions := false, 0
+	for _, ev := range out {
+		switch e := ev.(type) {
+		case viewer.EventPointer:
+			t.Fatal("toolbar click reached the guest field")
+		case viewer.EventFocus:
+			focused = e.Gained
+		case viewer.EventConnectionAction:
+			if e.Action != connection.TypeClipboard || !focused {
+				t.Fatalf("typing dispatched without guest focus: %v", out)
+			}
+			actions++
+		}
+	}
+	if actions != 1 || b.local || b.bar.Menu != "" {
+		t.Fatalf("typing tool did not close and restore input: %v", out)
+	}
+}

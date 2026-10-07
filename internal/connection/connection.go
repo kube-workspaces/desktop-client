@@ -43,6 +43,7 @@ const (
 type Capabilities struct {
 	Shell, SpecialKeys, ClipboardSync, GuestResize, Audio, SharedControl bool
 	Paste, CopySelection                                                 bool
+	TypeClipboard                                                        bool
 }
 
 // Snapshot is an immutable copy of the state the toolbar draws this frame.
@@ -77,6 +78,7 @@ const (
 	Audio         Action = "audio"
 	SharedControl Action = "shared-control"
 	Paste         Action = "paste"
+	TypeClipboard Action = "type-clipboard"
 	CopySelection Action = "copy-selection"
 	HostInput     Action = "host-input"
 )
@@ -116,6 +118,8 @@ func (s Snapshot) Availability(a Action) Availability {
 		supported, needsLive = desktop && c.SharedControl && (s.Role == Observer || s.Role == Controller), true
 	case Paste:
 		supported, needsLive, mutatesGuest = terminal && c.Paste, true, true
+	case TypeClipboard:
+		supported, needsLive, mutatesGuest = desktop && c.TypeClipboard, true, true
 	case CopySelection:
 		supported = terminal && c.CopySelection
 	}
@@ -134,7 +138,7 @@ func (s Snapshot) Availability(a Action) Availability {
 // Tools is the stable menu order across surfaces, omitting unsupported tools.
 func (s Snapshot) Tools() []Action {
 	var out []Action
-	for _, a := range []Action{WorkspaceList, HostInput, SpecialKeys, ClipboardSync, FitDesktop, GuestResize, Audio, SharedControl, Paste, CopySelection} {
+	for _, a := range []Action{WorkspaceList, HostInput, SpecialKeys, TypeClipboard, ClipboardSync, FitDesktop, GuestResize, Audio, SharedControl, Paste, CopySelection} {
 		if s.Availability(a).Visible {
 			out = append(out, a)
 		}

@@ -7,8 +7,8 @@ import "testing"
 
 func TestObserverCannotMutateGuestButCanNavigateAndRequestControl(t *testing.T) {
 	s := Snapshot{Surface: Desktop, State: Connected, Role: Observer,
-		Capabilities: Capabilities{Shell: true, SpecialKeys: true, ClipboardSync: true, GuestResize: true, SharedControl: true, Audio: true}}
-	for _, a := range []Action{SpecialKeys, ClipboardSync, GuestResize} {
+		Capabilities: Capabilities{Shell: true, SpecialKeys: true, ClipboardSync: true, TypeClipboard: true, GuestResize: true, SharedControl: true, Audio: true}}
+	for _, a := range []Action{SpecialKeys, ClipboardSync, TypeClipboard, GuestResize} {
 		v := s.Availability(a)
 		if !v.Visible || v.Enabled || v.Reason != "viewOnly" {
 			t.Fatalf("observer %s: %+v", a, v)

@@ -528,6 +528,7 @@ Every other subcommand takes `--profile <name>` to act on a non-active profile.
 | `F11` | Toggle fullscreen |
 | `Ctrl+Alt+End` | Send Ctrl-Alt-Del to the guest |
 | `Ctrl+Alt+Del` | Same, where the host lets it through (X11 and most Wayland compositors; never Windows) |
+| `Ctrl+Alt+V` | RFB display: type host clipboard text using a US guest keyboard layout |
 | `Ctrl+Alt+Q` | Disconnect |
 | `Ctrl+Alt+Shift+T` | Reveal the connection toolbar in fullscreen |
 
@@ -541,9 +542,30 @@ guest. They work while disconnected too, so a session stuck behind a
 
 The clipboard is synchronised in both directions. Host-to-guest is polled twice
 a second, because no windowing system offers a reliable cross-platform
-"clipboard changed" signal.
+"clipboard changed" signal. This requires clipboard support in the guest and
+does not guarantee paste at a Windows sign-in screen.
+
+For an RFB/VNC login screen, use **Tools → Type clipboard text (US keyboard)**
+or **Ctrl+Alt+V**. Copy only the password on the host, select the guest's
+**English (United States) / US** keyboard layout, turn **Caps Lock off**, then
+click the empty password field and invoke the action. The client types the text
+as paced keystrokes without requiring a guest agent. Wait for typing to finish,
+then press Enter yourself. It accepts 1–256 printable ASCII characters; line
+breaks, tabs and non-ASCII text are rejected in full with an on-screen message.
+Focus loss, another key press, a guest mouse click, disconnect or loss of display
+control cancels remaining typing. Text is never replayed after reconnect. This
+action works independently of the clipboard-sync toggle and is disabled for
+view-only observers.
 
 ## The connection toolbar
+
+RFB display connections retry transient “in use” responses for up to 15 seconds
+before offering takeover. During this cleanup window, the client shows
+Connecting/Reconnecting and retries once a second: a previous socket or stale
+ownership claim may still be releasing. Persistent contention then shows
+**Display connection is still in use**, with the existing Enter-to-take-over
+action and slower automatic retries. The client never automatically takes over
+another connection.
 
 Every window that is a live connection carries the same strip: displays,
 integrated terminals (container exec, VM serial, VM SSH) and the browser window

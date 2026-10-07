@@ -185,6 +185,7 @@ func testOptions(d *scriptedDialer, rec *recorder) Options {
 	return Options{
 		Policy:         fastPolicy(),
 		InUsePoll:      time.Millisecond,
+		InUseGrace:     -1,
 		UpdateInterval: -1,
 		Dial:           d.dial,
 		OnState:        rec.record,
@@ -228,6 +229,103 @@ func waitState(t *testing.T, r *ReconnectingSession, want State) {
 func TestDialReconnectingRequiresAClientOrADialer(t *testing.T) {
 	if _, err := DialReconnecting(context.Background(), nil, "ns", "vm", rfb.Config{}, Options{}); err == nil {
 		t.Fatal("expected an error with neither a client nor a dial function")
+	}
+}
+
+func TestTransientBusyClearsWithoutTakeoverPrompt(t *testing.T) {
+	link := newFakeLink()
+	d := newDialer(step{err: kwclient.ErrSessionInUse}, step{err: kwclient.ErrSessionInUse}, step{link: link})
+	rec := &recorder{}
+	opts := testOptions(d, rec)
+	opts.InUseGrace = time.Second
+	r := start(t, t.Context(), opts)
+	waitState(t, r, StateConnected)
+	if rec.has(StateDisplayInUse) {
+		t.Fatalf("closing connection incorrectly prompted takeover: %v", rec.seen())
+	}
+	if !errors.Is(rec.errorFor(StateConnecting), kwclient.ErrSessionInUse) {
+		t.Fatal("cleanup status lost the underlying conflict")
+	}
+}
+
+func TestReconnectBusyClearsWithoutTakeoverPrompt(t *testing.T) {
+	first, second := newFakeLink(), newFakeLink()
+	d := newDialer(step{link: first}, step{err: kwclient.ErrSessionInUse}, step{link: second})
+	rec := &recorder{}
+	opts := testOptions(d, rec)
+	opts.InUseGrace = time.Second
+	r := start(t, t.Context(), opts)
+	waitState(t, r, StateConnected)
+	first.drop(io.EOF)
+	waitFor(t, "reconnected display", func() bool { return d.count() == 3 && r.Conn() == nil && rec.errorFor(StateReconnecting) != nil })
+	waitState(t, r, StateConnected)
+	if rec.has(StateDisplayInUse) {
+		t.Fatalf("own reconnect prompted takeover: %v", rec.seen())
+	}
+	if _, closes := first.snapshot(); closes != 1 {
+		t.Fatal("previous transport not closed before retry")
+	}
+}
+
+func TestPersistentBusyOffersTakeoverAfterBoundedGrace(t *testing.T) {
+	d := newDialer(step{err: kwclient.ErrSessionInUse})
+	rec := &recorder{}
+	opts := testOptions(d, rec)
+	opts.InUsePoll = time.Hour
+	opts.InUseGrace = 30 * time.Millisecond
+	r := start(t, t.Context(), opts)
+	waitState(t, r, StateDisplayInUse)
+	if !rec.has(StateConnecting) || !errors.Is(rec.errorFor(StateConnecting), kwclient.ErrSessionInUse) {
+		t.Fatal("did not allow cleanup grace first")
+	}
+	// The grace deadline must wake earlier than the normal one-hour poll,
+	// then persistent contention must return to that slower poll.
+	if d.count() != 2 {
+		t.Fatalf("unexpected grace retry count: %d", d.count())
+	}
+	time.Sleep(40 * time.Millisecond)
+	if d.count() != 2 {
+		t.Fatal("persistent contention stayed on fast retry cadence")
+	}
+	r.RetryNow()
+	waitFor(t, "takeover retry nudge", func() bool { return d.count() == 3 })
+}
+
+func TestBusyGraceDoesNotAccelerateRateLimit(t *testing.T) {
+	d := newDialer(step{err: kwclient.ErrRateLimited})
+	rec := &recorder{}
+	opts := testOptions(d, rec)
+	opts.InUsePoll = time.Hour
+	opts.InUseGrace = 10 * time.Millisecond
+	r := start(t, t.Context(), opts)
+	waitState(t, r, StateReconnecting)
+	time.Sleep(30 * time.Millisecond)
+	if d.count() != 1 || rec.has(StateDisplayInUse) {
+		t.Fatal("rate limit used fast display-cleanup retries")
+	}
+}
+
+func TestBusyGraceHonorsTimeoutAndCancellation(t *testing.T) {
+	d := newDialer(step{err: kwclient.ErrSessionInUse})
+	rec := &recorder{}
+	opts := testOptions(d, rec)
+	opts.InUseGrace = time.Second
+	opts.InUseTimeout = 10 * time.Millisecond
+	r := start(t, t.Context(), opts)
+	waitState(t, r, StateFailed)
+	if _, err := r.State(); !errors.Is(err, kwclient.ErrSessionInUse) || rec.has(StateDisplayInUse) {
+		t.Fatal("busy grace bypassed timeout or misclassified conflict")
+	}
+	opts.InUseTimeout = 0
+	opts.InUsePoll = time.Hour
+	r = start(t, t.Context(), opts)
+	waitFor(t, "busy grace", func() bool { _, err := r.State(); return errors.Is(err, kwclient.ErrSessionInUse) })
+	closed := make(chan struct{})
+	go func() { _ = r.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation blocked in busy grace")
 	}
 }
 

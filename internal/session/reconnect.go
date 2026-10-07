@@ -27,8 +27,9 @@ const (
 	// StateReconnecting means the session dropped or an attempt failed, and
 	// the supervisor is waiting out a backoff delay before trying again.
 	StateReconnecting
-	// StateDisplayInUse means the workspace's single VNC display is held by
-	// another client. The session is not broken and is not backing off: it is
+	// StateDisplayInUse means the workspace's single VNC display remains held
+	// after the cleanup grace period. It may be another client or a lingering
+	// previous connection. The session is not backing off: it is
 	// polling slowly and will attach as soon as the slot is released. See
 	// [Classify] for why this is a state of its own.
 	StateDisplayInUse
@@ -101,6 +102,14 @@ const (
 	// fast enough that handing the display over feels immediate.
 	DefaultInUsePoll = 7 * time.Second
 
+	// DefaultInUseGrace gives a closing bridge or stale ownership claim time
+	// to clear before offering takeover. The API's stale-claim fencing window
+	// is 12 seconds; allow that window plus cleanup/round-trip headroom.
+	DefaultInUseGrace = 15 * time.Second
+	// Only the bounded grace window uses faster retries; persistent contention
+	// returns to DefaultInUsePoll without forcing ownership changes.
+	inUseGracePoll = time.Second
+
 	// stableConnection is how long a connection must last before it counts as
 	// a success for the purposes of the retry budget, so that a server which
 	// accepts and instantly drops connections cannot flatten the backoff
@@ -118,6 +127,12 @@ type Options struct {
 	// InUsePoll is how often to retry while the display is held by another
 	// client. Zero means [DefaultInUsePoll].
 	InUsePoll time.Duration
+
+	// InUseGrace defers the takeover prompt for transient display conflicts,
+	// including on initial connect. During grace, retry at most once a second
+	// (or InUsePoll if shorter). Zero means DefaultInUseGrace; negative disables
+	// grace. Rate limits and permanent errors never use the faster retries.
+	InUseGrace time.Duration
 
 	// InUseTimeout bounds how long the session will wait for a busy display in
 	// one stretch, measured from the first refusal and reset by any successful
@@ -162,13 +177,14 @@ type ReconnectingSession struct {
 	namespace string
 	workspace string
 
-	dial      DialFunc
-	config    func() rfb.Config
-	policy    reconnect.Policy
-	inUsePoll time.Duration
-	inUseMax  time.Duration
-	interval  time.Duration
-	onState   func(State, error)
+	dial       DialFunc
+	config     func() rfb.Config
+	policy     reconnect.Policy
+	inUsePoll  time.Duration
+	inUseGrace time.Duration
+	inUseMax   time.Duration
+	interval   time.Duration
+	onState    func(State, error)
 
 	cancel    context.CancelFunc
 	done      chan struct{}
@@ -223,6 +239,10 @@ func DialReconnecting(ctx context.Context, client *kwclient.Client, namespace, n
 	if inUsePoll == 0 {
 		inUsePoll = DefaultInUsePoll
 	}
+	inUseGrace := opts.InUseGrace
+	if inUseGrace == 0 {
+		inUseGrace = DefaultInUseGrace
+	}
 	interval := opts.UpdateInterval
 	if interval == 0 {
 		interval = DefaultUpdateInterval
@@ -230,20 +250,21 @@ func DialReconnecting(ctx context.Context, client *kwclient.Client, namespace, n
 
 	runCtx, cancel := context.WithCancel(ctx)
 	r := &ReconnectingSession{
-		namespace: namespace,
-		workspace: name,
-		dial:      dial,
-		config:    config,
-		policy:    opts.Policy,
-		inUsePoll: inUsePoll,
-		inUseMax:  opts.InUseTimeout,
-		interval:  interval,
-		onState:   opts.OnState,
-		cancel:    cancel,
-		done:      make(chan struct{}),
-		state:     StateConnecting,
-		changed:   make(chan struct{}),
-		retry:     make(chan struct{}, 1),
+		namespace:  namespace,
+		workspace:  name,
+		dial:       dial,
+		config:     config,
+		policy:     opts.Policy,
+		inUsePoll:  inUsePoll,
+		inUseGrace: inUseGrace,
+		inUseMax:   opts.InUseTimeout,
+		interval:   interval,
+		onState:    opts.OnState,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		state:      StateConnecting,
+		changed:    make(chan struct{}),
+		retry:      make(chan struct{}, 1),
 	}
 	go r.run(runCtx)
 	return r, nil
@@ -342,8 +363,10 @@ func (r *ReconnectingSession) run(ctx context.Context) {
 	r.notify(StateConnecting, nil)
 
 	var (
-		attempt    int
-		inUseSince time.Time
+		attempt         int
+		inUseSince      time.Time
+		busySince       time.Time
+		connectedBefore bool
 	)
 	for {
 		if ctx.Err() != nil {
@@ -354,6 +377,8 @@ func (r *ReconnectingSession) run(ctx context.Context) {
 		link, err := r.dial(ctx, r.config())
 		if err == nil {
 			inUseSince = time.Time{}
+			busySince = time.Time{}
+			connectedBefore = true
 			started := time.Now()
 			// serve returns the reason this connection ended. A nil reason is
 			// still a disconnect, so it goes through the same classification.
@@ -390,8 +415,26 @@ func (r *ReconnectingSession) run(ctx context.Context) {
 				r.setState(StateFailed, fmt.Errorf("gave up after waiting %v: %w", r.inUseMax, err))
 				return
 			}
-			r.setState(stateFor(err), err)
-			if !sleepOrRetry(ctx, r, r.inUsePoll) {
+			state, pause := stateFor(err), r.inUsePoll
+			if state == StateDisplayInUse {
+				if busySince.IsZero() {
+					busySince = time.Now()
+				}
+				remaining := r.inUseGrace - time.Since(busySince)
+				if remaining > 0 {
+					state = StateConnecting
+					if connectedBefore {
+						state = StateReconnecting
+					}
+					pause = min(pause, inUseGracePoll, remaining)
+					err = &displayPendingError{cause: err}
+				}
+			}
+			if r.inUseMax > 0 {
+				pause = min(pause, time.Until(inUseSince.Add(r.inUseMax)))
+			}
+			r.setState(state, err)
+			if !sleepOrRetry(ctx, r, pause) {
 				r.setState(StateClosed, nil)
 				return
 			}
@@ -410,6 +453,13 @@ func (r *ReconnectingSession) run(ctx context.Context) {
 		}
 	}
 }
+
+// Preserve the actual conflict for diagnostics/classification without claiming
+// the API has identified another client. HTTP 409 carries no such identity.
+type displayPendingError struct{ cause error }
+
+func (e *displayPendingError) Error() string { return "waiting for display availability" }
+func (e *displayPendingError) Unwrap() error { return e.cause }
 
 // serve runs one connection to its end and returns the reason it ended.
 func (r *ReconnectingSession) serve(ctx context.Context, link Link) error {

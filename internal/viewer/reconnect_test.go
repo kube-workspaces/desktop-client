@@ -214,7 +214,7 @@ func TestViewerOverlayTextFollowsStatus(t *testing.T) {
 		{
 			"display in use",
 			StatusDisplayInUse, "",
-			[]string{"Display in use by another session", "Waiting for it to be released"},
+			[]string{"Display connection is still in use", "Waiting for release; retrying automatically"},
 		},
 		{
 			"failed",

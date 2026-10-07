@@ -212,6 +212,7 @@ func (c *Config) Hotkeys() []string {
 	lines := []string{
 		fmt.Sprintf("%-16s toggle fullscreen", strings.ToUpper(cfg.FullscreenKey.String())),
 		fmt.Sprintf("%-16s send Ctrl-Alt-Del to the guest", "Ctrl+Alt+"+cfg.SendCtrlAltDelKey.String()),
+		fmt.Sprintf("%-16s type host clipboard text (US keyboard, Caps Lock off)", "Ctrl+Alt+V"),
 	}
 	if cfg.ControlRune != 0 {
 		lines = append(lines,
@@ -399,6 +400,10 @@ type Viewer struct {
 	quit                                     bool
 	disposition                              connection.CloseDisposition
 	clipboardDisabled, resizeDisabled, muted bool
+	clipboardTyping                          []byte
+	clipboardTypingDue                       time.Time
+	inputNotice                              string
+	inputNoticeDue                           time.Time
 
 	// srcErr and failedAt implement the linger: a terminal failure is shown
 	// for a moment before the window closes.
@@ -849,6 +854,9 @@ func (v *Viewer) idleTimeout(now time.Time) time.Duration {
 	}
 	earlier(v.statsDue)
 	if v.conn != nil {
+		if len(v.clipboardTyping) > 0 {
+			earlier(v.clipboardTypingDue)
+		}
 		if v.cfg.ClipboardInterval >= 0 {
 			earlier(v.clipDue)
 		}
@@ -961,6 +969,10 @@ func (v *Viewer) step(now time.Time) error {
 // calls [Viewer.StepExternal], which delegates here too, so the two paths
 // share everything but the queue ownership.
 func (v *Viewer) stepExternal(now time.Time, events []Event) error {
+	if v.inputNotice != "" && !now.Before(v.inputNoticeDue) {
+		v.inputNotice = ""
+		v.markPresent()
+	}
 	v.syncConn(now)
 	v.syncCursor()
 	events = FilterConnectionInput(v.be, now, v.connectionSnapshot(), events)
@@ -980,6 +992,11 @@ func (v *Viewer) stepExternal(now time.Time, events []Event) error {
 	// effect in the same step.
 	v.syncGrab()
 
+	if v.conn != nil {
+		if err := v.typeClipboardStep(now); err != nil {
+			return err
+		}
+	}
 	if v.conn != nil {
 		// Pointer motion is coalesced to at most one message per iteration: a
 		// 1000Hz mouse would otherwise put 1000 messages a second on a link
@@ -1296,6 +1313,9 @@ func (v *Viewer) handleKey(e EventKey) error {
 	if v.readOnly() || v.conn == nil {
 		return nil
 	}
+	if e.Down {
+		v.cancelClipboardTyping()
+	}
 	sym := symbolFor(e)
 	if sym == keysym.NoSymbol {
 		return nil
@@ -1342,6 +1362,9 @@ func (v *Viewer) isHotkey(e EventKey) bool {
 	if e.Rune == 0 {
 		return false
 	}
+	if lowerRune(e.Rune) == 'v' {
+		return true
+	}
 	if v.cfg.ControlRune != 0 && lowerRune(e.Rune) == lowerRune(v.cfg.ControlRune) {
 		return true
 	}
@@ -1367,6 +1390,9 @@ func (v *Viewer) runHotkey(e EventKey) error {
 		if h := v.controlAction(); h != nil {
 			go h()
 		}
+		return nil
+	case lowerRune(e.Rune) == 'v':
+		v.startClipboardTyping()
 		return nil
 
 	default:
@@ -1401,6 +1427,9 @@ func (v *Viewer) sendChord(c keysym.Chord) error {
 }
 
 func (v *Viewer) handlePointer(e EventPointer) error {
+	if e.Buttons != 0 {
+		v.cancelClipboardTyping()
+	}
 	if v.readOnly() || v.conn == nil {
 		return nil
 	}
@@ -1535,6 +1564,7 @@ func (v *Viewer) forgetHeld(sym keysym.Keysym) {
 // shutdown, when a dead connection is expected and there is nothing useful to
 // do about it.
 func (v *Viewer) releaseInput() {
+	v.cancelClipboardTyping()
 	if v.conn == nil {
 		v.forgetInput()
 		return
@@ -1565,6 +1595,7 @@ func (v *Viewer) releaseInput() {
 // the new one never knew, so carrying the state across would leave the fresh
 // guest holding modifiers the user released during the outage.
 func (v *Viewer) forgetInput() {
+	v.cancelClipboardTyping()
 	v.held = v.held[:0]
 	v.mods.Reset()
 	v.buttons = 0
@@ -1916,6 +1947,9 @@ func (v *Viewer) overlayLines() []string {
 	status, detail := v.Status()
 	if status == StatusLive {
 		if v.haveFrame {
+			if v.inputNotice != "" {
+				return []string{v.inputNotice}
+			}
 			return nil
 		}
 		// Connected, but nothing has been drawn yet: an empty black window

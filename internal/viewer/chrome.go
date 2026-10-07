@@ -72,7 +72,7 @@ func (v *Viewer) connectionSnapshot() connection.Snapshot {
 		State: ConnectionState(status), Role: connection.Exclusive, Transport: "RFB",
 		Clipboard: !v.clipboardDisabled, ResizeGuest: !v.resizeDisabled, Muted: v.muted,
 		FPS: v.lastFPS, Kbps: v.lastKbps, HasMetrics: true,
-		Capabilities: connection.Capabilities{SpecialKeys: true, ClipboardSync: true, SharedControl: v.controlAction() != nil}}
+		Capabilities: connection.Capabilities{SpecialKeys: true, TypeClipboard: true, ClipboardSync: true, SharedControl: v.controlAction() != nil}}
 	if v.conn == nil && s.State == connection.Connected {
 		s.State = connection.Connecting
 	}
@@ -100,6 +100,8 @@ func (v *Viewer) connectionAction(a connection.Action) error {
 		v.RequestDisconnect()
 	case connection.SpecialKeys:
 		return v.sendChord(keysym.ChordCtrlAltDel)
+	case connection.TypeClipboard:
+		v.startClipboardTyping()
 	case connection.SharedControl:
 		if h := v.controlAction(); h != nil {
 			go h()

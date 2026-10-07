@@ -66,13 +66,10 @@ func (r Retry) String() string {
 //   - context.Canceled, context.DeadlineExceeded — we are the ones stopping.
 //     Never retried.
 //   - [kwclient.ErrSessionInUse] (HTTP 409) — the KubeVirt VNC console is
-//     single-seat and, unlike the serial console and SSH, the API exposes no
-//     VNC takeover endpoint. A tight retry loop here would not win the slot,
-//     it would just race the other client's reconnects and hammer the API for
-//     as long as somebody else is using the display. A slow fixed poll
-//     attaches within a few seconds of the other client disconnecting, which
-//     is the behaviour a user actually wants, at a cost of one request every
-//     several seconds.
+//     single-seat. The response may represent another client or a previous
+//     bridge/ownership claim still closing. The exclusive supervisor allows a
+//     bounded cleanup grace before slow polling with an explicit takeover
+//     prompt. Persistent contention must never force an automatic takeover.
 //   - [kwclient.ErrControllerPresent] (HTTP 409 on the shared display) — a
 //     controller attach found the control lease still held, typically the
 //     moments between a takeover's REST acquire and the old holder's fence

@@ -1949,14 +1949,14 @@ func TestViewerPropagatesBackendErrors(t *testing.T) {
 func TestConfigHotkeysDocumentsTheBindings(t *testing.T) {
 	cfg := Config{}
 	lines := cfg.Hotkeys()
-	if len(lines) != 3 {
-		t.Fatalf("Hotkeys returned %d lines, want 3: %v", len(lines), lines)
+	if len(lines) != 4 {
+		t.Fatalf("Hotkeys returned %d lines, want 4: %v", len(lines), lines)
 	}
 	joined := ""
 	for _, l := range lines {
 		joined += l + "\n"
 	}
-	for _, want := range []string{"F11", "fullscreen", "Ctrl+Alt+end", "Ctrl-Alt-Del", "Ctrl+Alt+q", "disconnect"} {
+	for _, want := range []string{"F11", "fullscreen", "Ctrl+Alt+end", "Ctrl-Alt-Del", "Ctrl+Alt+V", "clipboard", "Ctrl+Alt+q", "disconnect"} {
 		if !contains(joined, want) {
 			t.Fatalf("hotkey help %q does not mention %q", joined, want)
 		}
@@ -2441,8 +2441,8 @@ func TestViewerSetTitle(t *testing.T) {
 func TestConfigHotkeysDocumentsControlBinding(t *testing.T) {
 	cfg := Config{ControlRune: 'c'}
 	lines := cfg.Hotkeys()
-	if len(lines) != 4 {
-		t.Fatalf("Hotkeys returned %d lines, want 4 with a control binding: %v", len(lines), lines)
+	if len(lines) != 5 {
+		t.Fatalf("Hotkeys returned %d lines, want 5 with a control binding: %v", len(lines), lines)
 	}
 	joined := ""
 	for _, l := range lines {

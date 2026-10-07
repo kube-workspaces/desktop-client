@@ -247,6 +247,13 @@ func (b *Backend) FilterConnectionEvents(now time.Time, events []viewer.Event) [
 				b.setLocal(false, &out)
 				b.render(now, nil)
 			} else if a != "" {
+				if a == connection.TypeClipboard {
+					// Keyboard injection targets the guest's last focused field.
+					// Restore downstream focus before dispatching the command.
+					b.bar.Menu = ""
+					b.setLocal(false, &out)
+					b.render(now, nil)
+				}
 				out = append(out, viewer.EventConnectionAction{Action: a})
 			}
 			continue
