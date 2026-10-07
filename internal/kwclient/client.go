@@ -297,6 +297,9 @@ type requestSpec struct {
 	// unauthenticated (/auth/config) or that must not see a stale token
 	// (/auth/login/local).
 	noAuth bool
+	// headers, when non-nil, are set on the request after the standard
+	// headers (e.g. X-KW-Agent-Session for agent ticket renew/release).
+	headers map[string]string
 }
 
 // op renders the request for error messages.
@@ -337,6 +340,9 @@ func (c *Client) newRequest(ctx context.Context, spec requestSpec) (*http.Reques
 	}
 	if !spec.noAuth {
 		c.authenticate(req.Header)
+	}
+	for key, value := range spec.headers {
+		req.Header.Set(key, value)
 	}
 	return req, nil
 }
