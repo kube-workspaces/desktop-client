@@ -51,6 +51,39 @@ func (c *Client) AgentAttach(ctx context.Context, namespace, name, participant s
 	return &out, nil
 }
 
+// AgentPath constructs the proxy agent-bridge endpoint for one workspace.
+// Same conservative validation as SelkiesPath: DNS labels only, so no
+// encoding, traversal or authority syntax can redirect the credential.
+func AgentPath(namespace, name string) (string, error) {
+	if !dnsLabel(namespace) || !dnsLabel(name) {
+		return "", fmt.Errorf("kwclient: agent bridge requires DNS-label namespace and workspace name")
+	}
+	return "/proxy/" + namespace + "/" + name + "/agent/", nil
+}
+
+// AgentStatus reports live agent session state for a workspace (the API leg
+// of the indicator contract: clients combine it with proxy counters and
+// guest telemetry, never alone).
+type AgentStatus struct {
+	Active   bool `json:"active"`
+	Sessions int  `json:"sessions"`
+}
+
+// AgentSessionStatus reports whether any live agent session is bound to
+// the workspace.
+func (c *Client) AgentSessionStatus(ctx context.Context, namespace, name string) (*AgentStatus, error) {
+	var out AgentStatus
+	if err := c.doJSON(ctx, requestSpec{
+		method:   http.MethodGet,
+		path:     workspacePath(name, "agent", "status"),
+		query:    namespaceQuery(namespace),
+		sentinel: agentSentinel,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // AgentRenew extends a live agent session by its server-side id.
 func (c *Client) AgentRenew(ctx context.Context, namespace, name, sessionID string) error {
 	var out struct {
@@ -58,9 +91,12 @@ func (c *Client) AgentRenew(ctx context.Context, namespace, name, sessionID stri
 		Protocol int `json:"protocol"`
 	}
 	if err := c.doJSON(ctx, requestSpec{
-		method:   http.MethodPost,
-		path:     workspacePath(name, "agent", "renew"),
-		query:    namespaceQuery(namespace),
+		method: http.MethodPost,
+		path:   workspacePath(name, "agent", "renew"),
+		query:  namespaceQuery(namespace),
+		// The API requires a JSON body (Goa rejects bodiless POSTs with
+		// missing-payload); the id rides in the body AND the header.
+		body:     map[string]string{"session_id": sessionID},
 		headers:  map[string]string{"X-KW-Agent-Session": sessionID},
 		sentinel: agentSentinel,
 	}, &out); err != nil {
@@ -75,9 +111,11 @@ func (c *Client) AgentRelease(ctx context.Context, namespace, name, sessionID st
 		OK bool `json:"ok"`
 	}
 	if err := c.doJSON(ctx, requestSpec{
-		method:   http.MethodPost,
-		path:     workspacePath(name, "agent", "release"),
-		query:    namespaceQuery(namespace),
+		method: http.MethodPost,
+		path:   workspacePath(name, "agent", "release"),
+		query:  namespaceQuery(namespace),
+		// JSON body required (see AgentRenew); id in body and header.
+		body:     map[string]string{"session_id": sessionID},
 		headers:  map[string]string{"X-KW-Agent-Session": sessionID},
 		sentinel: agentSentinel,
 	}, &out); err != nil {
@@ -103,8 +141,12 @@ func agentSentinel(status int) error {
 // The stream carries framed-protocol bytes 1:1 in binary messages; no
 // subprotocol is negotiated (an empty subprotocol list is deliberate).
 func (c *Client) DialAgentWS(ctx context.Context, namespace, name string) (*websocket.Conn, *http.Response, error) {
+	path, err := AgentPath(namespace, name)
+	if err != nil {
+		return nil, nil, err
+	}
 	u := *c.baseURL
-	u.Path = c.baseURL.Path + "/proxy/" + namespace + "/" + name + "/agent/"
+	u.Path = c.baseURL.Path + path
 	switch u.Scheme {
 	case "https":
 		u.Scheme = "wss"

@@ -11,10 +11,14 @@ package agent
 // silent fallbacks.
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/wsio"
@@ -70,8 +74,49 @@ type Counters struct {
 	ControlFrames uint64
 	MediaFrames   uint64
 	MediaBytes    uint64
+	VideoFrames   uint64
+	VideoBytes    uint64
+	AudioFrames   uint64
+	AudioBytes    uint64
 	ResizeACKs    uint64
 	Keyframes     uint64
+}
+
+// Ticket is the decoded attach grant. SessionID arrives empty from the API
+// ("whoever holds the live claim") and MUST be stamped with the hello claim
+// before attach — the guest rejects unstamped tickets. Decode with
+// DecodeTicket; never hand-assemble.
+type Ticket struct {
+	WorkspaceUID        string `json:"workspaceUid"`
+	WorkspaceGeneration string `json:"workspaceGeneration"`
+	SessionID           string `json:"sessionId"`
+	Participant         string `json:"participant"`
+	Role                string `json:"role"`
+	ControlEpoch        uint64 `json:"controlEpoch"`
+	Audience            string `json:"audience"`
+	ExpiresAtNs         int64  `json:"expiresAtNs"`
+}
+
+// DecodeTicket splits id.payload.signature and returns the session id plus
+// the payload claim. Signature verification belongs to the proxy edge (HMAC
+// keys); the viewer checks binding shape only.
+func DecodeTicket(signed string) (string, Ticket, error) {
+	var ticket Ticket
+	parts := strings.SplitN(signed, ".", 3)
+	if len(parts) != 3 || parts[0] == "" {
+		return "", ticket, fmt.Errorf("agent: malformed ticket")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", ticket, fmt.Errorf("agent: ticket payload encoding: %w", err)
+	}
+	if err := json.Unmarshal(raw, &ticket); err != nil {
+		return "", ticket, fmt.Errorf("agent: ticket payload shape: %w", err)
+	}
+	if ticket.WorkspaceUID == "" || ticket.Audience == "" || ticket.ExpiresAtNs <= 0 {
+		return "", ticket, fmt.Errorf("agent: ticket missing binding")
+	}
+	return parts[0], ticket, nil
 }
 
 // Session is one held agent transport: admitted controller plus counters.
@@ -82,6 +127,8 @@ type Session struct {
 	session  string
 	sequence uint64
 	counters Counters
+	writeMu  sync.Mutex
+	pending  map[string]bool
 }
 
 // readFrame parses one agent frame from the message stream.
@@ -109,8 +156,17 @@ func readFrame(reader io.Reader) (tag byte, body []byte, err error) {
 }
 
 // writeControl sends one JSON envelope as a single binary message.
+// Resize requests self-register for ACK pairing in Run.
 func (s *Session) writeControl(messageType string, payload map[string]any) error {
 	s.sequence++
+	if messageType == "resizeRequest" {
+		if id, _ := payload["requestId"].(string); id != "" {
+			if s.pending == nil {
+				s.pending = map[string]bool{}
+			}
+			s.pending[id] = true
+		}
+	}
 	body, err := json.Marshal(Envelope{
 		Protocol: "kw-agent-v1", ProtocolVersion: 1,
 		SessionID: s.session, Generation: 1, Sequence: s.sequence,
@@ -122,6 +178,8 @@ func (s *Session) writeControl(messageType string, payload map[string]any) error
 	}
 	frame := append([]byte{0x00}, uint32be(len(body))...)
 	frame = append(frame, body...)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err = s.conn.Write(frame)
 	return err
 }
@@ -155,8 +213,15 @@ func (s *Session) readControl() (Envelope, error) {
 }
 
 // Attach performs hello → attach(ticket) and returns the admitted session.
+// The signed ticket is decoded and stamped with the live hello claim
+// before sending: the guest validates the ticket as a binding OBJECT and
+// rejects raw strings (malformed-ticket) and unstamped claims alike.
 // The caller owns closing: Bye is sent by Close.
-func Attach(conn *wsio.Conn, ticket string) (*Session, error) {
+func Attach(conn *wsio.Conn, signed string) (*Session, error) {
+	_, ticket, err := DecodeTicket(signed)
+	if err != nil {
+		return nil, err
+	}
 	session := &Session{conn: conn}
 	hello, err := session.readControl()
 	if err != nil {
@@ -166,6 +231,7 @@ func Attach(conn *wsio.Conn, ticket string) (*Session, error) {
 		return nil, fmt.Errorf("agent: unexpected greeting %q", hello.Type)
 	}
 	session.session = hello.SessionID
+	ticket.SessionID = hello.SessionID
 	if err := session.writeControl("attach", map[string]any{"ticket": ticket}); err != nil {
 		return nil, fmt.Errorf("agent: attach: %w", err)
 	}
@@ -219,6 +285,149 @@ func (s *Session) Keyframe() error {
 func (s *Session) Close() error {
 	_ = s.writeControl("bye", map[string]any{})
 	return s.conn.Close()
+}
+
+// Callbacks receives decoded session events. Implementations must be
+// non-blocking (called on the read loop); heavy work goes to queues.
+type Callbacks struct {
+	// OnVideo gets one complete H.264 access unit per call.
+	OnVideo func(payload []byte)
+	// OnAudio gets one Opus packet per call.
+	OnAudio func(payload []byte)
+	// OnResizeAck reports requested vs actual dimensions or a reason.
+	OnResizeAck func(requestID string, reason string)
+}
+
+// Run pumps the session until the peer closes, the deadline lapses, or a
+// wire violation occurs. Control replies route internally (resize pairing);
+// media fans out to callbacks. It returns on first error — callers release
+// the premium generation before any console fallback.
+func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
+	for {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return nil
+		}
+		// Bound every read so the deadline is re-checked on quiet
+		// sessions; timeouts loop back, everything else ends the run.
+		_ = s.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		tag, body, err := readFrame(s.conn)
+		if err != nil {
+			if isTimeout(err) {
+				continue
+			}
+			return err
+		}
+		switch tag {
+		case 0x00:
+			var message Envelope
+			if err := json.Unmarshal(body, &message); err != nil {
+				return fmt.Errorf("agent: control frame is not an envelope: %w", err)
+			}
+			s.counters.ControlFrames++
+			if message.Type != "resizeAck" {
+				continue
+			}
+			s.counters.ResizeACKs++
+			id, _ := message.Payload["requestId"].(string)
+			if !s.pending[id] {
+				continue
+			}
+			delete(s.pending, id)
+			if callbacks.OnResizeAck != nil {
+				reason, _ := message.Payload["reason"].(string)
+				callbacks.OnResizeAck(id, reason)
+			}
+		case 0x01:
+			s.counters.MediaFrames++
+			s.counters.MediaBytes += uint64(len(body))
+			s.counters.VideoFrames++
+			s.counters.VideoBytes += uint64(len(body))
+			if callbacks.OnVideo != nil {
+				callbacks.OnVideo(body)
+			}
+		case 0x02:
+			s.counters.MediaFrames++
+			s.counters.MediaBytes += uint64(len(body))
+			s.counters.AudioFrames++
+			s.counters.AudioBytes += uint64(len(body))
+			if callbacks.OnAudio != nil {
+				callbacks.OnAudio(body)
+			}
+		default:
+			return fmt.Errorf("agent: unknown media kind %d", tag)
+		}
+	}
+}
+
+// ProbeResult reports what a headless pass observed (no decode, no
+// presentation — bytes and pairing only).
+type ProbeResult struct {
+	Admitted      bool
+	ResizePaired  bool
+	ResizeReason  string
+	ControlFrames uint64
+	VideoFrames   uint64
+	VideoBytes    uint64
+	AudioFrames   uint64
+	AudioBytes    uint64
+}
+
+// Probe runs the full exchange on an attached session: keyframe demand (so
+// capture opens on a fresh IDR), a resize round-trip, then a bounded media
+// read. Stats come from the session counters (same source the badge reads).
+func (s *Session) Probe(readFor time.Duration) (*ProbeResult, error) {
+	var videoFrames, videoBytes, audioFrames, audioBytes uint64
+	var resizePaired bool
+	var resizeReason string
+	paired := make(chan struct{}, 1)
+	if err := s.Keyframe(); err != nil {
+		return nil, err
+	}
+	if err := s.writeControl("resizeRequest", map[string]any{"requestId": "probe-resize-1"}); err != nil {
+		return nil, err
+	}
+	err := s.Run(Callbacks{
+		OnVideo: func(payload []byte) {
+			videoFrames++
+			videoBytes += uint64(len(payload))
+		},
+		OnAudio: func(payload []byte) {
+			audioFrames++
+			audioBytes += uint64(len(payload))
+		},
+		OnResizeAck: func(requestID string, reason string) {
+			if requestID == "probe-resize-1" {
+				resizePaired = true
+				resizeReason = reason
+				select {
+				case paired <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}, time.Now().Add(readFor))
+	if err != nil {
+		return nil, err
+	}
+	return &ProbeResult{
+		Admitted:      true,
+		ResizePaired:  resizePaired,
+		ResizeReason:  resizeReason,
+		ControlFrames: s.counters.ControlFrames,
+		VideoFrames:   videoFrames,
+		VideoBytes:    videoBytes,
+		AudioFrames:   audioFrames,
+		AudioBytes:    audioBytes,
+	}, nil
+}
+
+func isTimeout(err error) bool {
+	type timeout interface{ Timeout() bool }
+	var value timeout
+	if errors.As(err, &value) {
+		return value.Timeout()
+	}
+	return false
 }
 
 // Counters returns a copy of the session telemetry.
