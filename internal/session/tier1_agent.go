@@ -19,33 +19,71 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/wsio"
 )
 
-// ErrAgentInputPending marks guest input that has no transport yet: the
-// premium agent session carries video, audio and resize, but the guest has
-// no input-injection backend, so keys/pointer cannot cross.
-// View-only premium is the honest maximum until injection lands; the error
-// stays typed so the UI can explain instead of dropping keystrokes.
-var ErrAgentInputPending = errors.New("agent input injection not yet implemented")
+// ErrAgentInputPending marks an unavailable or not-yet-attached input backend.
+var ErrAgentInputPending = errors.New("agent input injection unavailable")
 
 // agentInput forwards window events to the held agent session. Resize is
-// real (paired ACKs); everything else reports the pending state.
+// capability-gated and paired; input is sent only when the guest advertises it.
 type agentInput struct {
 	mu      sync.Mutex
 	session *agent.Session
+	keys    map[keysym.Keysym]bool
+	x, y    int
 }
 
 func (in *agentInput) attach(session *agent.Session) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	in.session = session
+	in.keys = make(map[keysym.Keysym]bool)
 }
 
-func (in *agentInput) Key(sym keysym.Keysym, down bool) error { return ErrAgentInputPending }
-func (in *agentInput) Pointer(x, y int, mask rfb.ButtonMask) error {
-	return ErrAgentInputPending
+func (in *agentInput) Key(sym keysym.Keysym, down bool) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.session == nil {
+		return ErrAgentInputPending
+	}
+	if err := in.session.Key(uint32(sym), down); err != nil {
+		return err
+	}
+	if in.keys == nil {
+		in.keys = make(map[keysym.Keysym]bool)
+	}
+	if down {
+		in.keys[sym] = true
+	} else {
+		delete(in.keys, sym)
+	}
+	return nil
 }
-func (in *agentInput) Wheel(dx, dy int) error { return ErrAgentInputPending }
-func (in *agentInput) InputAvailable() bool   { return false }
-func (in *agentInput) ResizeAvailable() bool  { return false }
+func (in *agentInput) Pointer(x, y int, mask rfb.ButtonMask) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.session == nil {
+		return ErrAgentInputPending
+	}
+	in.x, in.y = x, y
+	return in.session.Pointer(x, y, uint8(mask))
+}
+func (in *agentInput) Wheel(dx, dy int) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.session == nil {
+		return ErrAgentInputPending
+	}
+	return in.session.Wheel(dx, dy)
+}
+func (in *agentInput) InputAvailable() bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.session != nil && in.session.InputAvailable()
+}
+func (in *agentInput) ResizeAvailable() bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.session != nil && in.session.ResizeAvailable()
+}
 func (in *agentInput) SetClipboard(text string) error {
 	in.mu.Lock()
 	session := in.session
@@ -62,9 +100,20 @@ func (in *agentInput) ClipboardAvailable() bool {
 	return in.session != nil && in.session.ClipboardAvailable()
 }
 
-// No guest keys can be held until injection exists; focus-loss cleanup is a
-// no-op, not a reason to terminate an otherwise valid view-only stream.
-func (in *agentInput) ResetKeys() error { return nil }
+// Focus loss releases held keys and mouse buttons at the last pointer position.
+func (in *agentInput) ResetKeys() error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.session == nil || !in.session.InputAvailable() {
+		return nil
+	}
+	var result error
+	for key := range in.keys {
+		result = errors.Join(result, in.session.Key(uint32(key), false))
+	}
+	clear(in.keys)
+	return errors.Join(result, in.session.Pointer(in.x, in.y, 0))
+}
 
 // RunAgentPremium opens the premium agent window: ticket, bridge, admit,
 // then H.264/Opus decode into the shared Tier-1 presenter. Transport
@@ -72,9 +121,7 @@ func (in *agentInput) ResetKeys() error { return nil }
 // transport truth); failures classify like Tier 1 — refusal/busy/auth
 // never fall back silently, anything else may.
 //
-// Premium v1 is video + audio + resize. Guest input injection does not
-// exist yet, so the window is observer-grade for typing: keys report
-// ErrAgentInputPending instead of vanishing.
+// Input and resize remain view-only when the guest does not advertise them.
 func RunAgentPremium(ctx context.Context, client *kwclient.Client, ns, name, participant string, be viewer.Backend, cfg Tier1Config) error {
 	if be == nil {
 		return fmt.Errorf("session: agent premium has no window")
@@ -83,7 +130,7 @@ func RunAgentPremium(ctx context.Context, client *kwclient.Client, ns, name, par
 		return err
 	}
 	input := &agentInput{}
-	runErr := viewer.RunTier1(ctx, be, input, agentProduce(client, ns, name, participant, input, cfg.Audio), viewer.Tier1Config{
+	runErr := viewer.RunTier1(ctx, be, input, agentProduce(client, ns, name, participant, input, cfg.Audio, cfg.logf), viewer.Tier1Config{
 		Title:        cfg.Title,
 		Width:        cfg.Width,
 		Height:       cfg.Height,
@@ -115,7 +162,7 @@ func OpenAgentPremium(ctx context.Context, client *kwclient.Client, ns, name, pa
 		return nil, err
 	}
 	input := &agentInput{}
-	det, err := viewer.OpenTier1Detached(ctx, be, input, agentProduce(client, ns, name, participant, input, cfg.Audio), viewer.Tier1Config{
+	det, err := viewer.OpenTier1Detached(ctx, be, input, agentProduce(client, ns, name, participant, input, cfg.Audio, cfg.logf), viewer.Tier1Config{
 		Title:        cfg.Title,
 		Width:        cfg.Width,
 		Height:       cfg.Height,
@@ -136,9 +183,9 @@ func OpenAgentPremium(ctx context.Context, client *kwclient.Client, ns, name, pa
 // agentProduce holds one admitted session per generation: ticket, bridge,
 // decode, renew. Shared by the blocking and detached window paths so they
 // cannot disagree about what a premium session is.
-func agentProduce(client *kwclient.Client, ns, name, participant string, input *agentInput, wantAudio bool) func(context.Context, *viewer.Tier1Sink) error {
+func agentProduce(client *kwclient.Client, ns, name, participant string, input *agentInput, wantAudio bool, logf func(string, ...any)) func(context.Context, *viewer.Tier1Sink) error {
 	return func(ctx context.Context, sink *viewer.Tier1Sink) error {
-		return produceAgent(ctx, client, ns, name, participant, input, sink, wantAudio)
+		return produceAgent(ctx, client, ns, name, participant, input, sink, wantAudio, logf)
 	}
 }
 
@@ -158,7 +205,7 @@ func MapAgentResult(ctx context.Context, runErr error) error {
 }
 
 // produceAgent holds one admitted session: ticket, bridge, decode, renew.
-func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, participant string, input *agentInput, sink *viewer.Tier1Sink, wantAudio bool) error {
+func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, participant string, input *agentInput, sink *viewer.Tier1Sink, wantAudio bool, logf func(string, ...any)) error {
 	ticket, err := client.AgentAttach(ctx, ns, name, participant)
 	if err != nil {
 		return err
@@ -213,7 +260,7 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 	}
 	clipboardCtx, stopClipboard := context.WithCancel(ctx)
 	defer stopClipboard()
-	if session.ClipboardAvailable() {
+	if session.ClipboardAvailable() || session.TelemetryAvailable() {
 		go func() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
@@ -222,9 +269,17 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 				case <-clipboardCtx.Done():
 					return
 				case <-ticker.C:
-					if err := session.RequestClipboard(fmt.Sprintf("clipboard-get-%d", time.Now().UnixNano()), nil); err != nil {
-						_ = session.Close()
-						return
+					if session.TelemetryAvailable() {
+						if err := session.RequestTelemetry(); err != nil {
+							_ = session.Close()
+							return
+						}
+					}
+					if session.ClipboardAvailable() {
+						if err := session.RequestClipboard(fmt.Sprintf("clipboard-get-%d", time.Now().UnixNano()), nil); err != nil {
+							_ = session.Close()
+							return
+						}
 					}
 				}
 			}
@@ -232,6 +287,17 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 	}
 	var lastClipboard *string
 	runErr := session.Run(agent.Callbacks{
+		OnTelemetry: func(payload map[string]any) {
+			if logf != nil {
+				logf("agent telemetry: input=%v dropped=%v session=%v", payload["inputEvents"], payload["inputDropped"], payload["session"])
+			}
+		},
+		OnResizeResult: func(id string, payload map[string]any) {
+			if logf != nil {
+				logf("agent resize %s: requested=%v actual=%v codecReconfigured=%v idrSent=%v reason=%v",
+					id, payload["requested"], payload["actual"], payload["codecReconfigured"], payload["idrSent"], payload["reason"])
+			}
+		},
 		OnClipboard: func(_ string, text *string, err error) error {
 			if err != nil {
 				return err
@@ -299,6 +365,9 @@ func (in *agentInput) Resize(w, h int) error {
 	session := in.session
 	in.mu.Unlock()
 	if session == nil {
+		return ErrAgentInputPending
+	}
+	if !session.ResizeAvailable() {
 		return ErrAgentInputPending
 	}
 	return session.RequestResize(fmt.Sprintf("resize-%dx%d-%d", w, h, time.Now().UnixMilli()), w, h)

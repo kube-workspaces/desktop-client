@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kube-workspaces/desktop-client/internal/wsio"
 )
@@ -79,6 +80,7 @@ var ErrRefused = errors.New("agent attach refused by guest")
 var ErrProtocol = errors.New("agent wire protocol violation")
 
 var ErrClipboardUnavailable = errors.New("guest agent text clipboard unavailable")
+var ErrInputUnavailable = errors.New("guest agent input unavailable")
 
 const MaxClipboardBytes = 64 * 1024
 
@@ -143,6 +145,9 @@ type Session struct {
 	writeMu          sync.Mutex
 	pending          map[string]bool
 	clipboard        bool
+	telemetry        bool
+	input            bool
+	resize           bool
 	clipboardPending map[string]bool
 	lastSentNs       uint64
 }
@@ -253,6 +258,9 @@ func Attach(conn *wsio.Conn, signed string) (*Session, error) {
 	}
 	session.session = hello.SessionID
 	session.clipboard, _ = hello.Payload["clipboardText"].(bool)
+	session.telemetry, _ = hello.Payload["telemetryAvailable"].(bool)
+	session.input, _ = hello.Payload["inputAvailable"].(bool)
+	session.resize, _ = hello.Payload["resizeAvailable"].(bool)
 	ticket.SessionID = hello.SessionID
 	if err := session.writeControl("attach", map[string]any{"ticket": ticket}); err != nil {
 		return nil, fmt.Errorf("agent: attach: %w", err)
@@ -312,6 +320,43 @@ func (s *Session) RequestResize(requestID string, width, height int) error {
 	})
 }
 
+func (s *Session) TelemetryAvailable() bool { return s.telemetry }
+func (s *Session) RequestTelemetry() error  { return s.writeControl("telemetry", map[string]any{}) }
+
+func (s *Session) InputAvailable() bool  { return s.input }
+func (s *Session) ResizeAvailable() bool { return s.resize }
+
+func (s *Session) Key(keysym uint32, down bool) error {
+	if !s.input {
+		return ErrInputUnavailable
+	}
+	validUnicode := keysym > 0x01000000 && keysym <= 0x0110FFFF && utf8.ValidRune(rune(keysym-0x01000000))
+	if keysym > 0x0010FFFF && !validUnicode {
+		return fmt.Errorf("agent: keysym out of range")
+	}
+	return s.writeControl("input", map[string]any{"kind": "key", "keysym": keysym, "down": down})
+}
+
+func (s *Session) Pointer(x, y int, buttons uint8) error {
+	if !s.input {
+		return ErrInputUnavailable
+	}
+	if x < 0 || y < 0 || x > 1_000_000 || y > 1_000_000 {
+		return fmt.Errorf("agent: pointer out of range")
+	}
+	return s.writeControl("input", map[string]any{"kind": "pointer", "x": x, "y": y, "buttons": buttons})
+}
+
+func (s *Session) Wheel(dx, dy int) error {
+	if !s.input {
+		return ErrInputUnavailable
+	}
+	if dx < -1000 || dx > 1000 || dy < -1000 || dy > 1000 {
+		return fmt.Errorf("agent: wheel out of range")
+	}
+	return s.writeControl("input", map[string]any{"kind": "wheel", "dx": dx, "dy": dy})
+}
+
 // Close sends Bye and closes the transport. The server releases the seat.
 func (s *Session) Close() error {
 	_ = s.writeControl("bye", map[string]any{})
@@ -323,12 +368,15 @@ func (s *Session) Close() error {
 // A returned error fails the session loudly — corrupted media never
 // limps along silently.
 type Callbacks struct {
+	OnTelemetry func(payload map[string]any)
 	// OnVideo gets one complete H.264 access unit per call.
 	OnVideo func(payload []byte) error
 	// OnAudio gets one Opus packet per call.
 	OnAudio func(payload []byte) error
 	// OnResizeAck reports requested vs actual dimensions or a reason.
 	OnResizeAck func(requestID string, reason string)
+	// OnResizeResult preserves the actual mode and encoder/IDR completion flags.
+	OnResizeResult func(requestID string, payload map[string]any)
 	// OnClipboard receives paired text reads or set acknowledgements.
 	// nil text means no text format (get) or successful write (set).
 	OnClipboard func(requestID string, text *string, err error) error
@@ -363,6 +411,12 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 				return fmt.Errorf("agent: control frame is not an envelope: %w", err)
 			}
 			s.counters.ControlFrames++
+			if message.Type == "telemetry" {
+				if callbacks.OnTelemetry != nil {
+					callbacks.OnTelemetry(message.Payload)
+				}
+				continue
+			}
 			if message.Type == "clipboardResult" {
 				id, _ := message.Payload["requestId"].(string)
 				s.writeMu.Lock()
@@ -388,6 +442,9 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 			s.writeMu.Unlock()
 			if !paired {
 				continue
+			}
+			if callbacks.OnResizeResult != nil {
+				callbacks.OnResizeResult(id, message.Payload)
 			}
 			if callbacks.OnResizeAck != nil {
 				reason, _ := message.Payload["reason"].(string)

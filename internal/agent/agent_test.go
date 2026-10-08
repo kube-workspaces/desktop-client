@@ -130,6 +130,69 @@ func dialAgent(t *testing.T, url string) *wsio.Conn {
 	return wsio.New(ws)
 }
 
+func TestInputWireBoundsAndOrdering(t *testing.T) {
+	messages := make(chan Envelope, 3)
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer ws.Close()
+		for range 3 {
+			_, raw, err := ws.ReadMessage()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			tag, body, err := readFrame(bytes.NewReader(raw))
+			if err != nil || tag != 0 {
+				t.Errorf("input frame: tag=%d err=%v", tag, err)
+				return
+			}
+			var envelope Envelope
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				t.Error(err)
+				return
+			}
+			messages <- envelope
+		}
+	}))
+	defer srv.Close()
+	session := &Session{conn: dialAgent(t, srv.URL), session: "input-test", input: true}
+	if err := session.Key(0xFF0D, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Pointer(50, 60, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Wheel(0, -2); err != nil {
+		t.Fatal(err)
+	}
+	var last uint64
+	for _, kind := range []string{"key", "pointer", "wheel"} {
+		select {
+		case message := <-messages:
+			if message.Type != "input" || message.Payload["kind"] != kind || message.SessionID != "input-test" || message.SentAtNs <= last {
+				t.Fatalf("invalid input envelope: %+v", message)
+			}
+			last = message.SentAtNs
+		case <-time.After(time.Second):
+			t.Fatal("input not delivered")
+		}
+	}
+	if err := session.Wheel(-1001, 0); err == nil {
+		t.Fatal("unbounded wheel accepted")
+	}
+	if err := session.Pointer(-1, 0, 0); err == nil {
+		t.Fatal("negative pointer accepted")
+	}
+	if err := (&Session{}).Key(0x61, true); !errors.Is(err, ErrInputUnavailable) {
+		t.Fatalf("unadvertised input: %v", err)
+	}
+}
+
 func TestAttachResizeBye(t *testing.T) {
 	srv, lastResize := fakeAgent(t, false)
 	session, err := Attach(dialAgent(t, srv.URL), signedTestTicket())

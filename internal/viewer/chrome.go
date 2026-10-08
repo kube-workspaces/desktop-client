@@ -145,7 +145,9 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 	if transport == "" {
 		transport = "Selkies"
 	}
-	// Agent keys remain pending; clipboard is negotiated with the guest.
+	// Agent clipboard and resize are negotiated with the guest. SendInput
+	// cannot implement Windows secure attention (Ctrl+Alt+Del), so that
+	// special-key action stays unavailable even when ordinary input is enabled.
 	specialKeys, clipboardSync := true, true
 	guestResize := true
 	if transport == "Agent" {
