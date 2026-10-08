@@ -67,6 +67,7 @@ func main() {
 		webCommand(),
 		{"probe", "Probe a VM workspace's display capabilities and bandwidth", runProbe},
 		{"screenshot", "Capture a VM workspace's display to a PNG file", runScreenshot},
+		{"clipboard", "Read/write guest text clipboard via the agent (works beside VNC)", runClipboard},
 		{"version", "Print the client version", runVersion},
 		{"update", "Check for and install desktop-client releases", runUpdate},
 	}

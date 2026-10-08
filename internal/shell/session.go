@@ -6,6 +6,7 @@ package shell
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"sync"
@@ -301,6 +302,9 @@ type SessionOptions struct {
 	// is observer-grade in v1 (no guest input injection yet); refusal,
 	// busy seats and auth failures never fall back silently.
 	AgentTier bool
+	// AgentClipboard adds guest Unicode clipboard to the normal RFB console.
+	// Explicit opt-in; requires serve --clipboard in the logged-in guest.
+	AgentClipboard bool
 	// Logf, if set, receives session diagnostics.
 	Logf func(format string, args ...any)
 }
@@ -379,8 +383,9 @@ func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observe
 // on every Attach, so redials and status updates after a resume reach the
 // live window instead of the parked one.
 type viewRef struct {
-	mu sync.Mutex
-	v  *viewer.Viewer
+	mu     sync.Mutex
+	v      *viewer.Viewer
+	events rfb.Config
 }
 
 func (r *viewRef) get() *viewer.Viewer {
@@ -393,17 +398,78 @@ func (r *viewRef) set(v *viewer.Viewer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.v = v
+	r.events = rfb.Config{}
+	if v != nil {
+		r.events = v.RFBConfig(rfb.Config{})
+	}
+}
+
+func (r *viewRef) callbacks() rfb.Config {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.events
+}
+
+// rfbConfig routes every event to the current window, even if its RFB
+// connection was dialled while an earlier/parked window owned the handle.
+func (r *viewRef) rfbConfig(base rfb.Config) rfb.Config {
+	cfg := base
+	if v := r.get(); v != nil {
+		cfg = v.RFBConfig(base)
+	}
+	cfg.OnFramebufferUpdate = func(fb *rfb.Framebuffer, damage []rfb.Rect) {
+		if base.OnFramebufferUpdate != nil {
+			base.OnFramebufferUpdate(fb, damage)
+		}
+		if cb := r.callbacks().OnFramebufferUpdate; cb != nil {
+			cb(fb, damage)
+		}
+	}
+	cfg.OnResize = func(w, h int) {
+		if base.OnResize != nil {
+			base.OnResize(w, h)
+		}
+		if cb := r.callbacks().OnResize; cb != nil {
+			cb(w, h)
+		}
+	}
+	cfg.OnCutText = func(text string) {
+		if base.OnCutText != nil {
+			base.OnCutText(text)
+		}
+		if cb := r.callbacks().OnCutText; cb != nil {
+			cb(text)
+		}
+	}
+	cfg.OnCursor = func(image []byte, w, h, hotX, hotY int) {
+		if base.OnCursor != nil {
+			base.OnCursor(image, w, h, hotX, hotY)
+		}
+		if cb := r.callbacks().OnCursor; cb != nil {
+			cb(image, w, h, hotX, hotY)
+		}
+	}
+	cfg.OnAudio = func(data []byte) {
+		if base.OnAudio != nil {
+			base.OnAudio(data)
+		}
+		if cb := r.callbacks().OnAudio; cb != nil {
+			cb(data)
+		}
+	}
+	return cfg
 }
 
 // exclusiveHandle is a held Tier 0 (RFB) display session: one supervised
 // transport, any number of sequential windows over its lifetime.
 type exclusiveHandle struct {
-	client *kwclient.Client
-	ws     kwclient.Workspace
-	opts   SessionOptions
-	base   rfb.Config
-	sess   *session.ReconnectingSession
-	ref    *viewRef
+	client    *kwclient.Client
+	ws        kwclient.Workspace
+	opts      SessionOptions
+	base      rfb.Config
+	sess      *session.ReconnectingSession
+	ref       *viewRef
+	clipboard *session.AgentClipboard
 
 	closeOnce sync.Once
 }
@@ -450,16 +516,25 @@ func dialExclusiveSession(ctx context.Context, client *kwclient.Client, ws kwcli
 		// calls this immediately before each dial, and it always answers
 		// from the live window.
 		Config: func() rfb.Config {
-			if v := h.ref.get(); v != nil {
-				return v.RFBConfig(h.base)
-			}
-			return h.base
+			return h.ref.rfbConfig(h.base)
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
 	h.sess = sess
+	if opts.AgentClipboard {
+		bridge, err := session.OpenAgentClipboard(ctx, client, ws.Namespace, ws.Name, func(text string) {
+			if v := h.ref.get(); v != nil {
+				v.GuestClipboard(text)
+			}
+		})
+		if err != nil {
+			_ = sess.Close()
+			return nil, fmt.Errorf("open RFB clipboard helper: %w", err)
+		}
+		h.clipboard = bridge
+	}
 	return h, nil
 }
 
@@ -493,7 +568,11 @@ func (h *exclusiveHandle) newView(ctx context.Context) *viewer.Viewer {
 func (h *exclusiveHandle) openWindow(ctx context.Context) (liveWindow, error) {
 	view := h.newView(ctx)
 	h.ref.set(view)
-	if _, err := view.OpenDetached(ctx, h.sess); err != nil {
+	var source viewer.ConnSource = h.sess
+	if h.clipboard != nil {
+		source = session.WithAgentClipboard(source, h.clipboard)
+	}
+	if _, err := view.OpenDetached(ctx, source); err != nil {
 		return nil, err
 	}
 	return &viewerLiveWindow{view: view}, nil
@@ -508,6 +587,9 @@ func (h *exclusiveHandle) Open(ctx context.Context) (liveWindow, error) {
 // Close implements [SessionHandle].
 func (h *exclusiveHandle) Close() {
 	h.closeOnce.Do(func() {
+		if h.clipboard != nil {
+			h.clipboard.Close()
+		}
 		if h.sess != nil {
 			_ = h.sess.Close()
 		}

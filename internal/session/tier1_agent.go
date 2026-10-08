@@ -21,7 +21,7 @@ import (
 
 // ErrAgentInputPending marks guest input that has no transport yet: the
 // premium agent session carries video, audio and resize, but the guest has
-// no input-injection backend, so keys/pointer/clipboard cannot cross.
+// no input-injection backend, so keys/pointer cannot cross.
 // View-only premium is the honest maximum until injection lands; the error
 // stays typed so the UI can explain instead of dropping keystrokes.
 var ErrAgentInputPending = errors.New("agent input injection not yet implemented")
@@ -45,7 +45,19 @@ func (in *agentInput) Pointer(x, y int, mask rfb.ButtonMask) error {
 }
 func (in *agentInput) Wheel(dx, dy int) error { return ErrAgentInputPending }
 func (in *agentInput) SetClipboard(text string) error {
-	return ErrAgentInputPending
+	in.mu.Lock()
+	session := in.session
+	in.mu.Unlock()
+	if session == nil {
+		return ErrAgentInputPending
+	}
+	return session.RequestClipboard(fmt.Sprintf("clipboard-set-%d", time.Now().UnixNano()), &text)
+}
+
+func (in *agentInput) ClipboardAvailable() bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.session != nil && in.session.ClipboardAvailable()
 }
 func (in *agentInput) ResetKeys() error { return ErrAgentInputPending }
 
@@ -146,6 +158,11 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 	if err != nil {
 		return err
 	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = client.AgentRelease(releaseCtx, ns, name, ticket.ID)
+	}()
 	conn, _, err := client.DialAgentWS(ctx, ns, name)
 	if err != nil {
 		return err
@@ -156,6 +173,8 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 		return err
 	}
 	input.attach(session)
+	defer input.attach(nil)
+	defer session.Close() //nolint:errcheck // release on every initialization failure
 	video, err := media.NewH264()
 	if err != nil {
 		_ = session.Close()
@@ -178,7 +197,38 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 		_ = session.Close()
 		return err
 	}
+	clipboardCtx, stopClipboard := context.WithCancel(ctx)
+	defer stopClipboard()
+	if session.ClipboardAvailable() {
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-clipboardCtx.Done():
+					return
+				case <-ticker.C:
+					if err := session.RequestClipboard(fmt.Sprintf("clipboard-get-%d", time.Now().UnixNano()), nil); err != nil {
+						_ = session.Close()
+						return
+					}
+				}
+			}
+		}()
+	}
+	var lastClipboard *string
 	runErr := session.Run(agent.Callbacks{
+		OnClipboard: func(_ string, text *string, err error) error {
+			if err != nil {
+				return err
+			}
+			if text != nil && (lastClipboard == nil || *lastClipboard != *text) {
+				copy := *text
+				lastClipboard = &copy
+				sink.GuestClipboard(copy)
+			}
+			return nil
+		},
 		OnVideo: func(payload []byte) error {
 			frame, err := video.Decode(payload)
 			if err != nil {

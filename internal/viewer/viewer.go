@@ -524,11 +524,7 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 		if prevCut != nil {
 			prevCut(text)
 		}
-		v.inbox.Lock()
-		v.inbox.cutText = text
-		v.inbox.hasCutText = true
-		v.inbox.Unlock()
-		v.wake()
+		v.GuestClipboard(text)
 	}
 
 	prevCursor := base.OnCursor
@@ -571,6 +567,16 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 	}
 
 	return cfg
+}
+
+// GuestClipboard queues text from a separately authenticated clipboard helper
+// through the same bounded, window-thread handoff as an RFB clipboard update.
+func (v *Viewer) GuestClipboard(text string) {
+	v.inbox.Lock()
+	v.inbox.cutText = text
+	v.inbox.hasCutText = true
+	v.inbox.Unlock()
+	v.wake()
 }
 
 // SetStatus updates the modal overlay drawn over the frame.

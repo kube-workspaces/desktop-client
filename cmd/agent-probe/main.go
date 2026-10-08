@@ -68,6 +68,13 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("agent-probe: attach: %w", err)
 	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.AgentRelease(releaseCtx, *namespace, *workspace, ticket.ID); err != nil {
+			fmt.Fprintln(os.Stderr, "agent-probe: release:", err)
+		}
+	}()
 	conn, resp, err := client.DialAgentWS(ctx, *namespace, *workspace)
 	if err != nil {
 		return fmt.Errorf("agent-probe: dial: %w", err)
@@ -145,5 +152,5 @@ func run(ctx context.Context, args []string) error {
 	if videoFrames == 0 {
 		return fmt.Errorf("agent-probe: no video flowed")
 	}
-	return client.AgentRelease(ctx, *namespace, *workspace, ticket.ID)
+	return nil
 }

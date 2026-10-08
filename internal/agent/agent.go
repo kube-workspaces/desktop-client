@@ -78,6 +78,10 @@ var ErrRefused = errors.New("agent attach refused by guest")
 // envelope): the session is unusable, close it.
 var ErrProtocol = errors.New("agent wire protocol violation")
 
+var ErrClipboardUnavailable = errors.New("guest agent text clipboard unavailable")
+
+const MaxClipboardBytes = 64 * 1024
+
 // Counters mirrors the session telemetry the indicator contract requires.
 type Counters struct {
 	ControlFrames uint64
@@ -132,12 +136,15 @@ func DecodeTicket(signed string) (string, Ticket, error) {
 // It owns no UI and no decoders; media bytes are counted here and handed to
 // the presenter layer by the caller.
 type Session struct {
-	conn     *wsio.Conn
-	session  string
-	sequence uint64
-	counters Counters
-	writeMu  sync.Mutex
-	pending  map[string]bool
+	conn             *wsio.Conn
+	session          string
+	sequence         uint64
+	counters         Counters
+	writeMu          sync.Mutex
+	pending          map[string]bool
+	clipboard        bool
+	clipboardPending map[string]bool
+	lastSentNs       uint64
 }
 
 // readFrame parses one agent frame from the message stream.
@@ -167,6 +174,8 @@ func readFrame(reader io.Reader) (tag byte, body []byte, err error) {
 // writeControl sends one JSON envelope as a single binary message.
 // Resize requests self-register for ACK pairing in Run.
 func (s *Session) writeControl(messageType string, payload map[string]any) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.sequence++
 	if messageType == "resizeRequest" {
 		if id, _ := payload["requestId"].(string); id != "" {
@@ -176,10 +185,15 @@ func (s *Session) writeControl(messageType string, payload map[string]any) error
 			s.pending[id] = true
 		}
 	}
+	stamp := uint64(time.Now().UnixNano())
+	if stamp <= s.lastSentNs {
+		stamp = s.lastSentNs + 1
+	}
+	s.lastSentNs = stamp
 	body, err := json.Marshal(Envelope{
 		Protocol: "kw-agent-v1", ProtocolVersion: 1,
 		SessionID: s.session, Generation: 1, Sequence: s.sequence,
-		SentAtNs: uint64(time.Now().UnixNano()),
+		SentAtNs: stamp,
 		Channel:  "control", Type: messageType, Payload: payload,
 	})
 	if err != nil {
@@ -187,8 +201,6 @@ func (s *Session) writeControl(messageType string, payload map[string]any) error
 	}
 	frame := append([]byte{0x00}, uint32be(len(body))...)
 	frame = append(frame, body...)
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	_, err = s.conn.Write(frame)
 	return err
 }
@@ -240,6 +252,7 @@ func Attach(conn *wsio.Conn, signed string) (*Session, error) {
 		return nil, fmt.Errorf("agent: unexpected greeting %q", hello.Type)
 	}
 	session.session = hello.SessionID
+	session.clipboard, _ = hello.Payload["clipboardText"].(bool)
 	ticket.SessionID = hello.SessionID
 	if err := session.writeControl("attach", map[string]any{"ticket": ticket}); err != nil {
 		return nil, fmt.Errorf("agent: attach: %w", err)
@@ -316,6 +329,9 @@ type Callbacks struct {
 	OnAudio func(payload []byte) error
 	// OnResizeAck reports requested vs actual dimensions or a reason.
 	OnResizeAck func(requestID string, reason string)
+	// OnClipboard receives paired text reads or set acknowledgements.
+	// nil text means no text format (get) or successful write (set).
+	OnClipboard func(requestID string, text *string, err error) error
 }
 
 // Run pumps the session until the peer closes, the deadline lapses, or a
@@ -327,13 +343,16 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			return nil
 		}
-		// Bound every read so the deadline is re-checked on quiet
-		// sessions; timeouts loop back, everything else ends the run.
-		_ = s.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		// A WebSocket read timeout permanently fails the connection, and a
+		// partial framed read cannot be resumed at the next frame header.
+		// Use only the overall deadline; unbounded runs are stopped by Close.
+		if err := s.conn.SetReadDeadline(deadline); err != nil {
+			return err
+		}
 		tag, body, err := readFrame(s.conn)
 		if err != nil {
-			if isTimeout(err) {
-				continue
+			if isTimeout(err) && !deadline.IsZero() && !time.Now().Before(deadline) {
+				return nil
 			}
 			return err
 		}
@@ -344,15 +363,32 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 				return fmt.Errorf("agent: control frame is not an envelope: %w", err)
 			}
 			s.counters.ControlFrames++
+			if message.Type == "clipboardResult" {
+				id, _ := message.Payload["requestId"].(string)
+				s.writeMu.Lock()
+				_, paired := s.clipboardPending[id]
+				delete(s.clipboardPending, id)
+				s.writeMu.Unlock()
+				if paired && callbacks.OnClipboard != nil {
+					text, err := clipboardResult(message.Payload)
+					if err := callbacks.OnClipboard(id, text, err); err != nil {
+						return err
+					}
+				}
+				continue
+			}
 			if message.Type != "resizeAck" {
 				continue
 			}
 			s.counters.ResizeACKs++
 			id, _ := message.Payload["requestId"].(string)
-			if !s.pending[id] {
+			s.writeMu.Lock()
+			paired := s.pending[id]
+			delete(s.pending, id)
+			s.writeMu.Unlock()
+			if !paired {
 				continue
 			}
-			delete(s.pending, id)
 			if callbacks.OnResizeAck != nil {
 				reason, _ := message.Payload["reason"].(string)
 				callbacks.OnResizeAck(id, reason)

@@ -145,12 +145,13 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 	if transport == "" {
 		transport = "Selkies"
 	}
-	// Agent premium v1 is observer-grade: real resize, no guest input or
-	// clipboard yet. The badge must not advertise what the transport
-	// cannot do.
+	// Agent keys remain pending; clipboard is negotiated with the guest.
 	specialKeys, clipboardSync := true, true
 	if transport == "Agent" {
 		specialKeys, clipboardSync = false, false
+		if capable, ok := w.inp.(interface{ ClipboardAvailable() bool }); ok {
+			clipboardSync = capable.ClipboardAvailable()
+		}
 	}
 	return connection.Snapshot{Workspace: w.opts.Title, Surface: connection.Desktop,
 		State: state, Role: connection.Exclusive, Transport: transport,

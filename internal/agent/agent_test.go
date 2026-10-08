@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,7 +68,7 @@ func fakeAgent(t *testing.T, refuse bool, media ...[]byte) (*httptest.Server, *s
 			}
 			return message
 		}
-		send("hello", map[string]any{"role": "controller-only"})
+		send("hello", map[string]any{"role": "controller-only", "clipboardText": true})
 		attach := read()
 		if attach.Type != "attach" {
 			t.Fatalf("want attach, got %q", attach.Type)
@@ -91,6 +92,7 @@ func fakeAgent(t *testing.T, refuse bool, media ...[]byte) (*httptest.Server, *s
 				return
 			}
 		}
+		var clipboardText string
 		for {
 			message := read()
 			switch message.Type {
@@ -102,6 +104,11 @@ func fakeAgent(t *testing.T, refuse bool, media ...[]byte) (*httptest.Server, *s
 					"reason": "display-backend-p0-gated",
 				})
 			case "keyframeRequest":
+			case "clipboardSet":
+				clipboardText, _ = message.Payload["text"].(string)
+				send("clipboardResult", map[string]any{"requestId": message.Payload["requestId"], "ok": true})
+			case "clipboardGet":
+				send("clipboardResult", map[string]any{"requestId": message.Payload["requestId"], "ok": true, "text": clipboardText})
 			case "bye":
 				return
 			default:
@@ -159,6 +166,75 @@ func TestAttachRefused(t *testing.T) {
 	_, err := Attach(dialAgent(t, srv.URL), signedTestTicket())
 	if err == nil || !strings.Contains(err.Error(), "ticket-rejected") {
 		t.Fatalf("want refusal, got %v", err)
+	}
+}
+
+func TestClipboardUnicodeRoundtripAndLimits(t *testing.T) {
+	srv, _ := fakeAgent(t, false)
+	session, err := Attach(dialAgent(t, srv.URL), signedTestTicket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	for _, text := range []string{"PowerShell\r\nλ 🦀\t", ""} {
+		if _, err := session.Clipboard(&text); err != nil {
+			t.Fatal(err)
+		}
+		got, err := session.Clipboard(nil)
+		if err != nil || got == nil || *got != text {
+			t.Fatalf("clipboard text roundtrip failed: %v", err)
+		}
+	}
+	for _, text := range []string{"left\x00right", strings.Repeat("x", MaxClipboardBytes+1), string([]byte{0xff})} {
+		if _, err := session.Clipboard(&text); err == nil {
+			t.Fatal("invalid clipboard text accepted")
+		}
+	}
+	if _, err := (&Session{}).Clipboard(nil); !errors.Is(err, ErrClipboardUnavailable) {
+		t.Fatalf("missing advert must refuse clipboard: %v", err)
+	}
+}
+
+func TestClipboardRunPairsResultsAlongsideMedia(t *testing.T) {
+	srv, _ := fakeAgent(t, false, mediaFrame(0x01, []byte{1, 2, 3}))
+	session, err := Attach(dialAgent(t, srv.URL), signedTestTicket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	text := "copied output λ"
+	if _, err := session.Clipboard(&text); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.RequestClipboard("get-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	paired := false
+	err = session.Run(Callbacks{OnClipboard: func(id string, got *string, err error) error {
+		if err != nil {
+			return err
+		}
+		paired = id == "get-1" && got != nil && *got == text
+		return nil
+	}}, time.Now().Add(50*time.Millisecond))
+	if err != nil || !paired {
+		t.Fatalf("clipboard result not paired: %v", err)
+	}
+}
+
+func TestQuietWebSocketRunEndsAtDeadline(t *testing.T) {
+	srv, _ := fakeAgent(t, false)
+	session, err := Attach(dialAgent(t, srv.URL), signedTestTicket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	start := time.Now()
+	if err := session.Run(Callbacks{}, start.Add(50*time.Millisecond)); err != nil {
+		t.Fatalf("quiet deadline: %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("quiet session did not honor its deadline")
 	}
 }
 

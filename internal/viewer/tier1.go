@@ -959,6 +959,9 @@ func (w *tier1Window) applyGuestResize(now time.Time) error {
 // syncGuestClipboard moves clipboard content in both directions: guest pushes
 // land on the host, and the host clipboard is sampled for the guest.
 func (w *tier1Window) syncGuestClipboard(now time.Time) error {
+	if capable, ok := w.inp.(interface{ ClipboardAvailable() bool }); ok && !capable.ClipboardAvailable() {
+		return nil
+	}
 	if w.clipboardDisabled {
 		if w.sink != nil {
 			_, _ = w.sink.takeClipboard()
