@@ -39,12 +39,12 @@ func (b *countedSDL) PlayPCM(data []byte) {
 	b.audioBytes += int64(len(data))
 }
 
-func presentAgent(ctx context.Context, client *kwclient.Client, ns, name string, duration time.Duration) error {
+func presentAgent(ctx context.Context, client *kwclient.Client, ns, name string, duration time.Duration, resizeGuest bool) error {
 	ctx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
 	backend := &countedSDL{SDLBackend: viewer.NewSDLBackend()}
 	err := session.RunAgentPremium(ctx, client, ns, name, "agent-present-probe", backend, session.Tier1Config{
-		Title: "Agent presentation proof", Width: 1280, Height: 800, NoResize: true, Audio: true,
+		Title: "Agent presentation proof", Width: 1280, Height: 800, NoResize: !resizeGuest, Audio: true,
 		Logf: func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) },
 	})
 	fmt.Printf("uploaded_frames=%d presented_frames=%d queued_audio_bytes=%d\n", backend.uploads, backend.presents, backend.audioBytes)
