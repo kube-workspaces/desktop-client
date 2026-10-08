@@ -28,6 +28,43 @@ type recordInput struct {
 	resets  int
 }
 
+type viewOnlyInput struct{ recordInput }
+
+func (*viewOnlyInput) InputAvailable() bool  { return false }
+func (*viewOnlyInput) ResizeAvailable() bool { return false }
+
+func TestViewOnlyTierDoesNotTerminateOnRemoteInput(t *testing.T) {
+	inp := &viewOnlyInput{}
+	w := &tier1Window{inp: inp, haveFrame: true, opts: Tier1Config{Transport: "Agent"}}
+	w.opts.applyDefaults()
+	for _, event := range []Event{
+		EventKey{Key: keysym.KeyReturn, Down: true},
+		EventKey{Key: keysym.KeyReturn, Down: false},
+		EventPointer{X: 1, Y: 1},
+		EventWheel{DX: 1, DY: 1},
+		EventResize{W: 1024, H: 768},
+	} {
+		if err := w.handleEvent(time.Now(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.applyGuestResize(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(inp.keys)+len(inp.pointer)+len(inp.wheels)+len(inp.resizes) != 0 {
+		t.Fatal("view-only guest received injected input")
+	}
+	if w.connectionSnapshot().Capabilities.GuestResize {
+		t.Fatal("unsupported guest resize advertised")
+	}
+	if err := w.handleKey(EventKey{Rune: 'q', Down: true, Mods: keysym.ModControl | keysym.ModAlt}); err != nil {
+		t.Fatal(err)
+	}
+	if !w.quit {
+		t.Fatal("local disconnect hotkey was blocked")
+	}
+}
+
 type keyCall struct {
 	sym  keysym.Keysym
 	down bool

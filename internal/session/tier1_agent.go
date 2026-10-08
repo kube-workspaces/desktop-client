@@ -44,6 +44,8 @@ func (in *agentInput) Pointer(x, y int, mask rfb.ButtonMask) error {
 	return ErrAgentInputPending
 }
 func (in *agentInput) Wheel(dx, dy int) error { return ErrAgentInputPending }
+func (in *agentInput) InputAvailable() bool   { return false }
+func (in *agentInput) ResizeAvailable() bool  { return false }
 func (in *agentInput) SetClipboard(text string) error {
 	in.mu.Lock()
 	session := in.session
@@ -59,7 +61,10 @@ func (in *agentInput) ClipboardAvailable() bool {
 	defer in.mu.Unlock()
 	return in.session != nil && in.session.ClipboardAvailable()
 }
-func (in *agentInput) ResetKeys() error { return ErrAgentInputPending }
+
+// No guest keys can be held until injection exists; focus-loss cleanup is a
+// no-op, not a reason to terminate an otherwise valid view-only stream.
+func (in *agentInput) ResetKeys() error { return nil }
 
 // RunAgentPremium opens the premium agent window: ticket, bridge, admit,
 // then H.264/Opus decode into the shared Tier-1 presenter. Transport
@@ -175,6 +180,15 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 	input.attach(session)
 	defer input.attach(nil)
 	defer session.Close() //nolint:errcheck // release on every initialization failure
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = session.Close()
+		case <-done:
+		}
+	}()
 	video, err := media.NewH264()
 	if err != nil {
 		_ = session.Close()
@@ -272,6 +286,7 @@ func renewAgent(ctx context.Context, client *kwclient.Client, ns, name string, t
 			return
 		case <-ticker.C:
 			if err := client.AgentRenew(ctx, ns, name, ticket.ID); err != nil {
+				_ = session.Close()
 				return
 			}
 		}

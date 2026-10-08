@@ -147,16 +147,20 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 	}
 	// Agent keys remain pending; clipboard is negotiated with the guest.
 	specialKeys, clipboardSync := true, true
+	guestResize := true
 	if transport == "Agent" {
 		specialKeys, clipboardSync = false, false
 		if capable, ok := w.inp.(interface{ ClipboardAvailable() bool }); ok {
 			clipboardSync = capable.ClipboardAvailable()
 		}
+		if capable, ok := w.inp.(interface{ ResizeAvailable() bool }); ok {
+			guestResize = capable.ResizeAvailable()
+		}
 	}
 	return connection.Snapshot{Workspace: w.opts.Title, Surface: connection.Desktop,
 		State: state, Role: connection.Exclusive, Transport: transport,
 		Clipboard: !w.clipboardDisabled && w.opts.ClipboardInterval >= 0, ResizeGuest: !w.opts.NoResize, Muted: w.muted,
-		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: true, Audio: w.audio != nil}}
+		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: guestResize, Audio: w.audio != nil}}
 }
 
 func (w *tier1Window) connectionAction(a connection.Action) error {

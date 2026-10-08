@@ -42,6 +42,7 @@ func run(ctx context.Context, args []string) error {
 	workspace := fs.String("workspace", "", "workspace name")
 	duration := fs.Duration("duration", 10*time.Second, "media read window after admission")
 	decode := fs.Bool("decode", true, "decode H.264/Opus with native libraries (proves decodability, not just bytes)")
+	present := fs.Bool("present", false, "open the real SDL agent viewer and verify rendering/audio queueing for the duration")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: agent-probe --server ORIGIN --namespace NS --workspace NAME [--duration D] [--decode=false]")
 		fs.PrintDefaults()
@@ -63,6 +64,9 @@ func run(ctx context.Context, args []string) error {
 	client, err := kwclient.New(*server, kwclient.WithToken(token))
 	if err != nil {
 		return err
+	}
+	if *present {
+		return presentAgent(ctx, client, *namespace, *workspace, *duration)
 	}
 	ticket, err := client.AgentAttach(ctx, *namespace, *workspace, "agent-probe")
 	if err != nil {

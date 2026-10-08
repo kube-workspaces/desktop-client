@@ -40,4 +40,7 @@ func TestAgentInputIsHonest(t *testing.T) {
 	if err := input.Resize(800, 600); !errors.Is(err, ErrAgentInputPending) {
 		t.Fatalf("resize without a session must report pending, got %v", err)
 	}
+	if err := input.ResetKeys(); err != nil {
+		t.Fatalf("view-only focus cleanup must not kill the stream: %v", err)
+	}
 }

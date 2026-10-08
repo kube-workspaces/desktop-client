@@ -775,6 +775,9 @@ func (w *tier1Window) handleKey(e EventKey) error {
 		return w.runHotkey(e)
 	}
 
+	if capable, ok := w.inp.(interface{ InputAvailable() bool }); ok && !capable.InputAvailable() {
+		return nil
+	}
 	sym := symbolFor(e)
 	if sym == keysym.NoSymbol {
 		return nil
@@ -830,6 +833,9 @@ func (w *tier1Window) requestDisconnect() {
 // sendChord injects a synthetic key sequence the host would otherwise
 // intercept, such as Ctrl-Alt-Del.
 func (w *tier1Window) sendChord(c keysym.Chord) error {
+	if capable, ok := w.inp.(interface{ InputAvailable() bool }); ok && !capable.InputAvailable() {
+		return nil
+	}
 	for _, a := range c.Sequence() {
 		if err := w.inp.Key(a.Sym, a.Down); err != nil {
 			return err
@@ -840,6 +846,9 @@ func (w *tier1Window) sendChord(c keysym.Chord) error {
 }
 
 func (w *tier1Window) handlePointer(e EventPointer) error {
+	if capable, ok := w.inp.(interface{ InputAvailable() bool }); ok && !capable.InputAvailable() {
+		return nil
+	}
 	x, y, _ := MapToSource(e.X, e.Y, w.present, w.texW, w.texH)
 	w.ptrX, w.ptrY = x, y
 	w.ptrKnown = true
@@ -853,6 +862,9 @@ func (w *tier1Window) handlePointer(e EventPointer) error {
 }
 
 func (w *tier1Window) handleWheel(e EventWheel) error {
+	if capable, ok := w.inp.(interface{ InputAvailable() bool }); ok && !capable.InputAvailable() {
+		return nil
+	}
 	if !w.ptrKnown {
 		return nil
 	}
@@ -942,6 +954,10 @@ func (w *tier1Window) scheduleGuestResize(now time.Time, width, height int) {
 }
 
 func (w *tier1Window) applyGuestResize(now time.Time) error {
+	if capable, ok := w.inp.(interface{ ResizeAvailable() bool }); ok && !capable.ResizeAvailable() {
+		w.resizePending = false
+		return nil
+	}
 	if !w.haveFrame || (w.sink != nil && w.sink.reconnecting.Load()) {
 		return nil
 	}

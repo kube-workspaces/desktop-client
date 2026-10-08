@@ -54,6 +54,25 @@ PowerShell pipelines can add/change newlines; Windows PowerShell 5.1 may
 also use a non-UTF-8 pipeline encoding. Prefer GUI sync for exact Unicode
 content, or UTF-8 file redirection from a shell that preserves bytes.
 
+## Premium presentation diagnostic
+
+`agent-probe --present --duration 20s` opens the real SDL premium viewer
+instead of only decoding bytes. It reports uploaded/presented frames and
+PCM queued to the playback backend, and releases the agent ticket when the
+window/duration ends. Like the headless probe, it reads `KW_SESSION` and
+requires `--server`, `--namespace` and `--workspace`.
+
+The agent premium viewer currently supports video, playback audio and
+negotiated text clipboard. Keyboard/pointer injection and applying guest
+resize are still pending. Unsupported input is not forwarded and does not
+terminate the view-only stream; local fullscreen/disconnect controls work.
+Use RFB with `--agent-clipboard` when interactive keyboard/mouse is needed.
+The toolbar does not advertise guest resize before it can apply a mode.
+
+On Windows, supported native decoder DLLs (FFmpeg avcodec 59/avutil 57 and
+Opus, including their dependencies) must be beside the executable. Unknown
+FFmpeg ABIs fail preflight. The diagnostic does not install or bundle codecs.
+
 Only plain text is supported, up to 64 KiB UTF-8, without embedded NUL.
 Empty text is supported. Files, images, and automatic typing/execution are
 not clipboard operations. Clipboard contents are not written to logs.

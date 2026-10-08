@@ -9,6 +9,7 @@ dist/
 *.so
 *.dylib
 /kube-workspaces
+/agent-probe
 
 # Updater transaction artefacts
 .pending-update
