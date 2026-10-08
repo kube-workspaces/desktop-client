@@ -50,7 +50,6 @@ type Tier1Config struct {
 	// Takeover requests ownership after explicit Enter consent on a busy
 	// display. It must return immediately; networking belongs to the producer.
 	Takeover func()
-
 	// ClipboardInterval is how often the host clipboard is sampled. Zero
 	// means [DefaultClipboardInterval]; a negative value disables
 	// host-to-guest clipboard sharing (guest-to-host still works).
@@ -65,6 +64,12 @@ type Tier1Config struct {
 	// MaxUploadRects bounds how many sub-rectangles one frame may upload.
 	// Tier 1 carries whole frames, so this is inert; kept for symmetry.
 	MaxUploadRects int
+
+	// Transport overrides the connection badge label. Empty means
+	// "Selkies" (the original Tier-1 transport); the agent premium
+	// window sets "Agent". The badge reports the serving transport,
+	// never a capability claim.
+	Transport string
 
 	// Logf, if set, receives diagnostic messages.
 	Logf func(format string, args ...any)

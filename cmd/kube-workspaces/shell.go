@@ -49,6 +49,7 @@ func runShell(ctx context.Context, args []string) error {
 	height := fs.Int("height", 0, "initial window height in pixels (0 restores the last size)")
 	uiScale := fs.Float64("ui-scale", 0, "interface scale factor 1-3 (0 follows the display)")
 	noTray := fs.Bool("no-tray", false, "disable the system-tray icon for this run (overrides the stored setting)")
+	agentTier := fs.Bool("agent-tier", false, "open VM workspaces on the premium agent transport (video/audio/resize; observer-grade in v1, no guest input yet) instead of Selkies/RFB")
 	verbose := fs.Bool("v", false, "log diagnostics to stderr")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces shell [flags]\n\n")
@@ -128,6 +129,7 @@ func runShell(ctx context.Context, args []string) error {
 		Compress:       *compress,
 		UpdateInterval: *interval,
 		ScaleQuality:   scale,
+		AgentTier:      *agentTier,
 		Logf:           logf,
 	}
 

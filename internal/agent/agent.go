@@ -69,6 +69,15 @@ const (
 	ReasonTransportLost    = "transport-lost"
 )
 
+// ErrRefused marks a guest attach rejection (bad/expired binding): the
+// viewer must re-attach with a fresh ticket, never replay or fall back
+// silently around ownership.
+var ErrRefused = errors.New("agent attach refused by guest")
+
+// ErrProtocol marks a wire violation (bad tag, oversize, malformed
+// envelope): the session is unusable, close it.
+var ErrProtocol = errors.New("agent wire protocol violation")
+
 // Counters mirrors the session telemetry the indicator contract requires.
 type Counters struct {
 	ControlFrames uint64
@@ -248,7 +257,7 @@ func Attach(conn *wsio.Conn, signed string) (*Session, error) {
 		if reason == "" {
 			reason = ReasonTicketRefused
 		}
-		return nil, fmt.Errorf("agent: refused (%s)", reason)
+		return nil, fmt.Errorf("agent: refused (%s): %w", reason, ErrRefused)
 	}
 	return session, nil
 }
@@ -281,6 +290,15 @@ func (s *Session) Keyframe() error {
 	return nil
 }
 
+// RequestResize asks the guest to adopt a mode; the ACK pairs by request
+// id in Run (or the synchronous Resize for lock-step diagnostics). Width
+// and height ride along for servers that honor them; pairing is by id.
+func (s *Session) RequestResize(requestID string, width, height int) error {
+	return s.writeControl("resizeRequest", map[string]any{
+		"requestId": requestID, "width": width, "height": height,
+	})
+}
+
 // Close sends Bye and closes the transport. The server releases the seat.
 func (s *Session) Close() error {
 	_ = s.writeControl("bye", map[string]any{})
@@ -289,11 +307,13 @@ func (s *Session) Close() error {
 
 // Callbacks receives decoded session events. Implementations must be
 // non-blocking (called on the read loop); heavy work goes to queues.
+// A returned error fails the session loudly — corrupted media never
+// limps along silently.
 type Callbacks struct {
 	// OnVideo gets one complete H.264 access unit per call.
-	OnVideo func(payload []byte)
+	OnVideo func(payload []byte) error
 	// OnAudio gets one Opus packet per call.
-	OnAudio func(payload []byte)
+	OnAudio func(payload []byte) error
 	// OnResizeAck reports requested vs actual dimensions or a reason.
 	OnResizeAck func(requestID string, reason string)
 }
@@ -343,7 +363,9 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 			s.counters.VideoFrames++
 			s.counters.VideoBytes += uint64(len(body))
 			if callbacks.OnVideo != nil {
-				callbacks.OnVideo(body)
+				if err := callbacks.OnVideo(body); err != nil {
+					return err
+				}
 			}
 		case 0x02:
 			s.counters.MediaFrames++
@@ -351,7 +373,9 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 			s.counters.AudioFrames++
 			s.counters.AudioBytes += uint64(len(body))
 			if callbacks.OnAudio != nil {
-				callbacks.OnAudio(body)
+				if err := callbacks.OnAudio(body); err != nil {
+					return err
+				}
 			}
 		default:
 			return fmt.Errorf("agent: unknown media kind %d", tag)
@@ -387,13 +411,15 @@ func (s *Session) Probe(readFor time.Duration) (*ProbeResult, error) {
 		return nil, err
 	}
 	err := s.Run(Callbacks{
-		OnVideo: func(payload []byte) {
+		OnVideo: func(payload []byte) error {
 			videoFrames++
 			videoBytes += uint64(len(payload))
+			return nil
 		},
-		OnAudio: func(payload []byte) {
+		OnAudio: func(payload []byte) error {
 			audioFrames++
 			audioBytes += uint64(len(payload))
+			return nil
 		},
 		OnResizeAck: func(requestID string, reason string) {
 			if requestID == "probe-resize-1" {

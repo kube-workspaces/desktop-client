@@ -294,6 +294,13 @@ type SessionOptions struct {
 	UpdateInterval time.Duration
 	// ScaleQuality selects the scaling filter for the guest image.
 	ScaleQuality viewer.ScaleQuality
+	// AgentTier opts a VM workspace into the premium agent transport
+	// (video/audio/resize via kw-agent-v1) instead of Selkies/RFB.
+	// Explicit until the API reports transport truth: the client never
+	// guesses agent availability from other capability data. The window
+	// is observer-grade in v1 (no guest input injection yet); refusal,
+	// busy seats and auth failures never fall back silently.
+	AgentTier bool
 	// Logf, if set, receives session diagnostics.
 	Logf func(format string, args ...any)
 }
@@ -334,6 +341,18 @@ func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observe
 			ws: ws,
 		}, nil
 	default:
+		if d.opts.AgentTier {
+			if err := session.Tier1Available(); err != nil {
+				if d.opts.Logf != nil {
+					d.opts.Logf("workspace %s requested agent premium but this build cannot decode it (%v); using Tier 0", ws.Key(), err)
+				}
+				return dialExclusiveSession(ctx, d.client, ws, d.opts)
+			}
+			if d.opts.Logf != nil {
+				d.opts.Logf("workspace %s opening agent premium transport", ws.Key())
+			}
+			return &agentHandle{client: d.client, ws: ws, opts: d.opts}, nil
+		}
 		if ws.RemoteDesktop != nil && ws.RemoteDesktop.Protocol == "selkies" {
 			// A process that cannot decode the pinned wire format has no Tier 1
 			// to offer, and asking anyway costs the display: the claim is held
@@ -823,6 +842,194 @@ func (w *tier1LiveWindow) ReleaseInput() {
 
 // Close implements [SessionHandle].
 func (h *tier1Handle) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.fallback != nil {
+		h.fallback.Close()
+	}
+}
+
+// agentHandle is the explicit opt-in premium window (see
+// SessionOptions.AgentTier): kw-agent-v1 video/audio/resize instead of
+// Selkies/RFB. Observer-grade in v1 (no guest input injection yet).
+// Recoverable transport failures fall back to Tier 0 in place;
+// refusal, busy seats and auth failures surface instead.
+type agentHandle struct {
+	client *kwclient.Client
+	ws     kwclient.Workspace
+	opts   SessionOptions
+
+	mu       sync.Mutex
+	fallback *exclusiveHandle
+}
+
+// Kind implements [SessionHandle].
+func (h *agentHandle) Kind() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.fallback != nil {
+		return "display"
+	}
+	return "agent"
+}
+
+// Open implements [SessionHandle].
+func (h *agentHandle) Open(ctx context.Context) (liveWindow, error) {
+	h.mu.Lock()
+	fb := h.fallback
+	h.mu.Unlock()
+	if fb != nil {
+		return fb.openWindow(ctx)
+	}
+
+	live, err := session.OpenAgentPremium(ctx, h.client, h.ws.Namespace, h.ws.Name, "",
+		chrome.New(viewer.NewSDLBackend()), session.Tier1Config{
+			Title:        h.ws.Key(),
+			Audio:        true,
+			ScaleQuality: h.opts.ScaleQuality,
+			Logf:         h.opts.Logf,
+		})
+	if err != nil {
+		return nil, err
+	}
+	return &agentLiveWindow{handle: h, det: live.Detached}, nil
+}
+
+// agentLiveWindow is the live window of an [agentHandle]: a premium window
+// that swaps itself for a Tier 0 window on a recoverable failure. A refused
+// ticket, a rejected credential or a busy seat surfaces instead of being
+// routed around.
+type agentLiveWindow struct {
+	handle *agentHandle
+	det    *viewer.Tier1Detached
+	fb     liveWindow
+
+	closed      bool
+	result      error
+	disposition connection.CloseDisposition
+}
+
+// Step implements [liveWindow].
+func (w *agentLiveWindow) Step(ctx context.Context, now time.Time, events []viewer.Event) error {
+	if w.fb != nil {
+		return w.fb.Step(ctx, now, events)
+	}
+	if w.det == nil {
+		return nil
+	}
+	if err := w.det.Step(now, events); err != nil {
+		return err
+	}
+	if !w.det.Closed() {
+		return nil
+	}
+	res := session.MapAgentResult(ctx, w.det.Result())
+	w.disposition = w.det.CloseDisposition()
+	w.det.Close()
+	w.det = nil
+	if res == nil || ctx.Err() != nil || errors.Is(res, session.ErrNoFallback) {
+		w.closed, w.result = true, res
+		return nil
+	}
+	if w.handle.opts.Logf != nil {
+		w.handle.opts.Logf("agent premium to %s failed (%v); falling back to Tier 0", w.handle.ws.Key(), res)
+	}
+	fb, derr := dialExclusiveSession(ctx, w.handle.client, w.handle.ws, w.handle.opts)
+	if derr != nil {
+		w.closed, w.result = true, derr
+		return nil
+	}
+	w.handle.mu.Lock()
+	w.handle.fallback = fb
+	w.handle.mu.Unlock()
+	win, err := fb.openWindow(ctx)
+	if err != nil {
+		w.closed, w.result = true, err
+		return nil
+	}
+	w.fb = win
+	return nil
+}
+
+// IdleWait implements [liveWindow].
+func (w *agentLiveWindow) IdleWait(now time.Time) time.Duration {
+	if w.fb != nil {
+		return w.fb.IdleWait(now)
+	}
+	if w.det == nil {
+		return 0
+	}
+	return w.det.IdleWait(now)
+}
+
+// Closed implements [liveWindow].
+func (w *agentLiveWindow) Closed() bool {
+	if w.fb != nil {
+		return w.fb.Closed()
+	}
+	return w.closed
+}
+
+// Result implements [liveWindow].
+func (w *agentLiveWindow) Result() error {
+	if w.fb != nil {
+		return w.fb.Result()
+	}
+	return w.result
+}
+
+func (w *agentLiveWindow) CloseDisposition() connection.CloseDisposition {
+	if w.fb != nil {
+		return w.fb.CloseDisposition()
+	}
+	return w.disposition
+}
+
+// Close implements [liveWindow].
+func (w *agentLiveWindow) Close() {
+	if w.det != nil {
+		w.det.Close()
+		w.det = nil
+	}
+	if w.fb != nil {
+		w.fb.Close()
+		w.fb = nil
+	}
+}
+
+// WindowBackend implements [liveWindow].
+func (w *agentLiveWindow) WindowBackend() viewer.Backend {
+	if w.fb != nil {
+		return w.fb.WindowBackend()
+	}
+	if w.det == nil {
+		return nil
+	}
+	return w.det.Backend()
+}
+
+// Raise implements [liveWindow].
+func (w *agentLiveWindow) Raise() error {
+	be := w.WindowBackend()
+	if be == nil {
+		return nil
+	}
+	return be.Raise()
+}
+
+// ReleaseInput implements [liveWindow].
+func (w *agentLiveWindow) ReleaseInput() {
+	if w.fb != nil {
+		w.fb.ReleaseInput()
+		return
+	}
+	if w.det != nil {
+		w.det.ReleaseInput()
+	}
+}
+
+// Close implements [SessionHandle].
+func (h *agentHandle) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.fallback != nil {

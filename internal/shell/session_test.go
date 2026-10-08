@@ -76,3 +76,30 @@ func TestViewerStatusMapping(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentTierDialSelectsAgentHandle(t *testing.T) {
+	vm := workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)
+	d := &sessionDialer{opts: SessionOptions{AgentTier: true}}
+	handle, err := d.Dial(context.Background(), vm, false)
+	if err != nil {
+		t.Fatalf("agent-tier dial: %v", err)
+	}
+	agent, ok := handle.(*agentHandle)
+	if !ok {
+		t.Fatalf("agent-tier dial opened %T, want *agentHandle", handle)
+	}
+	if agent.Kind() != "agent" {
+		t.Fatalf("kind = %q, want agent", agent.Kind())
+	}
+	// Without the opt-in flag the agent branch is unreachable: the same
+	// workspace is not a VM-terminal either; assert the flag gates by
+	// checking a non-VM workspace never yields an agent handle.
+	plain := workspace("team", "ctr-a", kwclient.WorkspaceTypeContainer, true)
+	other, err := d.Dial(context.Background(), plain, false)
+	if err != nil {
+		t.Fatalf("plain dial: %v", err)
+	}
+	if _, ok := other.(*agentHandle); ok {
+		t.Fatal("agent handle must be explicit opt-in only")
+	}
+}

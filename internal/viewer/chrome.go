@@ -141,10 +141,21 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 			state = connection.Busy
 		}
 	}
+	transport := w.opts.Transport
+	if transport == "" {
+		transport = "Selkies"
+	}
+	// Agent premium v1 is observer-grade: real resize, no guest input or
+	// clipboard yet. The badge must not advertise what the transport
+	// cannot do.
+	specialKeys, clipboardSync := true, true
+	if transport == "Agent" {
+		specialKeys, clipboardSync = false, false
+	}
 	return connection.Snapshot{Workspace: w.opts.Title, Surface: connection.Desktop,
-		State: state, Role: connection.Exclusive, Transport: "Selkies",
+		State: state, Role: connection.Exclusive, Transport: transport,
 		Clipboard: !w.clipboardDisabled && w.opts.ClipboardInterval >= 0, ResizeGuest: !w.opts.NoResize, Muted: w.muted,
-		Capabilities: connection.Capabilities{SpecialKeys: true, ClipboardSync: true, GuestResize: true, Audio: w.audio != nil}}
+		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: true, Audio: w.audio != nil}}
 }
 
 func (w *tier1Window) connectionAction(a connection.Action) error {
