@@ -316,6 +316,15 @@ type SessionOptions struct {
 type sessionDialer struct {
 	client *kwclient.Client
 	opts   SessionOptions
+	// Optional test seam; production always preflights native decoders.
+	tier1Available func() error
+}
+
+func (d *sessionDialer) preflightTier1() error {
+	if d.tier1Available != nil {
+		return d.tier1Available()
+	}
+	return session.Tier1Available()
 }
 
 // NewSessionDialer builds the production [SessionDialer] over a concrete
@@ -346,7 +355,7 @@ func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observe
 		}, nil
 	default:
 		if d.opts.AgentTier {
-			if err := session.Tier1Available(); err != nil {
+			if err := d.preflightTier1(); err != nil {
 				if d.opts.Logf != nil {
 					d.opts.Logf("workspace %s requested agent premium but this build cannot decode it (%v); using Tier 0", ws.Key(), err)
 				}
@@ -364,7 +373,7 @@ func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observe
 			// and the user is prompted to take over their own session. The
 			// transport is chosen here, before any window and any dial, so a
 			// missing codec costs nothing but a slower stream.
-			if err := session.Tier1Available(); err != nil {
+			if err := d.preflightTier1(); err != nil {
 				if d.opts.Logf != nil {
 					d.opts.Logf("workspace %s advertises Selkies but this build cannot decode it (%v); using Tier 0", ws.Key(), err)
 				}

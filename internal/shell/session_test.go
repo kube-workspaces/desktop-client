@@ -79,7 +79,7 @@ func TestViewerStatusMapping(t *testing.T) {
 
 func TestAgentTierDialSelectsAgentHandle(t *testing.T) {
 	vm := workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)
-	d := &sessionDialer{opts: SessionOptions{AgentTier: true}}
+	d := &sessionDialer{opts: SessionOptions{AgentTier: true}, tier1Available: func() error { return nil }}
 	handle, err := d.Dial(context.Background(), vm, false)
 	if err != nil {
 		t.Fatalf("agent-tier dial: %v", err)
