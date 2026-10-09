@@ -692,6 +692,30 @@ func initialGuestSize(hostW, hostH int) (int, int) {
 	return 640, 360
 }
 
+// nearestMode picks the largest-area advertised mode fitting maxWxmaxH.
+// With sixteenNine only exact 16:9 modes qualify. Sizes outside the
+// agent's 320..8192/200..8192 validation bounds never qualify. It reports
+// false when nothing fits, and the caller keeps its own size.
+func nearestMode(modes [][2]int, maxW, maxH int, sixteenNine bool) (int, int, bool) {
+	bestW, bestH, bestArea := 0, 0, 0
+	for _, m := range modes {
+		w, h := m[0], m[1]
+		if w < 320 || h < 200 || w > 8192 || h > 8192 {
+			continue
+		}
+		if w > maxW || h > maxH {
+			continue
+		}
+		if sixteenNine && w*9 != h*16 {
+			continue
+		}
+		if area := w * h; area > bestArea {
+			bestW, bestH, bestArea = w, h, area
+		}
+	}
+	return bestW, bestH, bestArea > 0
+}
+
 // fitInitialGuest sizes a fresh window and steers a resizable guest to a
 // 16:9 mode on the first frame. The window opens at a fallback size, so
 // without this the guest keeps whatever mode it booted (e.g. 800x600) and
@@ -718,7 +742,19 @@ func (w *tier1Window) fitInitialGuest(now time.Time, fbW, fbH int) {
 	if bounds, ok := LaunchDisplayBounds(); ok {
 		hostW, hostH = bounds.W, bounds.H
 	}
+	// Prefer a mode the guest actually offers: exact 16:9 first, then any
+	// fitting advertised mode (a guaranteed fit beats a doomed ladder
+	// guess on hosts whose panels match no 16:9 rung). The ladder remains
+	// for guests that predate hello.displayModes.
 	tw, th := initialGuestSize(hostW, hostH)
+	if modes, ok := w.inp.(interface{ DisplayModes() [][2]int }); ok {
+		advertised := modes.DisplayModes()
+		if nw, nh, found := nearestMode(advertised, hostW, hostH, true); found {
+			tw, th = nw, nh
+		} else if nw, nh, found := nearestMode(advertised, hostW, hostH, false); found {
+			tw, th = nw, nh
+		}
+	}
 	if (tw == fbW && th == fbH) || tw <= 0 || th <= 0 {
 		w.fitGuest(fbW, fbH)
 		return
@@ -1049,6 +1085,18 @@ func (w *tier1Window) applyGuestResize(now time.Time) error {
 	}
 	if !w.resizePending || now.Before(w.resizeDue) {
 		return nil
+	}
+	// Snap the debounced size to the nearest advertised mode that fits:
+	// odd window-chrome sizes (e.g. 1282x808) then follow the guest's real
+	// 1280x800 instead of NACKing. Guests that advertise nothing keep the
+	// requested size exactly as before.
+	if modes, ok := w.inp.(interface{ DisplayModes() [][2]int }); ok {
+		if nw, nh, found := nearestMode(modes.DisplayModes(), w.resizeW, w.resizeH, false); found {
+			if nw != w.resizeW || nh != w.resizeH {
+				w.opts.logf("snapping guest resize %dx%d to advertised %dx%d", w.resizeW, w.resizeH, nw, nh)
+			}
+			w.resizeW, w.resizeH = nw, nh
+		}
 	}
 	w.resizePending = false
 	if w.texW == w.resizeW && w.texH == w.resizeH {

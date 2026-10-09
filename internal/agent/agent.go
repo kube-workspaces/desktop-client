@@ -138,18 +138,21 @@ func DecodeTicket(signed string) (string, Ticket, error) {
 // It owns no UI and no decoders; media bytes are counted here and handed to
 // the presenter layer by the caller.
 type Session struct {
-	conn             *wsio.Conn
-	session          string
-	sequence         uint64
-	counters         Counters
-	writeMu          sync.Mutex
-	pending          map[string]bool
-	clipboard        bool
-	telemetry        bool
-	input            bool
-	resize           bool
-	captureWidth     int
-	captureHeight    int
+	conn          *wsio.Conn
+	session       string
+	sequence      uint64
+	counters      Counters
+	writeMu       sync.Mutex
+	pending       map[string]bool
+	clipboard     bool
+	telemetry     bool
+	input         bool
+	resize        bool
+	captureWidth  int
+	captureHeight int
+	// displayModes is the guest's advertised selected-output mode list
+	// (hello.displayModes), empty when the guest predates it.
+	displayModes     [][2]int
 	clipboardPending map[string]bool
 	lastSentNs       uint64
 }
@@ -266,6 +269,15 @@ func Attach(conn *wsio.Conn, signed string) (*Session, error) {
 	if capture, ok := hello.Payload["capture"].(map[string]any); ok {
 		session.captureWidth, session.captureHeight = Dimensions(capture)
 	}
+	if modes, ok := hello.Payload["displayModes"].([]any); ok {
+		for _, m := range modes {
+			if entry, ok := m.(map[string]any); ok {
+				if w, h := Dimensions(entry); w != 0 && h != 0 {
+					session.displayModes = append(session.displayModes, [2]int{w, h})
+				}
+			}
+		}
+	}
 	ticket.SessionID = hello.SessionID
 	if err := session.writeControl("attach", map[string]any{"ticket": ticket}); err != nil {
 		return nil, fmt.Errorf("agent: attach: %w", err)
@@ -332,6 +344,10 @@ func (s *Session) InputAvailable() bool  { return s.input }
 func (s *Session) ResizeAvailable() bool { return s.resize }
 
 func (s *Session) CaptureSize() (int, int) { return s.captureWidth, s.captureHeight }
+
+// DisplayModes reports the guest's advertised selected-output modes,
+// empty when the guest predates hello.displayModes.
+func (s *Session) DisplayModes() [][2]int { return s.displayModes }
 
 // Dimensions validates the JSON dimensions shared by hello.capture and resizeAck.actual.
 func Dimensions(payload map[string]any) (int, int) {

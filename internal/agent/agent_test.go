@@ -130,6 +130,74 @@ func dialAgent(t *testing.T, url string) *wsio.Conn {
 	return wsio.New(ws)
 }
 
+func TestHelloDisplayModesParsed(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer ws.Close()
+		send := func(messageType string, payload map[string]any) {
+			t.Helper()
+			body, _ := json.Marshal(Envelope{
+				Protocol: "kw-agent-v1", ProtocolVersion: 1,
+				SessionID: "sess-modes", Generation: 1, Sequence: 1,
+				SentAtNs: 1, Channel: "control", Type: messageType, Payload: payload,
+			})
+			frame := append([]byte{0x00}, uint32be(len(body))...)
+			if err := ws.WriteMessage(websocket.BinaryMessage, append(frame, body...)); err != nil {
+				t.Errorf("server write: %v", err)
+			}
+		}
+		send("hello", map[string]any{
+			"capture": map[string]any{"width": 800.0, "height": 600.0},
+			"displayModes": []any{
+				map[string]any{"width": 800.0, "height": 600.0},
+				map[string]any{"width": 1920.0, "height": 1080.0},
+				map[string]any{"width": -1.0, "height": 1080.0}, // invalid: dropped
+				"wide", // malformed: dropped
+			},
+		})
+		_, data, err := ws.ReadMessage() // attach
+		if err != nil {
+			t.Fatalf("server read attach: %v", err)
+		}
+		var attach Envelope
+		if err := json.Unmarshal(data[5:], &attach); err != nil || attach.Type != "attach" {
+			t.Fatalf("want attach, got %v/%v", attach.Type, err)
+		}
+		send("attachResult", map[string]any{"admitted": true})
+		_, _, _ = ws.ReadMessage() // bye on Close
+	}))
+	t.Cleanup(srv.Close)
+	session, err := Attach(dialAgent(t, srv.URL), signedTestTicket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if w, h := session.CaptureSize(); w != 800 || h != 600 {
+		t.Fatalf("capture = %dx%d, want 800x600", w, h)
+	}
+	want := [][2]int{{800, 600}, {1920, 1080}}
+	if got := session.DisplayModes(); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("modes = %v, want %v", got, want)
+	}
+}
+
+func TestHelloWithoutModesLeavesNil(t *testing.T) {
+	srv, _ := fakeAgent(t, false)
+	session, err := Attach(dialAgent(t, srv.URL), signedTestTicket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if modes := session.DisplayModes(); len(modes) != 0 {
+		t.Fatalf("modes = %v, want empty for a predating guest", modes)
+	}
+}
+
 func TestInputWireBoundsAndOrdering(t *testing.T) {
 	messages := make(chan Envelope, 3)
 	upgrader := websocket.Upgrader{}

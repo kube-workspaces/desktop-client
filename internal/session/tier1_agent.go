@@ -31,6 +31,7 @@ type agentInput struct {
 	keys                    map[keysym.Keysym]bool
 	x, y                    int
 	videoWidth, videoHeight int
+	modes                   [][2]int
 }
 
 func (in *agentInput) attach(session *agent.Session) {
@@ -39,8 +40,10 @@ func (in *agentInput) attach(session *agent.Session) {
 	in.session = session
 	in.keys = make(map[keysym.Keysym]bool)
 	in.videoWidth, in.videoHeight = 0, 0
+	in.modes = nil
 	if session != nil {
 		in.videoWidth, in.videoHeight = session.CaptureSize()
+		in.modes = session.DisplayModes()
 	}
 }
 
@@ -102,6 +105,14 @@ func (in *agentInput) ResizeAvailable() bool {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	return in.session != nil && in.session.ResizeAvailable()
+}
+
+// DisplayModes reports the attached guest's advertised mode list, nil when
+// detached or when the guest predates hello.displayModes.
+func (in *agentInput) DisplayModes() [][2]int {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.modes
 }
 func (in *agentInput) SetClipboard(text string) error {
 	in.mu.Lock()

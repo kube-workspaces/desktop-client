@@ -821,3 +821,84 @@ func TestTier1InitialResizeSkips(t *testing.T) {
 		}
 	})
 }
+
+// modesInput is a capable guest that also advertises hello.displayModes.
+type modesInput struct {
+	recordInput
+	modes [][2]int
+}
+
+func (m *modesInput) ResizeAvailable() bool  { return true }
+func (m *modesInput) DisplayModes() [][2]int { return m.modes }
+
+func TestNearestMode(t *testing.T) {
+	t.Parallel()
+	table := [][2]int{{800, 600}, {1280, 800}, {1920, 1080}, {3840, 2136}}
+	cases := []struct {
+		maxW, maxH, wantW, wantH int
+		sixteenNine              bool
+		found                    bool
+	}{
+		{3840, 2160, 3840, 2136, false, true},
+		{1920, 1080, 1920, 1080, false, true},
+		{1920, 1080, 1920, 1080, true, true},
+		{1282, 808, 1280, 800, false, true}, // window-chrome size snaps
+		{1366, 768, 800, 600, false, true},
+		{1366, 768, 0, 0, true, false}, // no exact 16:9 fits
+		{100, 100, 0, 0, false, false},
+	}
+	for _, tc := range cases {
+		w, h, found := nearestMode(table, tc.maxW, tc.maxH, tc.sixteenNine)
+		if found != tc.found || w != tc.wantW || h != tc.wantH {
+			t.Errorf("nearestMode(%dx%d,16:9=%v) = %dx%d/%v, want %dx%d/%v",
+				tc.maxW, tc.maxH, tc.sixteenNine, w, h, found, tc.wantW, tc.wantH, tc.found)
+		}
+	}
+	// Out-of-bounds and degenerate entries never qualify.
+	junk := [][2]int{{0, 0}, {-800, 600}, {100000, 100000}, {1280, 0}}
+	if _, _, found := nearestMode(junk, 99999, 99999, false); found {
+		t.Fatal("junk modes qualified")
+	}
+}
+
+func TestTier1InitialResizePrefersAdvertised(t *testing.T) {
+	be := newFakeBackend(1280, 800)
+	inp := &modesInput{modes: [][2]int{{800, 600}, {1280, 800}, {1920, 1080}}}
+	sink := &Tier1Sink{}
+	w := &tier1Window{be: be, inp: inp, sink: sink, winW: 1280, winH: 800, opts: Tier1Config{Transport: "Agent"}}
+	w.opts.applyDefaults()
+	sink.Video(image.NewRGBA(image.Rect(0, 0, 800, 600)))
+	if err := w.presentFrame(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// The ladder would guess 1280x720 (unsupported); the advertised table
+	// offers 1280x800, which fits and is guaranteed.
+	if !w.resizePending || w.resizeW != 1280 || w.resizeH != 800 {
+		t.Fatalf("pending resize = %dx%d/%v, want 1280x800/true", w.resizeW, w.resizeH, w.resizePending)
+	}
+	if err := w.applyGuestResize(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(inp.resizes) != 1 || inp.resizes[0] != (resizeCall{1280, 800}) {
+		t.Fatalf("guest resize calls = %v, want one 1280x800", inp.resizes)
+	}
+}
+
+func TestTier1ResizeSnapsToAdvertised(t *testing.T) {
+	be := newFakeBackend(1920, 1080)
+	inp := &modesInput{modes: [][2]int{{800, 600}, {1280, 800}, {1920, 1080}}}
+	sink := &Tier1Sink{}
+	w := &tier1Window{be: be, inp: inp, sink: sink, winW: 1920, winH: 1080,
+		texW: 1920, texH: 1080, haveFrame: true, opts: Tier1Config{Transport: "Agent"}}
+	w.opts.applyDefaults()
+	now := time.Now()
+	if err := w.handleEvent(now, EventResize{W: 1282, H: 808}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.applyGuestResize(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(inp.resizes) != 1 || inp.resizes[0] != (resizeCall{1280, 800}) {
+		t.Fatalf("guest resize calls = %v, want snapped 1280x800", inp.resizes)
+	}
+}
