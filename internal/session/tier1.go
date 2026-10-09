@@ -81,8 +81,9 @@ type Tier1Config struct {
 	// NoResize keeps the guest resolution fixed while resizing the window.
 	NoResize bool
 	// Width and Height are the initial window size in pixels. Zero means
-	// 1280x800 until the first frame reveals the guest and the window is
-	// fitted to it.
+	// 1280x800 until the first frame, when the window is fitted to the
+	// guest; agent premium windows additionally steer a resizable guest to
+	// the host-fitting 16:9 mode first.
 	Width, Height int
 	// VideoDec and AudioDec override the native FFmpeg/Opus decoders. Nil
 	// uses the native dynamic loads; an override lets a caller pin a codec

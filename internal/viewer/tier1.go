@@ -24,8 +24,9 @@ type Tier1Config struct {
 	Title string
 
 	// Width and Height are the initial window size in pixels. Zero means
-	// 1280x800 until the first frame reveals the guest, when the window is
-	// fitted to it.
+	// 1280x800 until the first frame, when a resizable guest is steered to
+	// the host-fitting 16:9 mode (see initialGuestSize) and the window
+	// follows; otherwise the window is fitted to the guest.
 	Width, Height int
 
 	// Fullscreen starts the session fullscreen.
@@ -592,6 +593,9 @@ type tier1Window struct {
 	resizeW, resizeH int
 	resizeDue        time.Time
 	resizePending    bool
+	// initialResizeDone records the one-shot first-frame guest steer, so a
+	// fresh window asks once and later frames never re-ask.
+	initialResizeDone bool
 
 	hostClip string
 	clipDue  time.Time
@@ -619,6 +623,7 @@ func (w *tier1Window) syncGeneration() {
 		w.held = nil
 		w.buttons = 0
 		w.sentMask, w.sentAny = 0, false
+		w.initialResizeDone = false
 		w.scheduleGuestResize(time.Now(), w.winW, w.winH)
 		w.hostClip, w.clipHint = "", false
 		// Clear any PCM already queued in the output device, not just the
@@ -646,6 +651,87 @@ func (w *tier1Window) initialSize(fbW, fbH int) (int, int) {
 		width, height = fit.W, fit.H
 	}
 	return width, height
+}
+
+// initialSixteenNineModes lists the 16:9 guest modes the viewer may request
+// on connect, largest first (1366x768 is the common almost-16:9 laptop
+// panel). The ladder is capped at 1920x1080 on purpose: a host running
+// something bigger (e.g. 4K) still starts at 1080p, which the reference
+// guest has proven at OS level, while a smaller host steps down to the
+// largest 16:9 mode fitting its display.
+var initialSixteenNineModes = [][2]int{
+	{1920, 1080},
+	{1600, 900},
+	{1366, 768},
+	{1280, 720},
+}
+
+// initialGuestSize picks the largest 16:9 mode fitting hostWxhostH. When no
+// ladder mode fits, it fits a 16:9 frame into the host with even dimensions
+// (floored at 640x360, the smallest mode worth asking for); a non-positive
+// host falls back to 1920x1080.
+func initialGuestSize(hostW, hostH int) (int, int) {
+	for _, m := range initialSixteenNineModes {
+		if m[0] <= hostW && m[1] <= hostH {
+			return m[0], m[1]
+		}
+	}
+	if hostW <= 0 || hostH <= 0 {
+		return 1920, 1080
+	}
+	// Largest exact 16:9 frame inside the host with even dimensions: every
+	// such frame is 16k×9k, and the height is even exactly when k is.
+	k := hostW / 16
+	if max := hostH / 9; k > max {
+		k = max
+	}
+	k &^= 1
+	if w, h := 16*k, 9*k; w >= 640 && h >= 360 {
+		return w, h
+	}
+	return 640, 360
+}
+
+// fitInitialGuest sizes a fresh window and steers a resizable guest to a
+// 16:9 mode on the first frame. The window opens at a fallback size, so
+// without this the guest keeps whatever mode it booted (e.g. 800x600) and
+// every early request carries an odd window-chrome size. The steer applies
+// to agent premium windows only (Transport "Agent"); Selkies sessions keep
+// today's fit-to-guest behaviour. Pinned, fixed-resolution, view-only and
+// already-steered windows keep it too, as does a window the user already
+// resized before the first frame arrived (a pending request means the
+// user's size wins). The steer rides the debounce machine, so a window
+// event echoing the programmatic resize coalesces instead of doubling the
+// mode change. A guest that NACKs the mode keeps streaming at its current
+// size, letterboxed — the same outcome as a failed manual resize today.
+func (w *tier1Window) fitInitialGuest(now time.Time, fbW, fbH int) {
+	if w.opts.Transport != "Agent" || w.pinned || w.opts.NoResize || w.initialResizeDone || w.resizePending {
+		w.fitGuest(fbW, fbH)
+		return
+	}
+	if capable, ok := w.inp.(interface{ ResizeAvailable() bool }); ok && !capable.ResizeAvailable() {
+		w.fitGuest(fbW, fbH)
+		return
+	}
+	w.initialResizeDone = true
+	hostW, hostH := w.winW, w.winH
+	if bounds, ok := LaunchDisplayBounds(); ok {
+		hostW, hostH = bounds.W, bounds.H
+	}
+	tw, th := initialGuestSize(hostW, hostH)
+	if (tw == fbW && th == fbH) || tw <= 0 || th <= 0 {
+		w.fitGuest(fbW, fbH)
+		return
+	}
+	if tw != w.winW || th != w.winH {
+		if err := w.be.SetSize(tw, th); err != nil {
+			w.opts.logf("resize window to %dx%d: %v", tw, th, err)
+		} else {
+			w.winW, w.winH = w.be.Size()
+		}
+	}
+	w.opts.logf("requesting initial guest display %dx%d", tw, th)
+	w.scheduleGuestResize(now, tw, th)
 }
 
 // step runs one iteration of the render loop.
@@ -1039,7 +1125,7 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 			}
 			w.texW, w.texH = fw, fh
 			if !w.haveFrame {
-				w.fitGuest(fw, fh)
+				w.fitInitialGuest(now, fw, fh)
 			}
 		}
 		if err := w.be.Upload(Rect{W: w.texW, H: w.texH}, frame.Pix, frame.Stride); err != nil {

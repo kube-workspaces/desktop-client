@@ -43,8 +43,11 @@ func presentAgent(ctx context.Context, client *kwclient.Client, ns, name string,
 	ctx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
 	backend := &countedSDL{SDLBackend: viewer.NewSDLBackend()}
+	// Unpinned: the viewer opens at the fallback size, then steers a
+	// resizable guest to the host-fitting 16:9 mode on the first frame
+	// and follows it, instead of pinning 1280x800 against the guest.
 	err := session.RunAgentPremium(ctx, client, ns, name, "agent-present-probe", backend, session.Tier1Config{
-		Title: "Agent presentation proof", Width: 1280, Height: 800, NoResize: !resizeGuest, Audio: true,
+		Title: "Agent presentation proof", NoResize: !resizeGuest, Audio: true,
 		Logf: func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) },
 	})
 	fmt.Printf("uploaded_frames=%d presented_frames=%d queued_audio_bytes=%d\n", backend.uploads, backend.presents, backend.audioBytes)

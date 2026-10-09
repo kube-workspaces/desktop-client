@@ -648,3 +648,176 @@ func TestTier1ReconnectKeepsFrameAndClearsGeneration(t *testing.T) {
 		t.Fatal("fresh video did not clear reconnect status")
 	}
 }
+
+func TestInitialGuestSizeLadder(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		hostW, hostH, wantW, wantH int
+	}{
+		{3840, 2160, 1920, 1080}, // bigger host still starts at 1080p
+		{2560, 1440, 1920, 1080},
+		{1920, 1200, 1920, 1080}, // 16:10 host takes the 1080p rung
+		{1920, 1080, 1920, 1080},
+		{1600, 900, 1600, 900},
+		{1366, 768, 1366, 768},
+		{1280, 800, 1280, 720}, // old fallback window maps to 720p
+		{1280, 720, 1280, 720},
+		{1024, 768, 1024, 576}, // 4:3 host gets an even 16:9 fit
+		{800, 600, 800, 450},
+		{100, 100, 640, 360}, // below any useful mode: floor
+		{0, 0, 1920, 1080},
+		{-1, 500, 1920, 1080},
+	}
+	for _, tc := range cases {
+		w, h := initialGuestSize(tc.hostW, tc.hostH)
+		if w != tc.wantW || h != tc.wantH {
+			t.Errorf("initialGuestSize(%d,%d) = %dx%d, want %dx%d",
+				tc.hostW, tc.hostH, w, h, tc.wantW, tc.wantH)
+		}
+		if w&1 != 0 || h&1 != 0 {
+			t.Errorf("initialGuestSize(%d,%d) = %dx%d, want even dimensions",
+				tc.hostW, tc.hostH, w, h)
+		}
+	}
+	// Below the ladder the fallback fits an exact 16:9 frame into the host.
+	for _, host := range [][2]int{{1024, 768}, {800, 600}, {100, 100}, {1920, 200}} {
+		w, h := initialGuestSize(host[0], host[1])
+		if w*9 != h*16 {
+			t.Errorf("initialGuestSize(%d,%d) = %dx%d, want exact 16:9", host[0], host[1], w, h)
+		}
+		if w > host[0] && (w != 640 || h != 360) {
+			t.Errorf("initialGuestSize(%d,%d) = %dx%d, want fit or floor", host[0], host[1], w, h)
+		}
+	}
+}
+
+func TestTier1InitialResizeSteersGuest(t *testing.T) {
+	be := newFakeBackend(1280, 800)
+	inp := &recordInput{}
+	sink := &Tier1Sink{}
+	w := &tier1Window{be: be, inp: inp, sink: sink, winW: 1280, winH: 800, opts: Tier1Config{Transport: "Agent"}}
+	w.opts.applyDefaults()
+	sink.Video(image.NewRGBA(image.Rect(0, 0, 800, 600)))
+	if err := w.presentFrame(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !w.initialResizeDone {
+		t.Fatal("one-shot steer did not arm on the first frame")
+	}
+	// A 1280x800 host takes the 720p rung: window follows, request debounces.
+	if w.winW != 1280 || w.winH != 720 {
+		t.Fatalf("window = %dx%d, want 1280x720", w.winW, w.winH)
+	}
+	if !w.resizePending || w.resizeW != 1280 || w.resizeH != 720 {
+		t.Fatalf("pending resize = %dx%d/%v, want 1280x720/true", w.resizeW, w.resizeH, w.resizePending)
+	}
+	if err := w.applyGuestResize(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(inp.resizes) != 1 || inp.resizes[0] != (resizeCall{1280, 720}) {
+		t.Fatalf("guest resize calls = %v, want one 1280x720", inp.resizes)
+	}
+	// The guest following through never re-arms the steer.
+	sink.Video(image.NewRGBA(image.Rect(0, 0, 1280, 720)))
+	if err := w.presentFrame(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.applyGuestResize(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(inp.resizes) != 1 {
+		t.Fatalf("guest resize calls = %v, want no second request", inp.resizes)
+	}
+}
+
+func TestTier1InitialResizeSkips(t *testing.T) {
+	t.Parallel()
+	boot := func() (*fakeBackend, *recordInput, *Tier1Sink, *tier1Window) {
+		be := newFakeBackend(1280, 800)
+		inp := &recordInput{}
+		sink := &Tier1Sink{}
+		w := &tier1Window{be: be, inp: inp, sink: sink, winW: 1280, winH: 800, opts: Tier1Config{Transport: "Agent"}}
+		w.opts.applyDefaults()
+		return be, inp, sink, w
+	}
+	firstFrame := func(w *tier1Window, sink *Tier1Sink, fw, fh int) {
+		sink.Video(image.NewRGBA(image.Rect(0, 0, fw, fh)))
+		if err := w.presentFrame(time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("matching guest fits without asking", func(t *testing.T) {
+		be, inp, sink, w := boot()
+		firstFrame(w, sink, 1280, 720)
+		if w.resizePending || len(inp.resizes) != 0 {
+			t.Fatalf("matching guest asked: pending=%v calls=%v", w.resizePending, inp.resizes)
+		}
+		if ww, wh := be.Size(); ww != 1280 || wh != 720 {
+			t.Fatalf("window = %dx%d, want fitted 1280x720", ww, wh)
+		}
+	})
+
+	t.Run("pinned window keeps fit-to-guest", func(t *testing.T) {
+		_, inp, sink, w := boot()
+		w.pinned = true
+		firstFrame(w, sink, 800, 600)
+		if w.resizePending || len(inp.resizes) != 0 {
+			t.Fatalf("pinned window asked: pending=%v calls=%v", w.resizePending, inp.resizes)
+		}
+	})
+
+	t.Run("fixed resolution keeps fit-to-guest", func(t *testing.T) {
+		_, inp, sink, w := boot()
+		w.opts.NoResize = true
+		firstFrame(w, sink, 800, 600)
+		if w.resizePending || len(inp.resizes) != 0 {
+			t.Fatalf("fixed window asked: pending=%v calls=%v", w.resizePending, inp.resizes)
+		}
+	})
+
+	t.Run("view-only guest is never asked", func(t *testing.T) {
+		be := newFakeBackend(1280, 800)
+		inp := &viewOnlyInput{}
+		sink := &Tier1Sink{}
+		w := &tier1Window{be: be, inp: inp, sink: sink, winW: 1280, winH: 800, opts: Tier1Config{Transport: "Agent"}}
+		w.opts.applyDefaults()
+		firstFrame(w, sink, 800, 600)
+		if w.resizePending || len(inp.resizes) != 0 {
+			t.Fatalf("view-only guest asked: pending=%v calls=%v", w.resizePending, inp.resizes)
+		}
+	})
+
+	t.Run("selkies transport keeps fit-to-guest", func(t *testing.T) {
+		be := newFakeBackend(1280, 800)
+		inp := &recordInput{}
+		sink := &Tier1Sink{}
+		w := &tier1Window{be: be, inp: inp, sink: sink, winW: 1280, winH: 800}
+		w.opts.applyDefaults()
+		firstFrame(w, sink, 800, 600)
+		if w.resizePending || len(inp.resizes) != 0 {
+			t.Fatalf("selkies guest asked: pending=%v calls=%v", w.resizePending, inp.resizes)
+		}
+		if ww, wh := be.Size(); ww != 800 || wh != 600 {
+			t.Fatalf("window = %dx%d, want fitted 800x600", ww, wh)
+		}
+	})
+
+	t.Run("in-flight user resize is not overridden", func(t *testing.T) {
+		_, inp, sink, w := boot()
+		now := time.Now()
+		if err := w.handleEvent(now, EventResize{W: 1024, H: 768}); err != nil {
+			t.Fatal(err)
+		}
+		firstFrame(w, sink, 800, 600)
+		if !w.resizePending || w.resizeW != 1024 || w.resizeH != 768 {
+			t.Fatalf("user resize lost: pending=%v size=%dx%d", w.resizePending, w.resizeW, w.resizeH)
+		}
+		if err := w.applyGuestResize(now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if len(inp.resizes) != 1 || inp.resizes[0] != (resizeCall{1024, 768}) {
+			t.Fatalf("guest resize calls = %v, want the user's 1024x768", inp.resizes)
+		}
+	})
+}
