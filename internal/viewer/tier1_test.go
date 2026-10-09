@@ -844,8 +844,9 @@ func TestNearestMode(t *testing.T) {
 		{1920, 1080, 1920, 1080, true, true},
 		{1282, 808, 1280, 800, false, true}, // window-chrome size snaps
 		{1366, 768, 800, 600, false, true},
-		{1366, 768, 0, 0, true, false}, // no exact 16:9 fits
-		{100, 100, 0, 0, false, false},
+		{1366, 768, 0, 0, true, false},     // no exact 16:9 fits
+		{1272, 596, 800, 600, false, true}, // under the smallest: clamp up
+		{100, 100, 800, 600, false, true},  // under the smallest: clamp up
 	}
 	for _, tc := range cases {
 		w, h, found := nearestMode(table, tc.maxW, tc.maxH, tc.sixteenNine)

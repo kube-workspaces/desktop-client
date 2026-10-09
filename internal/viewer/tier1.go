@@ -736,14 +736,22 @@ func initialGuestSize(hostW, hostH int) (int, int) {
 
 // nearestMode picks the largest-area advertised mode fitting maxWxmaxH.
 // With sixteenNine only exact 16:9 modes qualify. Sizes outside the
-// agent's 320..8192/200..8192 validation bounds never qualify. It reports
-// false when nothing fits, and the caller keeps its own size.
+// agent's 320..8192/200..8192 validation bounds never qualify. When
+// nothing fits (e.g. a 1272x596 window under an 800x600 smallest mode)
+// the unfiltered search falls back to the smallest valid mode — a
+// guaranteed fit beats a guaranteed NACK; the window follows it after
+// the ACK. It reports false only when no valid mode exists at all, and
+// the caller keeps its own size.
 func nearestMode(modes [][2]int, maxW, maxH int, sixteenNine bool) (int, int, bool) {
 	bestW, bestH, bestArea := 0, 0, 0
+	smallW, smallH, smallArea := 0, 0, 0
 	for _, m := range modes {
 		w, h := m[0], m[1]
 		if w < 320 || h < 200 || w > 8192 || h > 8192 {
 			continue
+		}
+		if area := w * h; smallArea == 0 || area < smallArea {
+			smallW, smallH, smallArea = w, h, area
 		}
 		if w > maxW || h > maxH {
 			continue
@@ -755,7 +763,13 @@ func nearestMode(modes [][2]int, maxW, maxH int, sixteenNine bool) (int, int, bo
 			bestW, bestH, bestArea = w, h, area
 		}
 	}
-	return bestW, bestH, bestArea > 0
+	if bestArea > 0 {
+		return bestW, bestH, true
+	}
+	if !sixteenNine && smallArea > 0 {
+		return smallW, smallH, true
+	}
+	return 0, 0, false
 }
 
 // fitInitialGuest sizes a fresh window and steers a resizable guest to a
