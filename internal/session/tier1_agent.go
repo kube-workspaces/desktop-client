@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"sync"
 	"time"
 
@@ -25,10 +26,11 @@ var ErrAgentInputPending = errors.New("agent input injection unavailable")
 // agentInput forwards window events to the held agent session. Resize is
 // capability-gated and paired; input is sent only when the guest advertises it.
 type agentInput struct {
-	mu      sync.Mutex
-	session *agent.Session
-	keys    map[keysym.Keysym]bool
-	x, y    int
+	mu                      sync.Mutex
+	session                 *agent.Session
+	keys                    map[keysym.Keysym]bool
+	x, y                    int
+	videoWidth, videoHeight int
 }
 
 func (in *agentInput) attach(session *agent.Session) {
@@ -36,6 +38,23 @@ func (in *agentInput) attach(session *agent.Session) {
 	defer in.mu.Unlock()
 	in.session = session
 	in.keys = make(map[keysym.Keysym]bool)
+	in.videoWidth, in.videoHeight = 0, 0
+	if session != nil {
+		in.videoWidth, in.videoHeight = session.CaptureSize()
+	}
+}
+
+func cropAgentFrame(frame *image.RGBA, width, height int) *image.RGBA {
+	if width < 1 || height < 1 || width > 8192 || height > 8192 {
+		return frame
+	}
+	// An IDR can precede its resize ACK. Do not apply stale old-mode dimensions
+	// to a newly sized frame while waiting for the matching result.
+	if frame.Rect.Dx() != (width+15)&^15 || frame.Rect.Dy() != (height+15)&^15 {
+		return frame
+	}
+	rect := image.Rect(frame.Rect.Min.X, frame.Rect.Min.Y, frame.Rect.Min.X+width, frame.Rect.Min.Y+height)
+	return frame.SubImage(rect).(*image.RGBA)
 }
 
 func (in *agentInput) Key(sym keysym.Keysym, down bool) error {
@@ -293,6 +312,13 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 			}
 		},
 		OnResizeResult: func(id string, payload map[string]any) {
+			if actual, ok := payload["actual"].(map[string]any); ok && payload["codecReconfigured"] == true && payload["idrSent"] == true {
+				if width, height := agent.Dimensions(actual); width != 0 && height != 0 {
+					input.mu.Lock()
+					input.videoWidth, input.videoHeight = width, height
+					input.mu.Unlock()
+				}
+			}
 			if logf != nil {
 				logf("agent resize %s: requested=%v actual=%v codecReconfigured=%v idrSent=%v reason=%v",
 					id, payload["requested"], payload["actual"], payload["codecReconfigured"], payload["idrSent"], payload["reason"])
@@ -317,7 +343,10 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 			if frame == nil {
 				return nil
 			}
-			sink.Video(frame)
+			input.mu.Lock()
+			width, height := input.videoWidth, input.videoHeight
+			input.mu.Unlock()
+			sink.Video(cropAgentFrame(frame, width, height))
 			return nil
 		},
 		OnAudio: func(payload []byte) error {

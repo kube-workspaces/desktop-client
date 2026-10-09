@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"image"
 	"testing"
 
 	"github.com/kube-workspaces/desktop-client/internal/agent"
@@ -26,6 +27,20 @@ func TestMapAgentResultClasses(t *testing.T) {
 	transport := errors.New("transport lost")
 	if got := MapAgentResult(context.Background(), transport); !errors.Is(got, transport) || errors.Is(got, ErrNoFallback) {
 		t.Fatalf("recoverable failure must pass through for Tier 0, got %v", got)
+	}
+}
+
+func TestAgentFrameCropsPaddingWithoutApplyingStaleResizeDimensions(t *testing.T) {
+	frame := image.NewRGBA(image.Rect(0, 0, 1920, 1088))
+	cropped := cropAgentFrame(frame, 1920, 1080)
+	if cropped.Rect.Dx() != 1920 || cropped.Rect.Dy() != 1080 || cropped.Stride != frame.Stride {
+		t.Fatalf("actual guest dimensions not preserved: %v", cropped.Rect)
+	}
+	if cropAgentFrame(frame, 1280, 800) != frame {
+		t.Fatal("stale dimensions cropped a new-mode frame")
+	}
+	if cropAgentFrame(frame, 0, 0) != frame {
+		t.Fatal("unavailable metadata changed the frame")
 	}
 }
 

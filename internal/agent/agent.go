@@ -148,6 +148,8 @@ type Session struct {
 	telemetry        bool
 	input            bool
 	resize           bool
+	captureWidth     int
+	captureHeight    int
 	clipboardPending map[string]bool
 	lastSentNs       uint64
 }
@@ -261,6 +263,9 @@ func Attach(conn *wsio.Conn, signed string) (*Session, error) {
 	session.telemetry, _ = hello.Payload["telemetryAvailable"].(bool)
 	session.input, _ = hello.Payload["inputAvailable"].(bool)
 	session.resize, _ = hello.Payload["resizeAvailable"].(bool)
+	if capture, ok := hello.Payload["capture"].(map[string]any); ok {
+		session.captureWidth, session.captureHeight = Dimensions(capture)
+	}
 	ticket.SessionID = hello.SessionID
 	if err := session.writeControl("attach", map[string]any{"ticket": ticket}); err != nil {
 		return nil, fmt.Errorf("agent: attach: %w", err)
@@ -325,6 +330,18 @@ func (s *Session) RequestTelemetry() error  { return s.writeControl("telemetry",
 
 func (s *Session) InputAvailable() bool  { return s.input }
 func (s *Session) ResizeAvailable() bool { return s.resize }
+
+func (s *Session) CaptureSize() (int, int) { return s.captureWidth, s.captureHeight }
+
+// Dimensions validates the JSON dimensions shared by hello.capture and resizeAck.actual.
+func Dimensions(payload map[string]any) (int, int) {
+	w, wok := payload["width"].(float64)
+	h, hok := payload["height"].(float64)
+	if !wok || !hok || w < 1 || h < 1 || w > 8192 || h > 8192 || w != float64(int(w)) || h != float64(int(h)) {
+		return 0, 0
+	}
+	return int(w), int(h)
+}
 
 func (s *Session) Key(keysym uint32, down bool) error {
 	if !s.input {
