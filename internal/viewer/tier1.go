@@ -139,6 +139,15 @@ type Tier1Sink struct {
 	// apply them, so diagnostics can tell congestion from loss.
 	droppedClipboard uint64
 
+	// sizeMu guards the latest successful resize actuals (guest-to-host).
+	// The render loop drains them on the window thread, the only thread
+	// allowed to resize the window, and fits the window back to the guest
+	// so no letterbox bars remain.
+	sizeMu       sync.Mutex
+	guestW       int
+	guestH       int
+	hasGuestSize bool
+
 	cursorMu       sync.Mutex
 	guestCursor    *CursorShape
 	hasGuestCursor bool
@@ -236,6 +245,31 @@ func (s *Tier1Sink) takeCursor() (*CursorShape, bool) {
 	shape, has := s.guestCursor, s.hasGuestCursor
 	s.guestCursor, s.hasGuestCursor = nil, false
 	return shape, has
+}
+
+// GuestSize queues a successful resize's actual guest dimensions. Only the
+// latest matters, so overwriting is normal. Nil-safe for detached teardown.
+func (s *Tier1Sink) GuestSize(width, height int) {
+	if s == nil {
+		return
+	}
+	s.sizeMu.Lock()
+	s.guestW, s.guestH, s.hasGuestSize = width, height, true
+	s.sizeMu.Unlock()
+	s.wakeUp()
+}
+
+// takeGuestSize drains the latest actual guest dimensions, or (0, 0, false)
+// when none arrived. It is called from the render loop only.
+func (s *Tier1Sink) takeGuestSize() (int, int, bool) {
+	if s == nil {
+		return 0, 0, false
+	}
+	s.sizeMu.Lock()
+	defer s.sizeMu.Unlock()
+	w, h, has := s.guestW, s.guestH, s.hasGuestSize
+	s.guestW, s.guestH, s.hasGuestSize = 0, 0, false
+	return w, h, has
 }
 
 func (s *Tier1Sink) wakeUp() {
@@ -596,6 +630,11 @@ type tier1Window struct {
 	// initialResizeDone records the one-shot first-frame guest steer, so a
 	// fresh window asks once and later frames never re-ask.
 	initialResizeDone bool
+	// ackedW/ackedH is the last successful resize actual. A debounced
+	// request matching it is already live on the guest (e.g. the echo of
+	// our own programmatic resize, or a reconnect re-ask of a kept mode)
+	// and is skipped instead of re-requested.
+	ackedW, ackedH int
 
 	hostClip string
 	clipDue  time.Time
@@ -624,6 +663,9 @@ func (w *tier1Window) syncGeneration() {
 		w.buttons = 0
 		w.sentMask, w.sentAny = 0, false
 		w.initialResizeDone = false
+		// A new generation means unknown guest state (a reboot may have
+		// dropped the mode), so the reconnect re-ask below must go out.
+		w.ackedW, w.ackedH = 0, 0
 		w.scheduleGuestResize(time.Now(), w.winW, w.winH)
 		w.hostClip, w.clipHint = "", false
 		// Clear any PCM already queued in the output device, not just the
@@ -770,8 +812,35 @@ func (w *tier1Window) fitInitialGuest(now time.Time, fbW, fbH int) {
 	w.scheduleGuestResize(now, tw, th)
 }
 
+// onGuestSize fits the window back to a successful resize actual so no
+// letterbox bars remain. Pinned windows keep their explicit size and
+// fullscreen keeps the compositor's; both still record the ack so the
+// debounced echo of the same size is skipped, not re-requested.
+func (w *tier1Window) onGuestSize(gw, gh int) {
+	if gw <= 0 || gh <= 0 {
+		return
+	}
+	w.ackedW, w.ackedH = gw, gh
+	if w.pinned || w.be.Fullscreen() {
+		return
+	}
+	if gw == w.winW && gh == w.winH {
+		return
+	}
+	if err := w.be.SetSize(gw, gh); err != nil {
+		w.opts.logf("resize window to %dx%d: %v", gw, gh, err)
+		return
+	}
+	w.winW, w.winH = w.be.Size()
+}
+
 // step runs one iteration of the render loop.
 func (w *tier1Window) step(now time.Time) error {
+	// A guest that landed on a snapped mode reports back asynchronously;
+	// fit the window to it here so no letterbox bars remain.
+	if gw, gh, ok := w.sink.takeGuestSize(); ok {
+		w.onGuestSize(gw, gh)
+	}
 	// Pointer motion is coalesced to one message per iteration: a high
 	// frequency mouse would otherwise drown a link whose whole point is to
 	// carry pixels.
@@ -1097,6 +1166,13 @@ func (w *tier1Window) applyGuestResize(now time.Time) error {
 			}
 			w.resizeW, w.resizeH = nw, nh
 		}
+	}
+	// The guest already shows this size: our own programmatic resize echo,
+	// or a reconnect re-ask of a kept mode. Asking again would only flicker
+	// it through another mode cycle plus IDR.
+	if w.resizeW == w.ackedW && w.resizeH == w.ackedH {
+		w.resizePending = false
+		return nil
 	}
 	w.resizePending = false
 	if w.texW == w.resizeW && w.texH == w.resizeH {

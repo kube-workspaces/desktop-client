@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -328,11 +330,20 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 					input.mu.Lock()
 					input.videoWidth, input.videoHeight = width, height
 					input.mu.Unlock()
+					sink.GuestSize(width, height)
+				}
+			}
+			// Round-trip timing for the latency budget: request ids carry
+			// their send time as resize-WxH-<unixmillis>.
+			var roundtrip string
+			if i := strings.LastIndex(id, "-"); i >= 0 {
+				if ms, err := strconv.ParseInt(id[i+1:], 10, 64); err == nil {
+					roundtrip = time.Since(time.UnixMilli(ms)).Round(time.Millisecond).String()
 				}
 			}
 			if logf != nil {
-				logf("agent resize %s: requested=%v actual=%v codecReconfigured=%v idrSent=%v reason=%v",
-					id, payload["requested"], payload["actual"], payload["codecReconfigured"], payload["idrSent"], payload["reason"])
+				logf("agent resize %s: requested=%v actual=%v codecReconfigured=%v idrSent=%v reason=%v roundtrip=%v",
+					id, payload["requested"], payload["actual"], payload["codecReconfigured"], payload["idrSent"], payload["reason"], roundtrip)
 			}
 		},
 		OnClipboard: func(_ string, text *string, err error) error {

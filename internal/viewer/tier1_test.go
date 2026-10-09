@@ -902,3 +902,100 @@ func TestTier1ResizeSnapsToAdvertised(t *testing.T) {
 		t.Fatalf("guest resize calls = %v, want snapped 1280x800", inp.resizes)
 	}
 }
+
+func TestTier1SinkGuestSizeRoundtrip(t *testing.T) {
+	t.Parallel()
+	var nilSink *Tier1Sink
+	nilSink.GuestSize(800, 600) // must not panic on teardown paths
+	if _, _, ok := nilSink.takeGuestSize(); ok {
+		t.Fatal("nil sink reported a size")
+	}
+	sink := &Tier1Sink{}
+	if _, _, ok := sink.takeGuestSize(); ok {
+		t.Fatal("fresh sink reported a size")
+	}
+	sink.GuestSize(800, 600)
+	sink.GuestSize(1280, 800) // only the latest matters
+	if w, h, ok := sink.takeGuestSize(); !ok || w != 1280 || h != 800 {
+		t.Fatalf("size = %dx%d/%v, want 1280x800/true", w, h, ok)
+	}
+	if _, _, ok := sink.takeGuestSize(); ok {
+		t.Fatal("drained size reported twice")
+	}
+}
+
+func TestTier1WindowFollowsGuestActual(t *testing.T) {
+	be := newFakeBackend(1146, 736)
+	inp := &recordInput{}
+	sink := &Tier1Sink{}
+	w := &tier1Window{be: be, inp: inp, sink: sink, winW: 1146, winH: 736,
+		haveFrame: true, opts: Tier1Config{Transport: "Agent"}}
+	w.opts.applyDefaults()
+	now := time.Now()
+	// Guest lands smaller; the next step shrinks the window to it.
+	sink.GuestSize(800, 600)
+	if err := w.step(now); err != nil {
+		t.Fatal(err)
+	}
+	if w.winW != 800 || w.winH != 600 {
+		t.Fatalf("window = %dx%d, want fitted 800x600", w.winW, w.winH)
+	}
+	if w.ackedW != 800 || w.ackedH != 600 {
+		t.Fatalf("acked = %dx%d, want 800x600", w.ackedW, w.ackedH)
+	}
+	// The SetSize echo must not re-request the live size.
+	if err := w.handleEvent(now, EventResize{W: 800, H: 600}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.applyGuestResize(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(inp.resizes) != 0 {
+		t.Fatalf("guest resize calls = %v, want none (already live)", inp.resizes)
+	}
+	// A genuinely new size still goes out.
+	if err := w.handleEvent(now, EventResize{W: 1920, H: 1080}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.applyGuestResize(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(inp.resizes) != 1 || inp.resizes[0] != (resizeCall{1920, 1080}) {
+		t.Fatalf("guest resize calls = %v, want one 1920x1080", inp.resizes)
+	}
+}
+
+func TestTier1WindowFollowsGuestActualSkips(t *testing.T) {
+	t.Parallel()
+	// Pinned windows record the ack but keep their explicit size.
+	be := newFakeBackend(1146, 736)
+	w := &tier1Window{be: be, inp: &recordInput{}, sink: &Tier1Sink{},
+		winW: 1146, winH: 736, pinned: true, opts: Tier1Config{Transport: "Agent"}}
+	w.opts.applyDefaults()
+	w.onGuestSize(800, 600)
+	if ww, wh := be.Size(); ww != 1146 || wh != 736 {
+		t.Fatalf("pinned window = %dx%d, want kept 1146x736", ww, wh)
+	}
+	if w.ackedW != 800 || w.ackedH != 600 {
+		t.Fatalf("pinned acked = %dx%d, want recorded 800x600", w.ackedW, w.ackedH)
+	}
+	// Fullscreen likewise keeps the compositor's size.
+	be2 := newFakeBackend(1146, 736)
+	if err := be2.SetFullscreen(true); err != nil {
+		t.Fatal(err)
+	}
+	w2 := &tier1Window{be: be2, inp: &recordInput{}, sink: &Tier1Sink{},
+		winW: 1146, winH: 736, opts: Tier1Config{Transport: "Agent"}}
+	w2.opts.applyDefaults()
+	w2.onGuestSize(800, 600)
+	if ww, wh := be2.Size(); ww != 1146 || wh != 736 {
+		t.Fatalf("fullscreen window = %dx%d, want kept 1146x736", ww, wh)
+	}
+	// Degenerate pushes are ignored.
+	w3 := &tier1Window{be: newFakeBackend(100, 100), inp: &recordInput{}}
+	w3.opts.applyDefaults()
+	w3.onGuestSize(0, 0)
+	if w3.ackedW != 0 || w3.ackedH != 0 {
+		t.Fatal("degenerate size recorded an ack")
+	}
+}
