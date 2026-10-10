@@ -75,3 +75,84 @@ func TestConnectionToolbarEscapeAndDisconnectDuringRecovery(t *testing.T) {
 		t.Fatal("reconnecting terminal could not disconnect via keyboard")
 	}
 }
+
+func TestConnectionToolbarDebugCardOpensClosesAndDispatchesNothing(t *testing.T) {
+	h := newHarness(1280, 720)
+	bar := &ConnectionToolbar{}
+	s := connection.Snapshot{Workspace: "team/win", Surface: connection.Desktop,
+		State: connection.Connected, Role: connection.Exclusive,
+		Transport: "Agent", Tier: "Tier 1", Proto: "kw-agent-v1 over WebSocket",
+		Muted: false, AudioLive: true,
+		Capabilities: connection.Capabilities{SpecialKeys: false, ClipboardSync: true, GuestResize: true, Audio: true},
+		BytesIn:      343064, BytesOut: 512, HasActivity: true,
+		Extra: [][2]string{{"Capture", "1920×1080"}, {"Video", "386 frames · 335.0 KB"}}}
+	var requested connection.Action
+	body := func(ctx *Context) { _, requested = bar.Layout(ctx, Rect{W: 1280, H: 720}, s) }
+	h.frame(nil, body)
+	if bar.Menu != "" {
+		t.Fatal("debug card opened itself")
+	}
+	h.ctx.Focus().Set("toolbar-debug")
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if bar.Menu != "debug" {
+		t.Fatalf("debug button left menu %q", bar.Menu)
+	}
+	h.frame(nil, body)
+	if requested != "" {
+		t.Fatalf("debug card dispatched action %s", requested)
+	}
+	if layout, _ := bar.Layout(h.ctx, Rect{W: 1280, H: 720}, s); layout.Panel.W == 0 || layout.Panel.H == 0 {
+		t.Fatal("debug card has no panel rect")
+	}
+	h.ctx.Focus().Set("toolbar-debug-close")
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if bar.Menu != "" {
+		t.Fatal("Close left the debug card open")
+	}
+	bar.Menu = "debug"
+	h.frame(nil, body)
+	h.frame([]Event{keyDown(keysym.KeyEscape, keysym.ModNone)}, body)
+	if bar.Menu != "" {
+		t.Fatal("Esc left the debug card open")
+	}
+}
+
+func TestConnectionToolbarDebugRowsReportHonestly(t *testing.T) {
+	full := connection.Snapshot{Surface: connection.Desktop, State: connection.Connected,
+		Transport: "Agent", Tier: "Tier 1", Proto: "kw-agent-v1 over WebSocket",
+		Capabilities: connection.Capabilities{Audio: true}, AudioLive: true,
+		HasMetrics: true, FPS: 30, Kbps: 6000,
+		BytesIn: 1048576, BytesOut: 1536, HasActivity: true}
+	rows := debugRows(full)
+	byLabel := map[string]string{}
+	for _, r := range rows {
+		byLabel[r[0]] = r[1]
+	}
+	if byLabel["Tier"] != "Tier 1" || byLabel["Transport"] != "Agent" || byLabel["Protocol"] != "kw-agent-v1 over WebSocket" {
+		t.Fatalf("identity rows: %v", rows)
+	}
+	if byLabel["Audio"] != "Live" {
+		t.Fatalf("audio row: %v", rows)
+	}
+	if byLabel["Throughput"] != "30 fps · 6000 kbit/s" {
+		t.Fatalf("throughput row: %v", rows)
+	}
+	if byLabel["Activity in / out"] != "1.0 MB in · 1.5 KB out" {
+		t.Fatalf("activity row: %v", rows)
+	}
+	quiet := connection.Snapshot{Surface: connection.Desktop, State: connection.Connecting}
+	rows = debugRows(quiet)
+	byLabel = map[string]string{}
+	for _, r := range rows {
+		byLabel[r[0]] = r[1]
+	}
+	if byLabel["Tier"] != "—" || byLabel["Throughput"] != "—" {
+		t.Fatalf("connecting rows claim data: %v", rows)
+	}
+	if byLabel["Activity in / out"] != "not tracked for this transport" {
+		t.Fatalf("untracked activity misreported: %v", rows)
+	}
+	if byLabel["Audio"] != "Unavailable" {
+		t.Fatalf("missing audio misreported: %v", rows)
+	}
+}

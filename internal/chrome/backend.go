@@ -80,7 +80,7 @@ func (b *Backend) Open(opts viewer.WindowOptions) error {
 func (b *Backend) UpdateConnection(s connection.Snapshot) {
 	s.Capabilities.Shell = b.navigate != nil
 	s.Fullscreen = b.Fullscreen()
-	if s != b.snapshot {
+	if !s.Equal(b.snapshot) {
 		b.snapshot, b.dirty = s, true
 	}
 }

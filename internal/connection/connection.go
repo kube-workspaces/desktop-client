@@ -5,6 +5,8 @@
 // on a windowing toolkit, workspace API or transport implementation.
 package connection
 
+import "fmt"
+
 // Surface is the connection view, independent of the workspace's CR type.
 type Surface string
 
@@ -48,19 +50,32 @@ type Capabilities struct {
 
 // Snapshot is an immutable copy of the state the toolbar draws this frame.
 // Each window owns its own snapshot and action handlers.
+//
+// Tier/Proto/Activity/Extra feed the debug card only: adapters report what
+// they actually measure, never estimates. A transport that tracks nothing
+// leaves HasActivity false and the card says so.
 type Snapshot struct {
 	Workspace    string
 	Surface      Surface
 	State        State
 	Role         Role
 	Transport    string
+	Tier         string // "Tier 0" or "Tier 1", classified by the adapter
+	Proto        string // wire detail, e.g. "RFB over WebSocket"
 	Capabilities Capabilities
 	Fullscreen   bool
 	Clipboard    bool
 	ResizeGuest  bool
 	Muted        bool
+	AudioLive    bool // negotiated/open and unmuted
 	FPS, Kbps    float64
 	HasMetrics   bool
+	BytesIn      uint64
+	BytesOut     uint64
+	HasActivity  bool
+	// Extra holds adapter detail rows (label, value) in display order,
+	// e.g. framebuffer size, encoding mix, agent video/audio counters.
+	Extra [][2]string
 }
 
 // Action identifies a command shared by toolbar items and hotkeys.
@@ -81,6 +96,7 @@ const (
 	TypeClipboard Action = "type-clipboard"
 	CopySelection Action = "copy-selection"
 	HostInput     Action = "host-input"
+	Debug         Action = "debug"
 )
 
 // Availability distinguishes an unsupported action from a temporarily
@@ -102,6 +118,11 @@ func (s Snapshot) Availability(a Action) Availability {
 	switch a {
 	case Fullscreen, Disconnect:
 		supported = true
+	case Debug:
+		// Chrome-only readout, handled inside the toolbar: always visible
+		// on desktop windows, even while connecting or failed — that is
+		// when connection detail is most useful.
+		supported = desktop
 	case Sessions, WorkspaceList:
 		supported = c.Shell
 	case FitDesktop, HostInput:
@@ -144,6 +165,45 @@ func (s Snapshot) Tools() []Action {
 		}
 	}
 	return out
+}
+
+// Equal reports whether two snapshots draw identically. Extra rows compare
+// element-wise: snapshots hold a slice now, so they are no longer
+// comparable with ==.
+func (s Snapshot) Equal(o Snapshot) bool {
+	if s.Workspace != o.Workspace || s.Surface != o.Surface || s.State != o.State ||
+		s.Role != o.Role || s.Transport != o.Transport || s.Tier != o.Tier ||
+		s.Proto != o.Proto || s.Capabilities != o.Capabilities ||
+		s.Fullscreen != o.Fullscreen || s.Clipboard != o.Clipboard ||
+		s.ResizeGuest != o.ResizeGuest || s.Muted != o.Muted ||
+		s.AudioLive != o.AudioLive || s.FPS != o.FPS || s.Kbps != o.Kbps ||
+		s.HasMetrics != o.HasMetrics || s.BytesIn != o.BytesIn ||
+		s.BytesOut != o.BytesOut || s.HasActivity != o.HasActivity ||
+		len(s.Extra) != len(o.Extra) {
+		return false
+	}
+	for i := range s.Extra {
+		if s.Extra[i] != o.Extra[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// FormatBytes renders a byte total for the debug card: whole B under
+// 1024, then one-decimal KB/MB/GB. Cumulative counters, not a rate.
+func FormatBytes(n uint64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	value := float64(n) / 1024.0
+	for _, suffix := range []string{"KB", "MB", "GB"} {
+		if value < 1024.0 || suffix == "GB" {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+		value /= 1024.0
+	}
+	return fmt.Sprintf("%d B", n)
 }
 
 // CloseDisposition tells the owner whether a clean window close parks or

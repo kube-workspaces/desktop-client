@@ -287,6 +287,9 @@ func TestAttachResizeBye(t *testing.T) {
 	if counters.ResizeACKs != 1 || counters.Keyframes != 1 || counters.ControlFrames < 3 {
 		t.Fatalf("counters: %+v", counters)
 	}
+	if counters.ControlBytes == 0 {
+		t.Fatalf("control bytes untracked: %+v", counters)
+	}
 	if err := session.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}

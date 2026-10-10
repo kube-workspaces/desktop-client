@@ -123,6 +123,7 @@ var DefaultEncodings = []Encoding{
 // buffered read-ahead from its pressure measurements.
 type Stats struct {
 	BytesRead       uint64
+	BytesWritten    uint64
 	Updates         uint64
 	Rects           uint64
 	RectsByEncoding map[Encoding]uint64
@@ -147,6 +148,9 @@ type Conn struct {
 
 	writeMu sync.Mutex
 	w       *bufio.Writer
+	// written counts client→server message bytes at the single send choke
+	// point, so the debug card can report activity out as well as in.
+	written atomic.Uint64
 
 	fbMu sync.RWMutex
 	fb   *Framebuffer
@@ -190,6 +194,7 @@ func (c *Conn) Stats() Stats {
 	defer c.statsMu.Unlock()
 	out := c.stats
 	out.BytesRead = c.counting.Count()
+	out.BytesWritten = c.written.Load()
 	out.RectsByEncoding = make(map[Encoding]uint64, len(c.stats.RectsByEncoding))
 	for k, v := range c.stats.RectsByEncoding {
 		out.RectsByEncoding[k] = v
@@ -503,6 +508,7 @@ func (c *Conn) send(payload []byte) error {
 	if _, err := c.w.Write(payload); err != nil {
 		return err
 	}
+	c.written.Add(uint64(len(payload)))
 	return c.w.Flush()
 }
 

@@ -58,4 +58,11 @@ func TestAgentInputIsHonest(t *testing.T) {
 	if err := input.ResetKeys(); err != nil {
 		t.Fatalf("view-only focus cleanup must not kill the stream: %v", err)
 	}
+	if _, live := input.DebugCounters(); live {
+		t.Fatal("sessionless input must not report live counters")
+	}
+	input.attach(nil)
+	if _, live := input.DebugCounters(); live {
+		t.Fatal("detached input must not report live counters")
+	}
 }

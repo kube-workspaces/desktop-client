@@ -49,6 +49,34 @@ func (in *agentInput) attach(session *agent.Session) {
 	}
 }
 
+// DebugCounters serves the toolbar debug card without exposing the session:
+// capture size plus a copy of the live telemetry, or false when no session
+// is attached. Window-thread safe: the input lock guards the session
+// pointer and the session guards its own counters.
+func (in *agentInput) DebugCounters() (viewer.AgentCounters, bool) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.session == nil {
+		return viewer.AgentCounters{}, false
+	}
+	counters := in.session.Counters()
+	captureW, captureH := in.session.CaptureSize()
+	return viewer.AgentCounters{
+		CaptureW:      captureW,
+		CaptureH:      captureH,
+		ControlFrames: counters.ControlFrames,
+		ControlBytes:  counters.ControlBytes,
+		MediaBytes:    counters.MediaBytes,
+		VideoFrames:   counters.VideoFrames,
+		VideoBytes:    counters.VideoBytes,
+		AudioFrames:   counters.AudioFrames,
+		AudioBytes:    counters.AudioBytes,
+		ResizeACKs:    counters.ResizeACKs,
+		Keyframes:     counters.Keyframes,
+		DisplayModes:  len(in.session.DisplayModes()),
+	}, true
+}
+
 func cropAgentFrame(frame *image.RGBA, width, height int) *image.RGBA {
 	if width < 1 || height < 1 || width > 8192 || height > 8192 {
 		return frame

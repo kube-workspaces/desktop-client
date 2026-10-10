@@ -87,6 +87,7 @@ const MaxClipboardBytes = 64 * 1024
 // Counters mirrors the session telemetry the indicator contract requires.
 type Counters struct {
 	ControlFrames uint64
+	ControlBytes  uint64
 	MediaFrames   uint64
 	MediaBytes    uint64
 	VideoFrames   uint64
@@ -142,6 +143,7 @@ type Session struct {
 	session       string
 	sequence      uint64
 	counters      Counters
+	countersMu    sync.Mutex
 	writeMu       sync.Mutex
 	pending       map[string]bool
 	clipboard     bool
@@ -211,8 +213,21 @@ func (s *Session) writeControl(messageType string, payload map[string]any) error
 	}
 	frame := append([]byte{0x00}, uint32be(len(body))...)
 	frame = append(frame, body...)
-	_, err = s.conn.Write(frame)
-	return err
+	if _, err = s.conn.Write(frame); err != nil {
+		return err
+	}
+	s.mutateCounters(func(c *Counters) { c.ControlBytes += uint64(len(frame)) })
+	return nil
+}
+
+// mutateCounters runs f under the telemetry lock. Counter writes arrive
+// from the Run read loop and from window-thread requests (resize,
+// keyframe), while diagnostics may read them live — the lock keeps all
+// three honest under -race.
+func (s *Session) mutateCounters(f func(*Counters)) {
+	s.countersMu.Lock()
+	defer s.countersMu.Unlock()
+	f(&s.counters)
 }
 
 func uint32be(n int) []byte {
@@ -231,14 +246,16 @@ func (s *Session) readControl() (Envelope, error) {
 			return message, err
 		}
 		if tag != 0x00 {
-			s.counters.MediaFrames++
-			s.counters.MediaBytes += uint64(len(body))
+			s.mutateCounters(func(c *Counters) {
+				c.MediaFrames++
+				c.MediaBytes += uint64(len(body))
+			})
 			continue
 		}
 		if err := json.Unmarshal(body, &message); err != nil {
 			return message, fmt.Errorf("agent: control frame is not an envelope: %w", err)
 		}
-		s.counters.ControlFrames++
+		s.mutateCounters(func(c *Counters) { c.ControlFrames++ })
 		return message, nil
 	}
 }
@@ -315,7 +332,7 @@ func (s *Session) Resize(id string, width, height uint32) (actual map[string]any
 	if ack.Type != "resizeAck" || ack.Payload["requestId"] != id {
 		return nil, fmt.Errorf("agent: unpaired resize ack")
 	}
-	s.counters.ResizeACKs++
+	s.mutateCounters(func(c *Counters) { c.ResizeACKs++ })
 	return ack.Payload, nil
 }
 
@@ -324,7 +341,7 @@ func (s *Session) Keyframe() error {
 	if err := s.writeControl("keyframeRequest", map[string]any{}); err != nil {
 		return err
 	}
-	s.counters.Keyframes++
+	s.mutateCounters(func(c *Counters) { c.Keyframes++ })
 	return nil
 }
 
@@ -443,7 +460,7 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 			if err := json.Unmarshal(body, &message); err != nil {
 				return fmt.Errorf("agent: control frame is not an envelope: %w", err)
 			}
-			s.counters.ControlFrames++
+			s.mutateCounters(func(c *Counters) { c.ControlFrames++ })
 			if message.Type == "telemetry" {
 				if callbacks.OnTelemetry != nil {
 					callbacks.OnTelemetry(message.Payload)
@@ -467,7 +484,7 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 			if message.Type != "resizeAck" {
 				continue
 			}
-			s.counters.ResizeACKs++
+			s.mutateCounters(func(c *Counters) { c.ResizeACKs++ })
 			id, _ := message.Payload["requestId"].(string)
 			s.writeMu.Lock()
 			paired := s.pending[id]
@@ -484,20 +501,24 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 				callbacks.OnResizeAck(id, reason)
 			}
 		case 0x01:
-			s.counters.MediaFrames++
-			s.counters.MediaBytes += uint64(len(body))
-			s.counters.VideoFrames++
-			s.counters.VideoBytes += uint64(len(body))
+			s.mutateCounters(func(c *Counters) {
+				c.MediaFrames++
+				c.MediaBytes += uint64(len(body))
+				c.VideoFrames++
+				c.VideoBytes += uint64(len(body))
+			})
 			if callbacks.OnVideo != nil {
 				if err := callbacks.OnVideo(body); err != nil {
 					return err
 				}
 			}
 		case 0x02:
-			s.counters.MediaFrames++
-			s.counters.MediaBytes += uint64(len(body))
-			s.counters.AudioFrames++
-			s.counters.AudioBytes += uint64(len(body))
+			s.mutateCounters(func(c *Counters) {
+				c.MediaFrames++
+				c.MediaBytes += uint64(len(body))
+				c.AudioFrames++
+				c.AudioBytes += uint64(len(body))
+			})
 			if callbacks.OnAudio != nil {
 				if err := callbacks.OnAudio(body); err != nil {
 					return err
@@ -565,7 +586,7 @@ func (s *Session) Probe(readFor time.Duration) (*ProbeResult, error) {
 		Admitted:      true,
 		ResizePaired:  resizePaired,
 		ResizeReason:  resizeReason,
-		ControlFrames: s.counters.ControlFrames,
+		ControlFrames: s.Counters().ControlFrames,
 		VideoFrames:   videoFrames,
 		VideoBytes:    videoBytes,
 		AudioFrames:   audioFrames,
@@ -583,7 +604,11 @@ func isTimeout(err error) bool {
 }
 
 // Counters returns a copy of the session telemetry.
-func (s *Session) Counters() Counters { return s.counters }
+func (s *Session) Counters() Counters {
+	s.countersMu.Lock()
+	defer s.countersMu.Unlock()
+	return s.counters
+}
 
 // SessionID is the server-minted claim echoed through this session.
 func (s *Session) SessionID() string { return s.session }

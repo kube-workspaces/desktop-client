@@ -4,6 +4,8 @@
 package viewer
 
 import (
+	"fmt"
+	"sort"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/connection"
@@ -51,6 +53,31 @@ type ChromePresenter interface {
 	PresentChrome(Rect, Overlay, Rect) error
 }
 
+// AgentCounters is the live guest-agent telemetry the debug card reports.
+// Plain values (not internal/agent types) so the session package can serve
+// them without an import cycle: the window owns the presenter, the session
+// owns the transport.
+type AgentCounters struct {
+	CaptureW, CaptureH int
+	ControlFrames      uint64
+	ControlBytes       uint64
+	MediaBytes         uint64
+	VideoFrames        uint64
+	VideoBytes         uint64
+	AudioFrames        uint64
+	AudioBytes         uint64
+	ResizeACKs         uint64
+	Keyframes          uint64
+	DisplayModes       int
+}
+
+// agentDebugger is implemented by the session-owned agent input when the
+// guest negotiated an interactive agent transport. Absent (nil, or
+// !ok) means the window has no live agent session to report.
+type agentDebugger interface {
+	DebugCounters() (AgentCounters, bool)
+}
+
 func ConnectionState(status Status) connection.State {
 	switch status {
 	case StatusLive:
@@ -70,6 +97,7 @@ func (v *Viewer) connectionSnapshot() connection.Snapshot {
 	status, _ := v.Status()
 	s := connection.Snapshot{Workspace: v.cfg.Title, Surface: connection.Desktop,
 		State: ConnectionState(status), Role: connection.Exclusive, Transport: "RFB",
+		Tier: "Tier 0", Proto: "RFB over WebSocket",
 		Clipboard: !v.clipboardDisabled, ResizeGuest: !v.resizeDisabled, Muted: v.muted,
 		FPS: v.lastFPS, Kbps: v.lastKbps, HasMetrics: true,
 		Capabilities: connection.Capabilities{SpecialKeys: true, TypeClipboard: true, ClipboardSync: true, SharedControl: v.controlAction() != nil}}
@@ -83,8 +111,18 @@ func (v *Viewer) connectionSnapshot() connection.Snapshot {
 		s.Role = connection.Observer
 	}
 	if v.conn != nil {
-		s.Capabilities.GuestResize = v.conn.Stats().AckedPseudoEncodings[rfb.EncodingExtendedDesktopSize]
+		stats := v.conn.Stats()
+		s.Capabilities.GuestResize = stats.AckedPseudoEncodings[rfb.EncodingExtendedDesktopSize]
 		s.Capabilities.Audio = v.audioOpened
+		s.AudioLive = v.audioOpened && !v.muted
+		s.BytesIn, s.BytesOut = stats.BytesRead, stats.BytesWritten
+		s.HasActivity = true
+		width, height := v.conn.Size()
+		s.Extra = [][2]string{
+			{"Framebuffer", formatFramebuffer(width, height)},
+			{"Updates / rects", formatCountPair(stats.Updates, stats.Rects)},
+			{"Encodings", formatTopEncodings(stats.BytesByEncoding)},
+		}
 	}
 	return s
 }
@@ -128,6 +166,63 @@ func (v *Viewer) connectionAction(a connection.Action) error {
 	return nil
 }
 
+// formatFramebuffer renders guest dimensions for the debug card. A zero
+// size means the framebuffer is not established yet, never 0x0.
+func formatFramebuffer(width, height int) string {
+	if width <= 0 || height <= 0 {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d×%d", width, height)
+}
+
+// formatTopEncodings names up to three encodings by received bytes for the
+// debug card, most first. Control-only sessions report none yet.
+func formatTopEncodings(bytesByEncoding map[rfb.Encoding]uint64) string {
+	type entry struct {
+		name  string
+		bytes uint64
+	}
+	var entries []entry
+	for enc, n := range bytesByEncoding {
+		if n == 0 {
+			continue
+		}
+		entries = append(entries, entry{name: enc.String(), bytes: n})
+	}
+	if len(entries) == 0 {
+		return "none yet"
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].bytes > entries[j].bytes })
+	top := entries
+	if len(top) > 3 {
+		top = top[:3]
+	}
+	parts := make([]string, 0, len(top))
+	for _, e := range top {
+		parts = append(parts, e.name+" "+connection.FormatBytes(e.bytes))
+	}
+	out := parts[0]
+	for _, p := range parts[1:] {
+		out += " · " + p
+	}
+	return out
+}
+
+// formatAgentMedia renders a frame/byte total for the debug card.
+func formatAgentMedia(frames, bytes uint64) string {
+	return fmt.Sprintf("%d frames · %s", frames, connection.FormatBytes(bytes))
+}
+
+// formatCountPair renders two related totals for the debug card.
+func formatCountPair(first, second uint64) string {
+	return fmt.Sprintf("%d / %d", first, second)
+}
+
+// formatCount renders one total for the debug card.
+func formatCount(n uint64) string {
+	return fmt.Sprintf("%d", n)
+}
+
 func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 	state := connection.Connecting
 	if w.haveFrame {
@@ -145,6 +240,10 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 	if transport == "" {
 		transport = "Selkies"
 	}
+	proto := "Selkies H.264/Opus over WebSocket"
+	if transport == "Agent" {
+		proto = "kw-agent-v1 over WebSocket"
+	}
 	// Agent clipboard and resize are negotiated with the guest. SendInput
 	// cannot implement Windows secure attention (Ctrl+Alt+Del), so that
 	// special-key action stays unavailable even when ordinary input is enabled.
@@ -159,10 +258,29 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 			guestResize = capable.ResizeAvailable()
 		}
 	}
-	return connection.Snapshot{Workspace: w.opts.Title, Surface: connection.Desktop,
+	snap := connection.Snapshot{Workspace: w.opts.Title, Surface: connection.Desktop,
 		State: state, Role: connection.Exclusive, Transport: transport,
+		Tier: "Tier 1", Proto: proto,
 		Clipboard: !w.clipboardDisabled && w.opts.ClipboardInterval >= 0, ResizeGuest: !w.opts.NoResize, Muted: w.muted,
+		AudioLive:    w.audio != nil && !w.muted,
 		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: guestResize, Audio: w.audio != nil}}
+	if transport == "Agent" {
+		if dbg, ok := w.inp.(agentDebugger); ok && dbg != nil {
+			if counters, live := dbg.DebugCounters(); live {
+				snap.BytesIn, snap.BytesOut = counters.MediaBytes, counters.ControlBytes
+				snap.HasActivity = true
+				snap.Extra = [][2]string{
+					{"Capture", formatFramebuffer(counters.CaptureW, counters.CaptureH)},
+					{"Video", formatAgentMedia(counters.VideoFrames, counters.VideoBytes)},
+					{"Audio", formatAgentMedia(counters.AudioFrames, counters.AudioBytes)},
+					{"Resize ACKs / keyframes", formatCountPair(counters.ResizeACKs, counters.Keyframes)},
+					{"Control frames", formatCount(counters.ControlFrames)},
+					{"Guest modes", formatCount(uint64(counters.DisplayModes))},
+				}
+			}
+		}
+	}
+	return snap
 }
 
 func (w *tier1Window) connectionAction(a connection.Action) error {

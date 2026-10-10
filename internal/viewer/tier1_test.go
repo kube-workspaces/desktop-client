@@ -1000,3 +1000,79 @@ func TestTier1WindowFollowsGuestActualSkips(t *testing.T) {
 		t.Fatal("degenerate size recorded an ack")
 	}
 }
+
+type debugAgentInput struct {
+	recordInput
+	counters AgentCounters
+	live     bool
+}
+
+func (d *debugAgentInput) ClipboardAvailable() bool { return true }
+func (d *debugAgentInput) ResizeAvailable() bool    { return true }
+func (d *debugAgentInput) DebugCounters() (AgentCounters, bool) {
+	return d.counters, d.live
+}
+
+func TestAgentSnapshotReportsLiveCounters(t *testing.T) {
+	inp := &debugAgentInput{live: true, counters: AgentCounters{
+		CaptureW: 1920, CaptureH: 1080,
+		ControlFrames: 41, ControlBytes: 8192,
+		MediaBytes: 343064, VideoFrames: 386, VideoBytes: 340000,
+		AudioFrames: 2249, AudioBytes: 3064,
+		ResizeACKs: 7, Keyframes: 9, DisplayModes: 8,
+	}}
+	w := &tier1Window{inp: inp, haveFrame: true, opts: Tier1Config{Transport: "Agent"}}
+	w.opts.applyDefaults()
+	snap := w.connectionSnapshot()
+	if snap.Tier != "Tier 1" || snap.Transport != "Agent" || snap.Proto != "kw-agent-v1 over WebSocket" {
+		t.Fatalf("identity: %+v", snap)
+	}
+	if !snap.HasActivity || snap.BytesIn != 343064 || snap.BytesOut != 8192 {
+		t.Fatalf("activity: in=%d out=%d tracked=%v", snap.BytesIn, snap.BytesOut, snap.HasActivity)
+	}
+	extra := map[string]string{}
+	for _, row := range snap.Extra {
+		extra[row[0]] = row[1]
+	}
+	if extra["Capture"] != "1920×1080" {
+		t.Fatalf("capture: %v", snap.Extra)
+	}
+	if extra["Video"] != "386 frames · 332.0 KB" {
+		t.Fatalf("video: %v", snap.Extra)
+	}
+	if extra["Audio"] != "2249 frames · 3.0 KB" {
+		t.Fatalf("audio: %v", snap.Extra)
+	}
+	if extra["Resize ACKs / keyframes"] != "7 / 9" || extra["Control frames"] != "41" || extra["Guest modes"] != "8" {
+		t.Fatalf("control detail: %v", snap.Extra)
+	}
+}
+
+func TestAgentSnapshotWithoutSessionClaimsNothing(t *testing.T) {
+	inp := &debugAgentInput{}
+	w := &tier1Window{inp: inp, haveFrame: false, opts: Tier1Config{Transport: "Agent"}}
+	w.opts.applyDefaults()
+	snap := w.connectionSnapshot()
+	if snap.HasActivity || snap.BytesIn != 0 || snap.BytesOut != 0 || len(snap.Extra) != 0 {
+		t.Fatalf("sessionless agent snapshot claims activity: %+v", snap)
+	}
+	if snap.Tier != "Tier 1" || snap.Proto == "" {
+		t.Fatalf("identity missing: %+v", snap)
+	}
+}
+
+func TestSelkiesSnapshotDoesNotClaimUntrackedActivity(t *testing.T) {
+	inp := &recordInput{}
+	w := &tier1Window{inp: inp, haveFrame: true, opts: Tier1Config{}}
+	w.opts.applyDefaults()
+	snap := w.connectionSnapshot()
+	if snap.Transport != "Selkies" || snap.Tier != "Tier 1" {
+		t.Fatalf("identity: %+v", snap)
+	}
+	if snap.Proto != "Selkies H.264/Opus over WebSocket" {
+		t.Fatalf("proto: %+v", snap)
+	}
+	if snap.HasActivity {
+		t.Fatalf("selkies activity untracked but claimed: %+v", snap)
+	}
+}

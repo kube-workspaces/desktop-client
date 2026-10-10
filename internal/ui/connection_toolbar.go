@@ -37,6 +37,9 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		wideItems = append(wideItems, toolbarItem{action: connection.Sessions})
 	}
 	wideItems = append(wideItems, toolbarItem{action: connection.Fullscreen}, toolbarItem{menu: "tools"}, toolbarItem{menu: "connection"})
+	if s.Availability(connection.Debug).Visible {
+		wideItems = append(wideItems, toolbarItem{menu: "debug"})
+	}
 	if s.Fullscreen {
 		wideItems = append(wideItems, toolbarItem{menu: "pin"})
 	}
@@ -85,6 +88,9 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	items := wideItems
 	if narrow {
 		items = []toolbarItem{{action: connection.Fullscreen}, {menu: "tools"}, {action: connection.Disconnect}}
+		if s.Availability(connection.Debug).Visible {
+			items = append(items, toolbarItem{menu: "debug"})
+		}
 	}
 
 	width := 0
@@ -110,6 +116,10 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		x += r.W + th.Gap
 	}
 	if t.Menu == "" {
+		return out, requested
+	}
+	if t.Menu == "debug" {
+		out.Panel = drawDebugCard(ctx, &t.Menu, out.Content, s)
 		return out, requested
 	}
 
@@ -223,4 +233,116 @@ func toolbarOnOff(on bool) string {
 		return i18n.Get("toolbar.on")
 	}
 	return i18n.Get("toolbar.off")
+}
+
+// debugRows builds the live connection readout the debug card draws. It is
+// pure over the snapshot so tests can pin the rows without a window: every
+// frame the toolbar re-renders from a fresh snapshot, which is what makes
+// the card dynamic.
+func debugRows(s connection.Snapshot) [][2]string {
+	orDash := func(v string) string {
+		if v == "" {
+			return "—"
+		}
+		return v
+	}
+	audio := i18n.Get("toolbar.debugAudioUnavailable")
+	if s.Capabilities.Audio {
+		audio = i18n.Get("toolbar.debugAudioOff")
+		if s.AudioLive {
+			audio = i18n.Get("toolbar.debugAudioLive")
+		} else if s.Muted {
+			audio = i18n.Get("toolbar.debugAudioMuted")
+		}
+	}
+	throughput := "—"
+	if s.HasMetrics && s.State == connection.Connected {
+		throughput = fmt.Sprintf("%.0f fps · %.0f kbit/s", s.FPS, s.Kbps)
+	}
+	activity := i18n.Get("toolbar.debugUntracked")
+	if s.HasActivity {
+		activity = fmt.Sprintf("%s in · %s out",
+			connection.FormatBytes(s.BytesIn), connection.FormatBytes(s.BytesOut))
+	}
+	features := []string{}
+	if s.Capabilities.SpecialKeys {
+		features = append(features, "special keys")
+	}
+	if s.Capabilities.ClipboardSync {
+		features = append(features, "clipboard sync "+toolbarOnOff(s.Clipboard))
+	}
+	if s.Capabilities.GuestResize {
+		features = append(features, "guest resize "+toolbarOnOff(s.ResizeGuest))
+	}
+	if s.Capabilities.TypeClipboard {
+		features = append(features, "type clipboard")
+	}
+	if s.Capabilities.Audio {
+		features = append(features, "audio "+toolbarOnOff(s.AudioLive))
+	}
+	enabled := i18n.Get("toolbar.debugNone")
+	if s.Role == connection.Observer {
+		enabled = i18n.Get("toolbar.viewOnly")
+	} else if len(features) > 0 {
+		enabled = features[0]
+		for _, f := range features[1:] {
+			enabled += ", " + f
+		}
+	}
+	rows := [][2]string{
+		{i18n.Get("toolbar.debugTier"), orDash(s.Tier)},
+		{i18n.Get("toolbar.debugTransport"), orDash(s.Transport)},
+		{i18n.Get("toolbar.debugProtocol"), orDash(s.Proto)},
+		{i18n.Get("toolbar.debugAudio"), audio},
+		{i18n.Get("toolbar.debugThroughput"), throughput},
+		{i18n.Get("toolbar.debugActivity"), activity},
+		{i18n.Get("toolbar.debugEnabled"), enabled},
+	}
+	return append(rows, s.Extra...)
+}
+
+// drawDebugCard floats a centered connection-info card over the content
+// area: a popup window in the immediate-mode idiom, dismissed by its Close
+// button or Escape (which clears the toolbar menu above). Drawing never
+// touches the content rect, so opening it cannot resize the guest.
+func drawDebugCard(ctx *Context, menu *string, content Rect, s connection.Snapshot) Rect {
+	th := ctx.Theme
+	rowH := th.ControlHeight
+	lineH := LineHeight(th.Small, th.Font)
+	rows := debugRows(s)
+	cardW := min(max(content.W-2*th.Pad, 0), 30*th.ControlHeight)
+	cardH := 2*th.Pad + 2*lineH + th.Gap + len(rows)*lineH + th.Gap + rowH
+	if cardW <= 0 || cardH <= 0 {
+		return Rect{}
+	}
+	card := Rect{
+		X: content.X + (content.W-cardW)/2,
+		Y: content.Y + max(th.Pad, (content.H-cardH)/3),
+		W: cardW,
+		H: min(cardH, max(content.H-2*th.Pad, 0)),
+	}
+	if card.H <= 0 {
+		return Rect{}
+	}
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	x, y := card.X+th.Pad, card.Y+th.Pad
+	Label(ctx, Rect{X: x, Y: y, W: card.W - 2*th.Pad, H: lineH}, i18n.Get("toolbar.debugTitle"), LabelStyle{Scale: th.Small})
+	y += lineH
+	identity := s.Workspace + " · " + i18n.Get("toolbar.surface."+string(s.Surface)) + " · " + i18n.Get("toolbar.state."+string(s.State))
+	Label(ctx, Rect{X: x, Y: y, W: card.W - 2*th.Pad, H: lineH}, identity, LabelStyle{Scale: th.Small})
+	y += lineH + th.Gap
+	for _, row := range rows {
+		if y+lineH > card.Y+card.H-th.Pad-rowH-th.Gap {
+			break
+		}
+		Label(ctx, Rect{X: x, Y: y, W: card.W - 2*th.Pad, H: lineH}, row[0]+": "+row[1], LabelStyle{Scale: th.Small})
+		y += lineH
+	}
+	close := Button{ID: FocusID("toolbar-debug-close"), Text: i18n.Get("toolbar.close"), Variant: ButtonSecondary, Scale: th.Small}
+	w := close.Width(ctx)
+	if close.Layout(ctx, Rect{X: card.X + card.W - th.Pad - w, Y: card.Y + card.H - th.Pad - rowH, W: w, H: rowH}) {
+		*menu = ""
+	}
+	return card
 }
