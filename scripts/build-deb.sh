@@ -108,6 +108,12 @@ EOF
 chmod 644 "$pkg/usr/share/doc/kube-workspaces/packaged-install"
 
 installed_size="$(du -sk "$pkg/usr" | cut -f1)"
+# Tier 1 decode prefers distro libraries over bundling (their security updates
+# ride the distro). Recommends, not Depends: one universal .deb must stay
+# installable where libavcodec59 does not exist (Ubuntu 24.04 ships 60+), and
+# Tier 0 works fully without them. Debian 12 installs Recommends by default,
+# so Tier 1 works out of the box there. (dpkg control files take no comments,
+# hence this note lives here and not in the control block below.)
 cat > "$pkg/DEBIAN/control" <<EOF
 Package: kube-workspaces
 Version: $debver
@@ -115,11 +121,6 @@ Section: net
 Priority: optional
 Architecture: $debarch
 Depends: libwebkit2gtk-4.1-0
-# Tier 1 decode prefers distro libraries over bundling (their security updates
-# ride the distro). Recommends, not Depends: one universal .deb must stay
-# installable where libavcodec59 does not exist (Ubuntu 24.04 ships 60+), and
-# Tier 0 works fully without them. Debian 12 installs Recommends by default,
-# so Tier 1 works out of the box there.
 Recommends: libavcodec59, libavutil57, libopus0
 Maintainer: Kube Workspaces <https://github.com/kube-workspaces/desktop-client>
 Installed-Size: $installed_size

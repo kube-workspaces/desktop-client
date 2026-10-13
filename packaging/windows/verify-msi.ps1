@@ -68,7 +68,7 @@ try {
   }
   if ($names -notcontains "kube-workspaces.exe") { throw "Shell missing from MSI." }
   if ($Arch -eq "amd64" -and $names -notcontains "kube-workspaces-web.exe") { throw "Web child missing from MSI." }
-  $staged = @(Get-ChildItem $StagingDir -File | Where-Object { $_.Extension -in @('.exe', '.dll') } | ForEach-Object { $_.Name })
+  $staged = @(Get-ChildItem $StagingDir -File | Where-Object { $_.Extension -in @('.exe', '.dll') -or $_.Name -like 'NOTICE-media-*' -or $_.Name -like 'BUILD-INFO-*.txt' } | ForEach-Object { $_.Name })
   if (Compare-Object $staged $names) { throw "MSI payload differs from archive." }
   $dialogs = @(Read-Rows 'SELECT `Dialog` FROM `Dialog`' 1 | ForEach-Object { $_[0] })
   foreach ($required in @('WelcomeDlg', 'ScopeDlg', 'VerifyReadyDlg', 'ProgressDlg', 'ExitDialog')) {
