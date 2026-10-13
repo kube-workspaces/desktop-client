@@ -33,11 +33,14 @@ func TestBundleCandidatesPrecedeSystemNames(t *testing.T) {
 		t.Skipf("os.Executable: %v", err)
 	}
 	dir := filepath.Dir(exe)
+	// The macOS Frameworks entry lives beside the bundle, not inside the
+	// executable directory; both roots are exe-anchored.
+	frameworks := filepath.Join(dir, "..", "Frameworks")
 	for _, got := range names[:len(names)-1] {
 		if !filepath.IsAbs(got) {
 			t.Fatalf("bundle candidate %q is not absolute", got)
 		}
-		if !strings.HasPrefix(got, dir) {
+		if !strings.HasPrefix(got, dir) && !strings.HasPrefix(got, frameworks) {
 			t.Fatalf("bundle candidate %q is not exe-anchored at %q", got, dir)
 		}
 	}
