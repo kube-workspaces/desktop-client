@@ -253,7 +253,11 @@ upstream 4.0 pin cannot load on Ubuntu 24.04+ or Debian 12+.
 The optional Tier 1 **diagnostic** now supports native H.264/Opus decoding
 (`go run ./cmd/selkies-probe --decode`) and SDL playback (`--present`). These
 modes require FFmpeg libavcodec 59 / libavutil 57 and libopus at runtime;
-they are not bundled. Normal GUI connections still use Tier 0. See the
+bare source builds need those libraries installed separately. Assembled
+packages bundle them for Linux amd64/arm64, Windows amd64 and macOS arm64;
+Intel macOS and Windows arm64 need compatible runtime libraries for premium
+viewing or retain the Tier 0 fallback. Normal GUI connections select the
+advertised agent or Selkies transport when supported. See the
 [runtime guide](https://github.com/kube-workspaces/deploy/blob/main/docs/display-tiers.md)
 for commands, platform validation gates and rollout requirements.
 

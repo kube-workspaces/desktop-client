@@ -86,7 +86,9 @@ for f in NOTICE COPYING.LGPLv2.1 COPYING.opus-BSD; do
     echo "build-flatpak: WARNING: $f not in third_party/media-libs" >&2
   fi
 done
-printf '%s\n' '        "install -Dm644 NOTICE-media-* /app/share/doc/kube-workspaces/",' >> "$work/mediainstall"
+printf '%s\n' \
+  '        "install -d /app/share/doc/kube-workspaces",' \
+  '        "install -m644 NOTICE-media-* /app/share/doc/kube-workspaces/",' >> "$work/mediainstall"
 if test -f "$work/$stage/kube-workspaces-web"; then
   cp "$work/$stage/kube-workspaces-web" "$src/kube-workspaces-web"
   printf '%s\n' '        "install -Dm755 kube-workspaces-web /app/bin/kube-workspaces-web",' > "$work/webinstall"

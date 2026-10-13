@@ -17,6 +17,10 @@ dist/
 # Test binary
 *.test
 
+# Python helper bytecode
+__pycache__/
+*.py[cod]
+
 # Coverage
 *.out
 coverage.html
