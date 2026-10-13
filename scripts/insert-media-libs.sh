@@ -64,7 +64,12 @@ case "$os" in
   linux)
     test -d "$staged/linux/lib" || { echo "insert-media-libs: no linux/lib/ payload in $staged" >&2; exit 1; }
     mkdir -p "$work/$stage/lib"
-    cp -d "$staged"/linux/lib/*.so* "$work/$stage/lib/"
+    # Dereference symlinks: the updater contract forbids non-file members,
+    # and a resolved copy loads anywhere without link-following surprises.
+    for f in "$staged"/linux/lib/*.so*; do
+      [ -e "$f" ] || continue
+      cp -L "$f" "$work/$stage/lib/$(basename "$f")"
+    done
     inject_licenses "$work/$stage" "$staged"
     ;;
   darwin|macos)
