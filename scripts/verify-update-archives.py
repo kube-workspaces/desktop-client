@@ -47,8 +47,9 @@ def verify(directory, version, shell_only=False, require_msi=False):
                 assert f"{binary_dir}/kube-workspaces-web{exe}" in members, name
             # Tier 1 media bundle (LGPL 5.1 + BSD Opus): bundled everywhere a
             # build exists, so Tier 1 works out of the box. windows/arm64 has
-            # no 5.1 shared source yet and keeps the Tier 0 fallback.
-            if not shell_only and (os_name, arch) != ("windows", "arm64"):
+            # no 5.1 shared source and darwin/amd64 has no x86_64 toolchain on
+            # the arm64-only macOS runners; both keep the Tier 0 fallback.
+            if not shell_only and (os_name, arch) not in (("windows", "arm64"), ("darwin", "amd64")):
                 if os_name == "windows":
                     for dll in ("avcodec-59.dll", "avutil-57.dll"):
                         assert f"{root}/{dll}" in members, (name, dll)

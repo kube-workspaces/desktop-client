@@ -295,16 +295,15 @@ jobs:
             runs-on: ubuntu-24.04
             apt: "build-essential pkg-config nasm ca-certificates curl mingw-w64"
             require_asm: "1"
-          - platform: darwin-amd64
-            target: mac-amd64
-            runs-on: macos-latest
-            apt: ""
-            require_asm: "1"
           - platform: darwin-arm64
             target: mac-arm64
             runs-on: macos-latest
             apt: ""
             require_asm: "0"
+          # darwin/amd64: cross-compiling x86_64 media libs on the arm64-only
+          # macOS runners crashes the toolchain probe (Bus error), and Intel
+          # macOS runners are gone; that archive keeps the Tier 0 fallback
+          # (or user-installed FFmpeg 5.1) until a native x86_64 host exists.
           # windows/arm64: no 5.1 shared source and no woa64 toolchain here;
           # that archive keeps the Tier 0 fallback until one exists.
     steps:
@@ -838,8 +837,9 @@ jobs:
             echo "(pinned version, build flags and hashes: \`third_party/media-libs\`)."
             echo "Opus audio uses the BSD-licensed reference implementation"
             echo "([license](https://www.opus-codec.org/license)); attribution ships"
-            echo "in every package. windows/arm64 carries no media libraries yet"
-            echo "and uses Tier 0 there."
+            echo "in every package. windows/arm64 and darwin/amd64 carry no media"
+            echo "libraries yet and use Tier 0 there (no woa64 5.1 source, no"
+            echo "x86_64 macOS toolchain on the arm64-only runners)."
             echo
             echo
             echo "The AppImage is not part of \`SHA256SUMS\` (the in-app updater contract covers"
