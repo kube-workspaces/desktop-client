@@ -254,7 +254,7 @@ The optional Tier 1 **diagnostic** now supports native H.264/Opus decoding
 (`go run ./cmd/selkies-probe --decode`) and SDL playback (`--present`). These
 modes require FFmpeg libavcodec 59 / libavutil 57 and libopus at runtime;
 they are not bundled. Normal GUI connections still use Tier 0. See the
-[pilot/runtime guide](https://github.com/kube-workspaces/deploy/blob/main/docs/tier1.md)
+[runtime guide](https://github.com/kube-workspaces/deploy/blob/main/docs/display-tiers.md)
 for commands, platform validation gates and rollout requirements.
 
 A Linux desktop session (X11 or Wayland) is of course still needed at *runtime*
@@ -578,7 +578,7 @@ sense for that surface:
 - **Displays** — fit-to-window, guest resize, clipboard sync on/off, audio
   mute, shared control (take/release), and the metrics the transport actually
   reports (FPS, bitrate). Tier 0 shows what QEMU gives us; Tier 1 shows
-  Selkies' own counters.
+  the serving agent's own counters (Selkies or `kw-agent`).
 - **Terminals** — paste from the host clipboard.
 - **Browser windows** — the same common controls, drawn as native window
   chrome outside the page rather than as HTML inside it.
@@ -598,12 +598,15 @@ commands.
 
 ## The display model — two tiers
 
-Two transports, chosen from the workspace's image; never a user setting.
+Two tiers and three transports, chosen from the workspace's image except for
+the explicit agent opt-in; never a plain user setting. The full matrix lives
+in the platform's [Display tiers & audio](https://github.com/kube-workspaces/deploy/blob/main/docs/display-tiers.md)
+guide; the short version:
 
 | | **Tier 0 — RFB/VNC** | **Tier 1 — in-guest agent** |
 |---|---|---|
-| Status | **implemented** — universal display and fallback | **implemented** — selected for Selkies-capable workspaces when native decoders are available |
-| Path | the platform API's `/v1/workspaces/{name}/vnc` WebSocket bridge | [Selkies](https://github.com/selkies-project/selkies) agent in the guest, via `kube-workspaces/proxy` |
+| Status | **implemented** — universal display and fallback | **implemented** — Selkies auto-selected for capable workspaces when native decoders are available; `kw-agent` premium window on explicit opt-in |
+| Path | the platform API's `/v1/workspaces/{name}/vnc` WebSocket bridge | [Selkies](https://github.com/selkies-project/selkies) agent or `kw-agent` in the guest, via `kube-workspaces/proxy` |
 | Needs an agent in the guest? | No — works on any image | Yes — only on images that ship it |
 | Video | Tight/JPEG, ZRLE, Hextile, CopyRect, Raw rectangles; no interframe coding | H.264 |
 | Audio | none — detects QEMU PCM when the guest advertises a sound device, but nothing plays it | Opus, decoded to stereo 48 kHz PCM |
@@ -711,7 +714,7 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 | [kube-workspaces/controller](https://github.com/kube-workspaces/controller) | Kubernetes controller; owns the CRDs and generates the KubeVirt VMs |
 | [kube-workspaces/api](https://github.com/kube-workspaces/api) | REST API and the console/exec/ssh/vnc WebSocket bridges this client speaks to |
 | [kube-workspaces/frontend](https://github.com/kube-workspaces/frontend) | Web UI |
-| [kube-workspaces/proxy](https://github.com/kube-workspaces/proxy) | Reverse proxy for workspace traffic (the planned Tier 1 transport) |
+| [kube-workspaces/proxy](https://github.com/kube-workspaces/proxy) | Reverse proxy for workspace traffic (the Tier 1 transports) |
 | [kube-workspaces/deploy](https://github.com/kube-workspaces/deploy) | Helm chart, Kustomize, ArgoCD, docs |
 | [kube-workspaces/image-catalog](https://github.com/kube-workspaces/image-catalog) | Workspace `Image` CR manifests |
 

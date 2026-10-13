@@ -62,12 +62,13 @@ PCM queued to the playback backend, and releases the agent ticket when the
 window/duration ends. Like the headless probe, it reads `KW_SESSION` and
 requires `--server`, `--namespace` and `--workspace`.
 
-The agent premium viewer currently supports video, playback audio and
-negotiated text clipboard. Keyboard/pointer injection and applying guest
-resize are still pending. Unsupported input is not forwarded and does not
-terminate the view-only stream; local fullscreen/disconnect controls work.
-Use RFB with `--agent-clipboard` when interactive keyboard/mouse is needed.
-The toolbar does not advertise guest resize before it can apply a mode.
+The agent premium viewer supports video, playback audio, negotiated text
+clipboard, capability-gated keyboard/pointer input and real guest resize
+(with resize ACKs and nearest-mode snapping). Unsupported input is not
+forwarded and does not terminate the stream; local fullscreen/disconnect
+controls work. Use RFB with `--agent-clipboard` when only clipboard is
+needed beside the universal console. The toolbar advertises guest resize
+only once the session reports it can apply a mode.
 
 On Windows, supported native decoder DLLs (FFmpeg avcodec 59/avutil 57 and
 Opus, including their dependencies) must be beside the executable. Unknown

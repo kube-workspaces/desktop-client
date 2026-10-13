@@ -298,8 +298,8 @@ type SessionOptions struct {
 	// AgentTier opts a VM workspace into the premium agent transport
 	// (video/audio/resize via kw-agent-v1) instead of Selkies/RFB.
 	// Explicit until the API reports transport truth: the client never
-	// guesses agent availability from other capability data. The window
-	// is observer-grade in v1 (no guest input injection yet); refusal,
+	// guesses agent availability from other capability data. Input, resize
+	// and clipboard are capability-gated per session; refusal,
 	// busy seats and auth failures never fall back silently.
 	AgentTier bool
 	// AgentClipboard adds guest Unicode clipboard to the normal RFB console.
@@ -942,7 +942,7 @@ func (h *tier1Handle) Close() {
 
 // agentHandle is the explicit opt-in premium window (see
 // SessionOptions.AgentTier): kw-agent-v1 video/audio/resize instead of
-// Selkies/RFB. Observer-grade in v1 (no guest input injection yet).
+// Selkies/RFB. Input, resize and clipboard are capability-gated per session.
 // Recoverable transport failures fall back to Tier 0 in place;
 // refusal, busy seats and auth failures surface instead.
 type agentHandle struct {

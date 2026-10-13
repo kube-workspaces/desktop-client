@@ -225,7 +225,7 @@ Not implemented, and must not be described otherwise:
 | Decision | Choice |
 |---|---|
 | Display, universal path | RFB over the API's `/vnc` bridge, no guest agent |
-| Display, premium path | Selkies H.264 + Opus, capability-selected, bounded reconnect and sticky Tier 0 fallback |
+| Display, premium path | Tier 1: Selkies H.264 + Opus (capability-selected, bounded reconnect, sticky Tier 0 fallback) and `kw-agent-v1` premium window (explicit opt-in, capability-gated input/resize/clipboard) |
 | Session window | SDL3 via `Zyko0/go-sdl3` (purego, **no cgo**) |
 | Shell UI | **SDL3, same process and same window as the session viewer**, on a hand-rolled software widget layer (`internal/ui`) |
 | SDL library | The copy bundled with the binding, unpacked at startup — never the system SDL |
