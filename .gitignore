@@ -57,3 +57,10 @@ desktop.ini
 # go-winres build output: the Windows .exe icon + version resources.
 cmd/kube-workspaces/*.syso
 cmd/kube-workspaces-web/*.syso
+
+# Tier 1 media library builds (third_party/media-libs): the manifest,
+# scripts and license texts are committed; fetched archives and
+# build/stage outputs are reproducible artefacts.
+third_party/media-libs/dl/
+third_party/media-libs/out/
+third_party/media-libs/stage/

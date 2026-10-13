@@ -598,14 +598,13 @@ commands.
 
 ## The display model — two tiers
 
-Two tiers and three transports, chosen from the workspace's image except for
-the explicit agent opt-in; never a plain user setting. The full matrix lives
+Two tiers and three transports, chosen from the workspace's image; never a plain user setting. The full matrix lives
 in the platform's [Display tiers & audio](https://github.com/kube-workspaces/deploy/blob/main/docs/display-tiers.md)
 guide; the short version:
 
 | | **Tier 0 — RFB/VNC** | **Tier 1 — in-guest agent** |
 |---|---|---|
-| Status | **implemented** — universal display and fallback | **implemented** — Selkies auto-selected for capable workspaces when native decoders are available; `kw-agent` premium window on explicit opt-in |
+| Status | **implemented** — universal display and fallback | **implemented** — Selkies auto-selected for capable workspaces when native decoders are available; `kw-agent` automatic where the image advertises protocol `agent` |
 | Path | the platform API's `/v1/workspaces/{name}/vnc` WebSocket bridge | [Selkies](https://github.com/selkies-project/selkies) agent or `kw-agent` in the guest, via `kube-workspaces/proxy` |
 | Needs an agent in the guest? | No — works on any image | Yes — only on images that ship it |
 | Video | Tight/JPEG, ZRLE, Hextile, CopyRect, Raw rectangles; no interframe coding | H.264 |
@@ -616,9 +615,12 @@ Tier 0 is the universal floor and is never going away — it is the out-of-band
 console. Tier 1 is the premium path and also keeps pixel traffic off the
 Kubernetes control plane, which Tier 0 unavoidably transits.
 
-Tier 1 uses the pinned Selkies **2.0.0rc0** WebSocket protocol. It needs FFmpeg
+Tier 1 uses the pinned Selkies **2.0.0rc0** WebSocket protocol. Release
+packages bundle the required libraries (see
+[desktop-client install docs](https://github.com/kube-workspaces/deploy/blob/main/docs/desktop-client.md#tier-1-media-libraries-where-to-get-them));
+bare builds need FFmpeg
 **libavcodec 59 / libavutil 57** and libopus installed for the executable's
-architecture (these libraries are not bundled). Linux names are
+architecture (these libraries are not bundled with a bare build). Linux names are
 `libavcodec.so.59`, `libavutil.so.57`, `libopus.so.0`; macOS uses the equivalent
 `.59.dylib`, `.57.dylib`, `.0.dylib`; Windows uses `avcodec-59.dll`,
 `avutil-57.dll`, and `opus.dll` or `libopus-0.dll` in a safe DLL search directory.

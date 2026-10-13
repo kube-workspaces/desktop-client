@@ -38,10 +38,13 @@ func NewH264() (_ *H264, err error) {
 			d.Close()
 		}
 	}()
-	if d.codec, err = load(codecNames()...); err != nil {
+	// libavutil first: once it is resident from a bundle path, libavcodec's
+	// dependency on it is satisfied without any system loader search (no
+	// rpath needed), so a side-by-side bundle works on a bare machine.
+	if d.util, err = load(utilNames()...); err != nil {
 		return nil, err
 	}
-	if d.util, err = load(utilNames()...); err != nil {
+	if d.codec, err = load(codecNames()...); err != nil {
 		return nil, err
 	}
 	var codecVersion, utilVersion func() uint32

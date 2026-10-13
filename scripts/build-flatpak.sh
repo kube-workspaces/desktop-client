@@ -65,6 +65,28 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 src="$work/src"
 mkdir -p "$src"
 cp "$work/$stage/kube-workspaces" "$src/kube-workspaces"
+# Bundled Tier 1 libraries beside the binary (the loader checks the exe dir
+# first); the GNOME runtime's own ffmpeg (if any) stays as fallback.
+: > "$work/mediainstall"
+: > "$work/mediasource"
+if test -d "$work/$stage/lib"; then
+  for f in "$work/$stage"/lib/*.so.*; do
+    cp -d "$f" "$src/"
+    printf '%s\n' "        {\"type\": \"file\", \"path\": \"$(basename "$f")\"}," >> "$work/mediasource"
+  done
+  printf '%s\n' '        "install -Dm755 libavcodec.so.59* libavutil.so.57* libopus.so.0* /app/bin/",' >> "$work/mediainstall"
+  echo "build-flatpak: bundled Tier 1 media libraries"
+else
+  echo "build-flatpak: archive carries no media libs; Tier 1 needs runtime libraries" >&2
+fi
+for f in NOTICE COPYING.LGPLv2.1 COPYING.opus-BSD; do
+  if cp "$root/third_party/media-libs/$f" "$src/NOTICE-media-$f" 2>/dev/null; then
+    printf '%s\n' "        {\"type\": \"file\", \"path\": \"NOTICE-media-$f\"}," >> "$work/mediasource"
+  else
+    echo "build-flatpak: WARNING: $f not in third_party/media-libs" >&2
+  fi
+done
+printf '%s\n' '        "install -Dm644 NOTICE-media-* /app/share/doc/kube-workspaces/",' >> "$work/mediainstall"
 if test -f "$work/$stage/kube-workspaces-web"; then
   cp "$work/$stage/kube-workspaces-web" "$src/kube-workspaces-web"
   printf '%s\n' '        "install -Dm755 kube-workspaces-web /app/bin/kube-workspaces-web",' > "$work/webinstall"
@@ -85,6 +107,10 @@ sed -e "/@@WEBCHILD_INSTALL@@/r $work/webinstall" \
     -e "/@@WEBCHILD_INSTALL@@/d" \
     -e "/@@WEBCHILD_SOURCE@@/r $work/websource" \
     -e "/@@WEBCHILD_SOURCE@@/d" \
+    -e "/@@MEDIALIBS_INSTALL@@/r $work/mediainstall" \
+    -e "/@@MEDIALIBS_INSTALL@@/d" \
+    -e "/@@MEDIALIBS_SOURCE@@/r $work/mediasource" \
+    -e "/@@MEDIALIBS_SOURCE@@/d" \
   "$root/packaging/linux/flatpak/$appid.json.in" > "$src/$appid.json"
 if command -v python3 >/dev/null 2>&1; then
   python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$src/$appid.json" || { echo "build-flatpak: generated manifest is not valid JSON" >&2; exit 1; }

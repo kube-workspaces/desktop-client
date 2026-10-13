@@ -24,20 +24,28 @@ mkdir -p %{buildroot}/usr/bin \
   %{buildroot}/usr/share/doc/kube-workspaces
 install -m755 %{stagedir}/kube-workspaces %{buildroot}/usr/bin/kube-workspaces
 @@WEBCHILD_INSTALL@@
+@@MEDIALIBS_INSTALL@@
 install -m644 %{sourcedir}/kube-workspaces.desktop %{buildroot}/usr/share/applications/kube-workspaces.desktop
 cp -r %{sourcedir}/icons/hicolor %{buildroot}/usr/share/icons/
 find %{buildroot}/usr/share/icons -type d -exec chmod 755 {} +
 find %{buildroot}/usr/share/icons -type f -exec chmod 644 {} +
 install -m644 %{sourcedir}/copyright %{buildroot}/usr/share/doc/kube-workspaces/copyright
+install -m644 %{sourcedir}/NOTICE-media-NOTICE %{buildroot}/usr/share/doc/kube-workspaces/NOTICE-media-libs
+install -m644 %{sourcedir}/NOTICE-media-COPYING.LGPLv2.1 %{buildroot}/usr/share/doc/kube-workspaces/COPYING.LGPLv2.1
+install -m644 %{sourcedir}/NOTICE-media-COPYING.opus-BSD %{buildroot}/usr/share/doc/kube-workspaces/COPYING.opus-BSD
 printf 'Installed by the kube-workspaces .rpm package; the in-app updater stands down for system packages.\n' > %{buildroot}/usr/share/doc/kube-workspaces/packaged-install
 chmod 644 %{buildroot}/usr/share/doc/kube-workspaces/packaged-install
 
 %files
 /usr/bin/kube-workspaces
 @@WEBCHILD_FILES@@
+@@MEDIALIBS_FILES@@
 /usr/share/applications/kube-workspaces.desktop
 /usr/share/icons/hicolor/*/apps/kube-workspaces.png
 /usr/share/doc/kube-workspaces/copyright
+/usr/share/doc/kube-workspaces/NOTICE-media-libs
+/usr/share/doc/kube-workspaces/COPYING.LGPLv2.1
+/usr/share/doc/kube-workspaces/COPYING.opus-BSD
 /usr/share/doc/kube-workspaces/packaged-install
 
 %post

@@ -49,7 +49,8 @@ func runShell(ctx context.Context, args []string) error {
 	height := fs.Int("height", 0, "initial window height in pixels (0 restores the last size)")
 	uiScale := fs.Float64("ui-scale", 0, "interface scale factor 1-3 (0 follows the display)")
 	noTray := fs.Bool("no-tray", false, "disable the system-tray icon for this run (overrides the stored setting)")
-	agentTier := fs.Bool("agent-tier", false, "open VM workspaces on the premium agent transport (video/audio/resize; observer-grade in v1, no guest input yet) instead of Selkies/RFB")
+	agentTier := fs.Bool("agent-tier", false, "force VM workspaces onto the premium agent transport (video/audio/resize via kw-agent-v1) even without an image advert; without the flag the agent transport is still the default wherever the image advertises protocol \"agent\"")
+	noAgentTier := fs.Bool("no-agent-tier", false, "never use the premium agent transport, even where the image advertises it (Selkies/RFB only)")
 	agentClipboard := fs.Bool("agent-clipboard", false, "add agent Unicode clipboard sync to RFB consoles (guest must run serve --clipboard)")
 	verbose := fs.Bool("v", false, "log diagnostics to stderr")
 	fs.Usage = func() {
@@ -64,6 +65,9 @@ func runShell(ctx context.Context, args []string) error {
 	scale, err := viewer.ParseScaleQuality(*scaleQuality)
 	if err != nil {
 		return err
+	}
+	if *agentTier && *noAgentTier {
+		return errors.New("shell: --agent-tier and --no-agent-tier are mutually exclusive")
 	}
 	// The flag reads better as "0 disables"; the package spells that -1, so
 	// that a zero Options value can still mean "use the default".
@@ -131,6 +135,7 @@ func runShell(ctx context.Context, args []string) error {
 		UpdateInterval: *interval,
 		ScaleQuality:   scale,
 		AgentTier:      *agentTier,
+		NoAgentTier:    *noAgentTier,
 		AgentClipboard: *agentClipboard,
 		Logf:           logf,
 	}

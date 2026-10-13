@@ -1,0 +1,16 @@
+# Pinned third-party media sources for Tier 1 decode (FFmpeg 5.1 ABI + Opus).
+#
+# These pins are load-bearing for two reasons:
+#   1. ABI: the client binds libavcodec 59 / libavutil 57 and libopus sonames.
+#      Any other FFmpeg major is rejected at preflight.
+#   2. LAW: only LGPL-configured FFmpeg may be bundled into our packages.
+#      The build scripts below pass --disable-gpl --disable-nonfree
+#      --disable-version3 explicitly, and record the full configure line in
+#      every output's BUILD-INFO.txt. A GPL ("full") prebuilt shared FFmpeg
+#      (e.g. Gyan full_build-shared, which bundles x264/x265) MUST NOT be
+#      substituted here: bundling GPL binaries would attach copyleft to our
+#      distribution. See deploy/docs/display-tiers.md#redistribution.
+#
+# Format: <name> <version> <url> <sha256>
+ffmpeg 5.1.9 https://ffmpeg.org/releases/ffmpeg-5.1.9.tar.xz d9b593bb2ba93d4b50f74177e0cdcd41747e708596367deed0c30348a71dd176
+opus 1.6.1 https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1

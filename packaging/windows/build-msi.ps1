@@ -5,9 +5,11 @@
 
 .DESCRIPTION
   Harvests kube-workspaces.exe (required), kube-workspaces-web.exe (optional:
-  absent on windows/arm64) and Tier 1 codec DLLs (optional, future) from a
-  directory holding the extracted tag-archive contents, generates the WiX
-  payload fragment (Files.wxs), and runs `wix build` (WiX v4/v5).
+  absent on windows/arm64) and Tier 1 codec DLLs (required on amd64, where
+  LGPL 5.1 builds are staged; absent on windows/arm64, which keeps the Tier 0
+  fallback until a woa64 5.1 source exists) from a directory holding the
+  extracted tag-archive contents, generates the WiX payload fragment
+  (Files.wxs), and runs `wix build` (WiX v4/v5).
 
   The MSI is UNSIGNED: install hygiene only (Add/Remove, Start Menu shortcut,
   upgrade/uninstall), not a trust fix. SmartScreen warns the same as the zip.
@@ -93,13 +95,27 @@ if (-not (Test-Path $shell -PathType Leaf)) {
 }
 
 # Payload contract: shell (required) + web child (absent on arm64) + Tier 1
-# codec DLLs (future slots; installer accepts whatever of these is staged).
+# codec DLLs. The DLLs ship Tier 1 out of the box (LGPL 5.1 + BSD Opus builds
+# staged by third_party/media-libs); amd64 requires them, arm64 has no 5.1
+# shared source yet so they stay optional there with Tier 0 fallback.
 $payload = @("kube-workspaces.exe")
 if ($Arch -eq "amd64" -and -not (Test-Path (Join-Path $staging "kube-workspaces-web.exe") -PathType Leaf)) {
   throw "Windows amd64 requires the sibling kube-workspaces-web.exe."
 }
-foreach ($opt in @("kube-workspaces-web.exe", "avcodec-59.dll", "avutil-57.dll", "opus.dll", "libopus-0.dll")) {
+foreach ($opt in @("kube-workspaces-web.exe")) {
   if (Test-Path (Join-Path $staging $opt) -PathType Leaf) { $payload += $opt }
+}
+foreach ($dll in @("avcodec-59.dll", "avutil-57.dll")) {
+  if (Test-Path (Join-Path $staging $dll) -PathType Leaf) { $payload += $dll }
+  elseif ($Arch -eq "amd64") { throw "Windows amd64 requires staged Tier 1 $dll (run third_party/media-libs build+stage first)." }
+}
+$opus = @("opus.dll", "libopus-0.dll") | Where-Object { Test-Path (Join-Path $staging $_) -PathType Leaf } | Select-Object -First 1
+if ($null -ne $opus) { $payload += $opus }
+elseif ($Arch -eq "amd64") { throw "Windows amd64 requires a staged Tier 1 opus.dll or libopus-0.dll." }
+# License texts travel with the binaries (LGPL/BSD attribution obligation).
+foreach ($doc in @("NOTICE-media-NOTICE", "NOTICE-media-COPYING.LGPLv2.1", "NOTICE-media-COPYING.opus-BSD", "BUILD-INFO-ffmpeg.txt", "BUILD-INFO-opus.txt")) {
+  if (Test-Path (Join-Path $staging $doc) -PathType Leaf) { $payload += $doc }
+  elseif ($payload -contains "avcodec-59.dll") { Write-Warning "Staged Tier 1 DLLs without $doc; attribution must ship with the binaries." }
 }
 $stagedDlls = Get-ChildItem $staging -Filter "*.dll" -File | ForEach-Object { $_.Name } | Where-Object { $payload -notcontains $_ }
 foreach ($extra in $stagedDlls) {

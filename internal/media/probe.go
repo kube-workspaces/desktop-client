@@ -26,15 +26,21 @@ func ProbeVideo() error {
 	if videoLatched.Load() {
 		return nil
 	}
-	codec, err := load(codecNames()...)
-	if err != nil {
-		return err
-	}
-	codec.close()
+	// libavutil first, and both held until both are loaded: once libavutil is
+	// resident from a bundle path, libavcodec's dependency on it is satisfied
+	// without any system loader search (no rpath needed), so a side-by-side
+	// bundle works on a bare machine. This mirrors NewH264's load order, so
+	// the probe answers the same question the decoder will ask.
 	util, err := load(utilNames()...)
 	if err != nil {
 		return err
 	}
+	codec, err := load(codecNames()...)
+	if err != nil {
+		util.close()
+		return err
+	}
+	codec.close()
 	util.close()
 	videoLatched.Store(true)
 	return nil

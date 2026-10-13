@@ -91,15 +91,54 @@ func TestAgentTierDialSelectsAgentHandle(t *testing.T) {
 	if agent.Kind() != "agent" {
 		t.Fatalf("kind = %q, want agent", agent.Kind())
 	}
-	// Without the opt-in flag the agent branch is unreachable: the same
-	// workspace is not a VM-terminal either; assert the flag gates by
-	// checking a non-VM workspace never yields an agent handle.
+	// The force flag is VM-scoped: a non-VM workspace never yields an agent
+	// handle.
 	plain := workspace("team", "ctr-a", kwclient.WorkspaceTypeContainer, true)
 	other, err := d.Dial(context.Background(), plain, false)
 	if err != nil {
 		t.Fatalf("plain dial: %v", err)
 	}
 	if _, ok := other.(*agentHandle); ok {
-		t.Fatal("agent handle must be explicit opt-in only")
+		t.Fatal("agent handle must never serve a non-VM workspace")
+	}
+}
+
+func TestAgentTierDialDefaultsToAdvertisedTransport(t *testing.T) {
+	agentVM := workspace("team", "vm-agent", kwclient.WorkspaceTypeVM, true)
+	agentVM.RemoteDesktop = &kwclient.ImageRemoteDesktop{Protocol: "agent", Port: 44787}
+	selkiesVM := workspace("team", "vm-selkies", kwclient.WorkspaceTypeVM, true)
+	selkiesVM.RemoteDesktop = &kwclient.ImageRemoteDesktop{Protocol: "selkies", Port: 8080}
+	plainVM := workspace("team", "vm-plain", kwclient.WorkspaceTypeVM, true)
+	container := workspace("team", "ctr", kwclient.WorkspaceTypeContainer, true)
+	for _, tc := range []struct {
+		name string
+		opts SessionOptions
+		ws   kwclient.Workspace
+		want bool
+	}{
+		{"advertised default", SessionOptions{}, agentVM, true},
+		{"advertised forced", SessionOptions{AgentTier: true}, agentVM, true},
+		{"advertised opted out", SessionOptions{NoAgentTier: true}, agentVM, false},
+		{"selkies advert is not agent", SessionOptions{}, selkiesVM, false},
+		{"unadvertised default", SessionOptions{}, plainVM, false},
+		{"unadvertised forced", SessionOptions{AgentTier: true}, plainVM, true},
+		{"unadvertised opted out", SessionOptions{NoAgentTier: true}, plainVM, false},
+		{"container forced", SessionOptions{AgentTier: true}, container, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := useAgentTransport(tc.opts, tc.ws); got != tc.want {
+				t.Fatalf("useAgentTransport = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// The advertised default must reach the live agent handle without an API
+	// client at dial time (the transport dials lazily on Open).
+	d := &sessionDialer{opts: SessionOptions{}, tier1Available: func() error { return nil }}
+	handle, err := d.Dial(context.Background(), agentVM, false)
+	if err != nil {
+		t.Fatalf("advertised dial: %v", err)
+	}
+	if _, ok := handle.(*agentHandle); !ok {
+		t.Fatalf("advertised dial opened %T, want *agentHandle", handle)
 	}
 }

@@ -15,7 +15,13 @@ name: Build
 # noble container that ships webkit2gtk-4.1, both macOS arches on a Mac
 # runner, Windows/amd64 with MinGW), and the assemble job drops each child next
 # to its shell before the archives are staged. Branches without a child (see
-# the matrix comments for the toolchain gaps) stay shell-only. The msi job
+# the matrix comments for the toolchain gaps) stay shell-only. The media-libs
+# matrix job builds the pinned LGPL 5.1 + BSD Opus libraries from source
+# (third_party/media-libs) on the same per-OS pattern — Windows DLLs
+# cross-build from Linux with mingw — and assemble injects each stage next to
+# its shell too, so Tier 1 works out of the box wherever a build exists
+# (windows/arm64 keeps the Tier 0 fallback until a woa64 5.1 source exists).
+# The msi job
 # then builds the unsigned per-arch Windows MSIs (WiX, windows-latest) from
 # the assembled archives; on a `v*` tag the release job publishes archives +
 # MSIs with checksums recomputed after MSI creation.
@@ -261,10 +267,85 @@ jobs:
           path: kube-workspaces-web*
           if-no-files-found: error
 
+  # Pinned LGPL 5.1 + BSD Opus libraries so Tier 1 works out of the box.
+  # Built from source (third_party/media-libs) rather than repackaged
+  # prebuilts: no GPL "full" shared FFmpeg may enter our packages, and the
+  # per-target BUILD-INFO record is the license-compliance evidence.
+  media-libs:
+    name: Media libs (${{ matrix.platform }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            target: linux-amd64
+            runs-on: ubuntu-24.04
+            apt: "build-essential pkg-config nasm ca-certificates curl"
+            require_asm: "1"
+          - platform: linux-arm64
+            target: linux-arm64
+            runs-on: ubuntu-24.04-arm
+            apt: "build-essential pkg-config ca-certificates curl"
+            require_asm: "0"
+          # Windows DLLs cross-build from Linux with mingw (no GPL parts in
+          # a decoder-only build, so no toolchain licensing tangle).
+          - platform: windows-amd64
+            target: win-amd64
+            runs-on: ubuntu-24.04
+            apt: "build-essential pkg-config nasm ca-certificates curl mingw-w64"
+            require_asm: "1"
+          - platform: darwin-amd64
+            target: mac-amd64
+            runs-on: macos-latest
+            apt: ""
+            require_asm: "1"
+          - platform: darwin-arm64
+            target: mac-arm64
+            runs-on: macos-latest
+            apt: ""
+            require_asm: "0"
+          # windows/arm64: no 5.1 shared source and no woa64 toolchain here;
+          # that archive keeps the Tier 0 fallback until one exists.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Linux toolchain
+        if: matrix.apt != ''
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # shellcheck disable=SC2086
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
+          echo "MEDIA_LIBS_REQUIRE_ASM=${{ matrix.require_asm }}" >> "$GITHUB_ENV"
+
+      - name: Install macOS toolchain
+        if: startsWith(matrix.platform, 'darwin')
+        run: |
+          set -euo pipefail
+          brew install nasm 2>/dev/null || true
+          echo "MEDIA_LIBS_REQUIRE_ASM=${{ matrix.require_asm }}" >> "$GITHUB_ENV"
+
+      - name: Build and stage media libs
+        run: |
+          set -euo pipefail
+          third_party/media-libs/build-ffmpeg.sh '${{ matrix.target }}'
+          third_party/media-libs/build-opus.sh '${{ matrix.target }}'
+          third_party/media-libs/stage.sh
+          tar -czf 'medialibs-${{ matrix.platform }}.tar.gz' -C third_party/media-libs/stage '${{ matrix.target }}'
+
+      - name: Upload media libs
+        uses: actions/upload-artifact@v7
+        with:
+          name: media-libs-${{ matrix.platform }}
+          path: medialibs-${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+
   assemble:
     name: Assemble archives
     runs-on: ubuntu-24.04
-    needs: [build, web-child]
+    needs: [build, web-child, media-libs]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -291,14 +372,26 @@ jobs:
           path: web
           github-token: ${{ github.token }}
 
+      - name: Download media libs
+        uses: actions/download-artifact@v8
+        with:
+          pattern: media-libs-*
+          path: medialibs-dl
+          github-token: ${{ github.token }}
+
       # The web child ships inside the archive only when a native toolchain
       # built one for that platform (windows/arm64 never has; linux/arm64 does
       # if the ARM runner is available). Shell-only targets go out as-is.
+      # Tier 1 media libs ride the same way: injected wherever a stage build
+      # exists (everything but windows/arm64), skipped honestly elsewhere.
       - name: Inject web children and regenerate checksums
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
-          mkdir -p final
+          mkdir -p final medialibs
+          for f in medialibs-dl/media-libs-*.tar.gz; do
+            tar -xzf "$f" -C medialibs
+          done
           for plat in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64; do
             os=${plat%-*}
             ext=tar.gz
@@ -310,6 +403,17 @@ jobs:
               scripts/insert-web-child.sh "final/$archive" "$child"
             else
               echo "assemble: no web child for $plat; shipping shell-only archive"
+            fi
+            # Media stage dirs use target names (win-/mac-), not platforms.
+            tplat="$plat"
+            case "$os" in
+              windows) tplat="win-${plat#*-}" ;;
+              darwin) tplat="mac-${plat#*-}" ;;
+            esac
+            if [ -d "medialibs/$tplat" ]; then
+              scripts/insert-media-libs.sh "final/$archive" "medialibs/$tplat"
+            else
+              echo "assemble: no media libs for $plat; Tier 1 needs system libraries there"
             fi
           done
           (cd final && sha256sum *.tar.gz *.zip > SHA256SUMS)
@@ -728,6 +832,15 @@ jobs:
             echo "| Windows | arm64 | **unsigned test MSI** [\`kube-workspaces-$VERSION-windows-arm64.msi\`]($base/kube-workspaces-$VERSION-windows-arm64.msi) |"
             echo
             echo "Verify with [\`SHA256SUMS\`]($base/SHA256SUMS): \`sha256sum -c SHA256SUMS\` (covers zips, tarballs and MSIs)"
+            echo
+            echo "This software uses code of FFmpeg licensed under the LGPLv2.1;"
+            echo "its source can be downloaded from https://ffmpeg.org/releases/"
+            echo "(pinned version, build flags and hashes: \`third_party/media-libs\`)."
+            echo "Opus audio uses the BSD-licensed reference implementation"
+            echo "([license](https://www.opus-codec.org/license)); attribution ships"
+            echo "in every package. windows/arm64 carries no media libraries yet"
+            echo "and uses Tier 0 there."
+            echo
             echo
             echo "The AppImage is not part of \`SHA256SUMS\` (the in-app updater contract covers"
             echo "the six archives); it ships its own sidecar: \`sha256sum -c kube-workspaces-$VERSION-linux-amd64.AppImage.sha256\`."

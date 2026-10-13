@@ -45,6 +45,24 @@ def verify(directory, version, shell_only=False, require_msi=False):
             assert f"{binary_dir}/kube-workspaces{exe}" in members, name
             if not shell_only and (os_name, arch) != ("windows", "arm64"):
                 assert f"{binary_dir}/kube-workspaces-web{exe}" in members, name
+            # Tier 1 media bundle (LGPL 5.1 + BSD Opus): bundled everywhere a
+            # build exists, so Tier 1 works out of the box. windows/arm64 has
+            # no 5.1 shared source yet and keeps the Tier 0 fallback.
+            if not shell_only and (os_name, arch) != ("windows", "arm64"):
+                if os_name == "windows":
+                    for dll in ("avcodec-59.dll", "avutil-57.dll"):
+                        assert f"{root}/{dll}" in members, (name, dll)
+                    assert f"{root}/opus.dll" in members or f"{root}/libopus-0.dll" in members, (name, "opus")
+                elif os_name == "linux":
+                    for soname in ("libavcodec.so.59", "libavutil.so.57", "libopus.so.0"):
+                        assert any(m.startswith(f"{root}/lib/{soname}") for m in members), (name, soname)
+                elif os_name == "darwin":
+                    for dylib in ("libavcodec.59.dylib", "libavutil.57.dylib", "libopus.0.dylib"):
+                        assert any(m.endswith("/Frameworks/" + dylib) or m == f"{root}/Frameworks/{dylib}" for m in members), (name, dylib)
+                for doc in ("NOTICE-media-NOTICE", "NOTICE-media-COPYING.LGPLv2.1",
+                            "NOTICE-media-COPYING.opus-BSD", "BUILD-INFO-ffmpeg.txt",
+                            "BUILD-INFO-opus.txt"):
+                    assert any(m == f"{root}/{doc}" or m.endswith("/" + doc) for m in members), (name, doc)
             print(f"{name}: update contract OK")
     # The unsigned Windows MSIs ship alongside the zips (same release, SHA
     # covered) but are NOT part of the updater contract: the in-app updater

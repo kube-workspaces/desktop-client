@@ -8,6 +8,8 @@ package media
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"unsafe"
 
@@ -59,9 +61,9 @@ func codecNames() []string {
 	case "windows":
 		return []string{"avcodec-59.dll"}
 	case "darwin":
-		return []string{"libavcodec.59.dylib"}
+		return withBundle("libavcodec.59.dylib")
 	default:
-		return []string{"libavcodec.so.59"}
+		return withBundle("libavcodec.so.59")
 	}
 }
 
@@ -70,9 +72,9 @@ func utilNames() []string {
 	case "windows":
 		return []string{"avutil-57.dll"}
 	case "darwin":
-		return []string{"libavutil.57.dylib"}
+		return withBundle("libavutil.57.dylib")
 	default:
-		return []string{"libavutil.so.57"}
+		return withBundle("libavutil.so.57")
 	}
 }
 
@@ -81,10 +83,46 @@ func opusNames() []string {
 	case "windows":
 		return []string{"opus.dll", "libopus-0.dll"}
 	case "darwin":
-		return []string{"libopus.0.dylib"}
+		return withBundle("libopus.0.dylib")
 	default:
-		return []string{"libopus.so.0"}
+		return withBundle("libopus.so.0")
 	}
+}
+
+// bundleDirs reports directories searched before the OS loader paths: the
+// executable's own directory (side-by-side DLLs on Windows-style layouts and
+// Linux tarballs), a lib/ subdirectory (tarball/RPM layouts), and the macOS
+// bundle Frameworks directory. Empty when the executable path cannot be
+// determined; the system loader paths are always tried afterwards, so a
+// distro-installed library (e.g. a .deb dependency) keeps working and a
+// user-supplied build beside the executable always wins.
+func bundleDirs() []string {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	dir := filepath.Dir(exe)
+	dirs := []string{dir, filepath.Join(dir, "lib")}
+	if runtime.GOOS == "darwin" {
+		dirs = append(dirs, filepath.Join(dir, "..", "Frameworks"))
+	}
+	return dirs
+}
+
+// withBundle prepends exe-anchored absolute candidates for each bare library
+// name, keeping the bare names last for the system loader. Windows is left
+// untouched: its safe-DLL-search already resolves the application directory.
+func withBundle(names ...string) []string {
+	if runtime.GOOS == "windows" {
+		return names
+	}
+	var out []string
+	for _, d := range bundleDirs() {
+		for _, n := range names {
+			out = append(out, filepath.Join(d, n))
+		}
+	}
+	return append(out, names...)
 }
 
 // avFramePrefix is the public AVFrame prefix from libavutil 57/frame.h.

@@ -20,6 +20,7 @@
       "build-commands": [
         "install -Dm755 kube-workspaces /app/bin/kube-workspaces",
 @@WEBCHILD_INSTALL@@
+@@MEDIALIBS_INSTALL@@
         "install -Dm644 io.github.kubeworkspaces.KubeWorkspaces.desktop /app/share/applications/io.github.kubeworkspaces.KubeWorkspaces.desktop",
         "install -Dm644 io.github.kubeworkspaces.KubeWorkspaces.metainfo.xml /app/share/metainfo/io.github.kubeworkspaces.KubeWorkspaces.metainfo.xml",
         "for s in 16 24 32 48 64 128 256 512; do install -Dm644 hicolor/${s}x${s}/apps/kube-workspaces.png /app/share/icons/hicolor/${s}x${s}/apps/io.github.kubeworkspaces.KubeWorkspaces.png; done"
@@ -30,6 +31,7 @@
           "path": "kube-workspaces"
         },
 @@WEBCHILD_SOURCE@@
+@@MEDIALIBS_SOURCE@@
         {
           "type": "file",
           "path": "io.github.kubeworkspaces.KubeWorkspaces.desktop"

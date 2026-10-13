@@ -295,13 +295,17 @@ type SessionOptions struct {
 	UpdateInterval time.Duration
 	// ScaleQuality selects the scaling filter for the guest image.
 	ScaleQuality viewer.ScaleQuality
-	// AgentTier opts a VM workspace into the premium agent transport
-	// (video/audio/resize via kw-agent-v1) instead of Selkies/RFB.
-	// Explicit until the API reports transport truth: the client never
-	// guesses agent availability from other capability data. Input, resize
-	// and clipboard are capability-gated per session; refusal,
-	// busy seats and auth failures never fall back silently.
+	// AgentTier forces a VM workspace onto the premium agent transport
+	// (video/audio/resize via kw-agent-v1) instead of Selkies/RFB, even when
+	// the image does not advertise it. Without the flag the agent transport
+	// is still the default wherever the image advertises protocol "agent";
+	// NoAgentTier below opts back out to Selkies/RFB. Input, resize and
+	// clipboard are capability-gated per session; refusal, busy seats and
+	// auth failures never fall back silently.
 	AgentTier bool
+	// NoAgentTier keeps a VM workspace on Selkies/RFB even when the image
+	// advertises the agent transport. Mutually exclusive with AgentTier.
+	NoAgentTier bool
 	// AgentClipboard adds guest Unicode clipboard to the normal RFB console.
 	// Explicit opt-in; requires serve --clipboard in the logged-in guest.
 	AgentClipboard bool
@@ -309,6 +313,26 @@ type SessionOptions struct {
 	Logf func(format string, args ...any)
 }
 
+// useAgentTransport reports whether a VM dial should take the premium agent
+// path: forced by flag, or advertised by the image unless opted out. Pure so
+// the selection matrix is unit-testable without a live API client; Dial keeps
+// the network behavior.
+func useAgentTransport(opts SessionOptions, ws kwclient.Workspace) bool {
+	if !ws.IsVM() {
+		return false
+	}
+	if opts.AgentTier {
+		return true
+	}
+	if opts.NoAgentTier {
+		return false
+	}
+	return ws.RemoteDesktop != nil && ws.RemoteDesktop.Protocol == "agent"
+}
+
+// the client's own window. A VM gets its supervised RFB display session (via
+// Tier 1 when the image advertises Selkies); any other workspace gets the
+// integrated terminal over the /exec bridge.
 // sessionDialer is the production [SessionDialer]: it opens the workspace in
 // the client's own window. A VM gets its supervised RFB display session (via
 // Tier 1 when the image advertises Selkies); any other workspace gets the
@@ -354,10 +378,10 @@ func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observe
 			ws: ws,
 		}, nil
 	default:
-		if d.opts.AgentTier {
+		if useAgentTransport(d.opts, ws) {
 			if err := d.preflightTier1(); err != nil {
 				if d.opts.Logf != nil {
-					d.opts.Logf("workspace %s requested agent premium but this build cannot decode it (%v); using Tier 0", ws.Key(), err)
+					d.opts.Logf("workspace %s offers agent premium but this build cannot decode it (%v); using Tier 0", ws.Key(), err)
 				}
 				return dialExclusiveSession(ctx, d.client, ws, d.opts)
 			}
@@ -940,11 +964,11 @@ func (h *tier1Handle) Close() {
 	}
 }
 
-// agentHandle is the explicit opt-in premium window (see
-// SessionOptions.AgentTier): kw-agent-v1 video/audio/resize instead of
-// Selkies/RFB. Input, resize and clipboard are capability-gated per session.
-// Recoverable transport failures fall back to Tier 0 in place;
-// refusal, busy seats and auth failures surface instead.
+// agentHandle is the premium window (see SessionOptions.AgentTier): kw-agent-v1
+// video/audio/resize instead of Selkies/RFB, opened automatically for agent-advertised
+// images and on explicit request otherwise. Input, resize and clipboard are
+// capability-gated per session. Recoverable transport failures fall back to Tier 0
+// in place; refusal, busy seats and auth failures surface instead.
 type agentHandle struct {
 	client *kwclient.Client
 	ws     kwclient.Workspace

@@ -60,6 +60,15 @@ fi
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cp "$root/README.md" "$root/LICENSE" "$appdir/usr/share/"
+# Bundled Tier 1 libraries beside the binaries they serve (the loader checks
+# the executable directory first); license texts ride in usr/share.
+if test -d "$work/$stage/lib"; then
+  cp -d "$work/$stage"/lib/*.so* "$appdir/usr/bin/"
+  echo "build-appimage: bundled Tier 1 media libraries"
+fi
+for f in NOTICE COPYING.LGPLv2.1 COPYING.opus-BSD; do
+  cp "$root/third_party/media-libs/$f" "$appdir/usr/share/NOTICE-media-$f" 2>/dev/null || echo "build-appimage: WARNING: $f not in third_party/media-libs" >&2
+done
 
 # One master icon everywhere the AppImage spec looks: the desktop entry's Icon,
 # the hicolor tree, and the root copy appimagetool embeds in the header.

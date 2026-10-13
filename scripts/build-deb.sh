@@ -115,6 +115,12 @@ Section: net
 Priority: optional
 Architecture: $debarch
 Depends: libwebkit2gtk-4.1-0
+# Tier 1 decode prefers distro libraries over bundling (their security updates
+# ride the distro). Recommends, not Depends: one universal .deb must stay
+# installable where libavcodec59 does not exist (Ubuntu 24.04 ships 60+), and
+# Tier 0 works fully without them. Debian 12 installs Recommends by default,
+# so Tier 1 works out of the box there.
+Recommends: libavcodec59, libavutil57, libopus0
 Maintainer: Kube Workspaces <https://github.com/kube-workspaces/desktop-client>
 Installed-Size: $installed_size
 Description: Native desktop client for kube-workspaces
@@ -122,7 +128,9 @@ Description: Native desktop client for kube-workspaces
  from a real VDI client: fluid resize, clipboard, audio playback.
  .
  The web view needs WebKitGTK 4.1 (Debian 12+, Ubuntu 24.04+); the shell
- itself runs anywhere the archive runs.
+ itself runs anywhere the archive runs. VM premium display (Tier 1
+ H.264/Opus) uses the recommended libavcodec59/libopus0 packages where your
+ distro ships them (Debian 12 installs Recommends by default).
 EOF
 chmod 644 "$pkg/DEBIAN/control"
 

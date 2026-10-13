@@ -70,6 +70,25 @@ cp -r "$work/$stage" "$topdir/SOURCES/stage"
 cp "$root/packaging/linux/kube-workspaces.desktop" "$topdir/SOURCES/"
 cp "$root/packaging/linux/copyright" "$topdir/SOURCES/"
 cp -r "$root/packaging/linux/icons" "$topdir/SOURCES/"
+# Bundled Tier 1 libraries, installed FLAT into %{_libdir} (compat-style: the
+# soname-pinned 59/57/0 files, which no distro ships, so they can never
+# conflict; the loader searches %{_libdir} by default, no wrapper needed).
+# Fedora/RHEL have no libavcodec59 to depend on, hence bundling instead of
+# Requires. Unversioned .so symlinks are deliberately excluded (those belong
+# to -devel packages).
+if test -d "$work/$stage/lib"; then
+  mkdir -p "$topdir/SOURCES/medialibs"
+  cp -d "$work/$stage"/lib/*.so.* "$topdir/SOURCES/medialibs/"
+  printf '%s\n' 'cp -d %{_sourcedir}/medialibs/*.so.* %{buildroot}%{_libdir}/' > "$work/mediainstall"
+  printf '%s\n' '%{_libdir}/libavcodec.so.59*' '%{_libdir}/libavutil.so.57*' '%{_libdir}/libopus.so.0*' > "$work/mediafiles"
+else
+  : > "$work/mediainstall"
+  : > "$work/mediafiles"
+  echo "build-rpm: archive carries no media libs; Tier 1 needs system libraries" >&2
+fi
+for f in NOTICE COPYING.LGPLv2.1 COPYING.opus-BSD; do
+  cp "$root/third_party/media-libs/$f" "$topdir/SOURCES/NOTICE-media-$f" 2>/dev/null || echo "build-rpm: WARNING: $f not in third_party/media-libs" >&2
+done
 # Archives without the web child (developer `make build-all` runs, which
 # are shell-only) package the shell alone. Both the install lines and the
 # %files entry come from placeholders expanded below, never from pattern
@@ -87,10 +106,14 @@ sed -e "s/@@VERSION@@/$rpmver/g" \
     -e "s/@@ARCH@@/$rpmarch/g" \
     -e "s/@@TAG@@/$version/g" \
     -e "s/@@DATE@@/$(date -u '+%a %b %d %Y')/g" \
-    -e "/@@WEBCHILD_INSTALL@@/r $work/webinstall" \
-    -e "/@@WEBCHILD_INSTALL@@/d" \
-    -e "/@@WEBCHILD_FILES@@/r $work/webfiles" \
-    -e "/@@WEBCHILD_FILES@@/d" \
+  -e "/@@WEBCHILD_INSTALL@@/r $work/webinstall" \
+  -e "/@@WEBCHILD_INSTALL@@/d" \
+  -e "/@@WEBCHILD_FILES@@/r $work/webfiles" \
+  -e "/@@WEBCHILD_FILES@@/d" \
+  -e "/@@MEDIALIBS_INSTALL@@/r $work/mediainstall" \
+  -e "/@@MEDIALIBS_INSTALL@@/d" \
+  -e "/@@MEDIALIBS_FILES@@/r $work/mediafiles" \
+  -e "/@@MEDIALIBS_FILES@@/d" \
   "$root/packaging/linux/kube-workspaces.spec.in" > "$topdir/SPECS/kube-workspaces.spec"
 
 rpmbuild --define "_topdir $topdir" \

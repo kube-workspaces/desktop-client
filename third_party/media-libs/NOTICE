@@ -1,0 +1,27 @@
+Third-party media libraries bundled with Kube Workspaces (Tier 1 decode)
+=============================================================================
+
+This software uses code of FFmpeg licensed under the LGPLv2.1, and the Opus
+reference implementation under the 3-clause BSD license. Exact source
+versions, build flags and hashes are pinned in third_party/media-libs/MANIFEST
+in the desktop-client source tree; per-target configure lines are recorded in
+each package's BUILD-INFO-ffmpeg.txt / BUILD-INFO-opus.txt.
+
+FFmpeg 5.1.x (libavcodec 59 / libavutil 57)
+  Source: https://ffmpeg.org/releases/ (see MANIFEST for the pinned file+hash)
+  License: GNU Lesser General Public License v2.1 or later (LGPLv2.1+).
+  The bundled build is configured WITHOUT --enable-gpl, --enable-nonfree or
+  --enable-version3 (decoder-only: H.264 decode; no x264/x265). Full license
+  text ships beside the binaries as COPYING.LGPLv2.1. Corresponding source is
+  the pinned release tarball above; build scripts are in the source tree.
+  The libraries are loaded dynamically at runtime and remain replaceable with
+  any ABI-compatible build (drop-in beside the executable).
+
+Opus (libopus)
+  Source: https://downloads.xiph.org/releases/opus/ (see MANIFEST)
+  License: 3-clause BSD (copyright Xiph.Org et al.; full text ships as
+  COPYING.opus-BSD). Royalty-free patent grants apply per opus-codec.org/license.
+  Binary redistribution reproduces that notice here and in that file.
+
+Kube Workspaces itself is Apache-2.0 (see LICENSE). Nothing above relicenses
+it: both libraries are used through dynamic loading under their own terms.
