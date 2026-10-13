@@ -44,9 +44,13 @@ for target in linux-amd64 linux-arm64 win-amd64 win-arm64 mac-amd64 mac-arm64; d
   cp "$out/$target"/opus/BUILD-INFO.txt "$stage/$target/BUILD-INFO-opus.txt"
   echo "stage: $target ready"
 done
-# License texts ride with every package (LGPL/BSD attribution is a
-# distribution obligation, not documentation).
+# License texts travel inside every stage tarball (LGPL/BSD attribution is a
+# distribution obligation, not documentation): packages inject them from the
+# stage, never from a checkout layout that assemblers cannot assume.
 for f in NOTICE COPYING.LGPLv2.1 COPYING.opus-BSD; do
   have "$here/$f"
+  for target in linux-amd64 linux-arm64 win-amd64 win-arm64 mac-amd64 mac-arm64; do
+    [ -d "$stage/$target" ] && cp "$here/$f" "$stage/$target/"
+  done
 done
 echo "stage: done in $stage"
