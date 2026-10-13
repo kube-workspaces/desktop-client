@@ -79,7 +79,7 @@ cp -r "$root/packaging/linux/icons" "$topdir/SOURCES/"
 if test -d "$work/$stage/lib"; then
   mkdir -p "$topdir/SOURCES/medialibs"
   cp -d "$work/$stage"/lib/*.so.* "$topdir/SOURCES/medialibs/"
-  printf '%s\n' 'cp -d %{_sourcedir}/medialibs/*.so.* %{buildroot}%{_libdir}/' > "$work/mediainstall"
+  printf '%s\n' 'mkdir -p %{buildroot}%{_libdir} && cp -d %{_sourcedir}/medialibs/*.so.* %{buildroot}%{_libdir}/' > "$work/mediainstall"
   printf '%s\n' '%{_libdir}/libavcodec.so.59*' '%{_libdir}/libavutil.so.57*' '%{_libdir}/libopus.so.0*' > "$work/mediafiles"
 else
   : > "$work/mediainstall"
