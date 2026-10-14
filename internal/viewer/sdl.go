@@ -74,6 +74,13 @@ func acquireSDL() error {
 
 	if sdlLifecycle.refs == 0 {
 		lib := binsdl.Load()
+		// Single-click activation: by default SDL eats the mouse press that
+		// focuses an unfocused window (the Windows click-to-focus behaviour),
+		// forcing click-once-to-focus then click-again-to-act on every
+		// window. Pass the focusing press through so one click both focuses
+		// the window and reaches the widgets. Not fatal: worst case the old
+		// two-click behaviour remains.
+		_ = sdl.SetHint(sdl.HINT_MOUSE_FOCUS_CLICKTHROUGH, "1")
 		if err := sdl.Init(sdl.INIT_VIDEO); err != nil {
 			lib.Unload()
 			return fmt.Errorf("sdl init: %w", err)
