@@ -261,9 +261,9 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 	snap := connection.Snapshot{Workspace: w.opts.Title, Surface: connection.Desktop,
 		State: state, Role: connection.Exclusive, Transport: transport,
 		Tier: "Tier 1", Proto: proto,
-		Clipboard: !w.clipboardDisabled && w.opts.ClipboardInterval >= 0, ResizeGuest: !w.opts.NoResize, Muted: w.muted,
-		AudioLive:    w.audio != nil && !w.muted,
-		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: guestResize, Audio: w.audio != nil}}
+		Clipboard: !w.clipboardDisabled && w.opts.ClipboardInterval >= 0, ResizeGuest: !w.opts.NoResize, Muted: w.muted.Load(),
+		AudioLive:    w.audioLive(),
+		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: guestResize, Audio: w.audioPresent()}}
 	if transport == "Agent" {
 		if dbg, ok := w.inp.(agentDebugger); ok && dbg != nil {
 			if counters, live := dbg.DebugCounters(); live {
@@ -307,7 +307,12 @@ func (w *tier1Window) connectionAction(a connection.Action) error {
 	case connection.FitDesktop:
 		w.opts.NoResize, w.resizePending = true, false
 	case connection.Audio:
-		w.muted = !w.muted
+		w.muted.Store(!w.muted.Load())
+		w.audioMu.Lock()
+		defer w.audioMu.Unlock()
+		if w.audio == nil {
+			return nil
+		}
 		w.audio.CloseAudio()
 		if err := w.audio.OpenAudio(AudioFormat{Channels: 2, SampleRate: 48000, BytesPerSample: 2, LittleEndian: true}); err != nil {
 			w.opts.logf("audio disabled: %v", err)

@@ -602,6 +602,64 @@ func TestTier1CtrlAltDelShortcuts(t *testing.T) {
 	}
 }
 
+func TestTier1SinkAudioPlaysAtArrivalWithoutRenderLoop(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var played [][]byte
+	sink := &Tier1Sink{play: func(pcm []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		played = append(played, append([]byte(nil), pcm...))
+	}}
+	sink.Audio([]byte{1, 2, 3, 4})
+	sink.Audio(nil)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(played) != 1 || len(played[0]) != 4 || played[0][0] != 1 || played[0][3] != 4 {
+		t.Fatalf("arrival-time playback got %v, want one 4-byte batch", played)
+	}
+	if _, pcm := sink.frames.take(); len(pcm) != 0 {
+		t.Fatal("arrival-time audio must not queue PCM for the render loop")
+	}
+}
+
+func TestTier1SinkAudioNilPlayDrops(t *testing.T) {
+	t.Parallel()
+	sink := &Tier1Sink{}
+	sink.Audio([]byte{1, 2, 3})
+	if _, pcm := sink.frames.take(); len(pcm) != 0 {
+		t.Fatal("PCM with no playback path must be dropped, not queued")
+	}
+}
+
+func TestTier1WindowArrivalPlaybackHonoursMuteAndNilDevice(t *testing.T) {
+	t.Parallel()
+	be := &audioBackend{fakeBackend: newFakeBackend(100, 100)}
+	w := &tier1Window{be: be, audio: be}
+	playedLen := func() int {
+		be.audioMu.Lock()
+		defer be.audioMu.Unlock()
+		return len(be.played)
+	}
+	w.playArrived([]byte{1, 2})
+	if playedLen() != 2 {
+		t.Fatalf("played %d bytes, want 2", playedLen())
+	}
+	w.muted.Store(true)
+	w.playArrived([]byte{3, 4})
+	if playedLen() != 2 {
+		t.Fatalf("muted playback played %d bytes, want still 2", playedLen())
+	}
+	w.muted.Store(false)
+	w.audioMu.Lock()
+	w.audio = nil
+	w.audioMu.Unlock()
+	w.playArrived([]byte{5, 6})
+	if playedLen() != 2 {
+		t.Fatalf("nil-device playback played %d bytes, want still 2", playedLen())
+	}
+}
+
 func TestTier1ReconnectKeepsFrameAndClearsGeneration(t *testing.T) {
 	be := &audioBackend{fakeBackend: newFakeBackend(100, 100)}
 	inp := &recordInput{}

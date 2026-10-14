@@ -125,12 +125,18 @@ type Tier1Input interface {
 
 // Tier1Sink is the bounded handoff a produce worker pushes decoded media and
 // server clipboard pushes into. Only the producer writes it; only the render
-// loop reads it, and the two sides are synchronised inside.
+// loop reads the frame and clipboard state, and the two sides are
+// synchronised inside. Decoded audio is the exception: the producer plays it
+// through play at arrival time instead of queueing it for the render loop,
+// so host-side stalls of the window thread (a window drag holds it inside
+// the OS move loop) freeze video but never silence audio. play is set once
+// before the producer starts and never changes; nil drops PCM.
 type Tier1Sink struct {
 	frames       MediaFrames
 	reconnecting atomic.Bool
 	busy         atomic.Bool
 	epoch        atomic.Uint64
+	play         func([]byte)
 
 	clipMu       sync.Mutex
 	guestClip    string
@@ -192,10 +198,15 @@ func (s *Tier1Sink) Reconnecting() {
 	s.wakeUp()
 }
 
-// Audio hands one batch of decoded PCM (stereo s16le 48 kHz) to the presenter.
+// Audio plays one batch of decoded PCM (stereo s16le 48 kHz) at arrival
+// time on the producer's goroutine — never queued for the render loop — so
+// a stalled window thread (a host window drag) cannot starve playback. The
+// buffer is copied synchronously into the audio stream, so the caller keeps
+// ownership. A nil play drops the batch.
 func (s *Tier1Sink) Audio(pcm []byte) {
-	s.frames.Audio(pcm)
-	s.wakeUp()
+	if s.play != nil && len(pcm) > 0 {
+		s.play(pcm)
+	}
 }
 
 // GuestClipboard queues a server clipboard push (guest-to-host). The render
@@ -394,7 +405,7 @@ func OpenTier1Detached(ctx context.Context, be Backend, inp Tier1Input,
 	w.focused = true
 
 	prodCtx, cancel := context.WithCancel(ctx)
-	w.sink = &Tier1Sink{wake: be.Wake}
+	w.sink = &Tier1Sink{wake: be.Wake, play: w.playArrived}
 	done := make(chan error, 1)
 	go func() { done <- produce(prodCtx, w.sink) }()
 
@@ -406,7 +417,9 @@ func OpenTier1Detached(ctx context.Context, be Backend, inp Tier1Input,
 			if err := a.OpenAudio(AudioFormat{Channels: 2, SampleRate: 48000, BytesPerSample: 2, LittleEndian: true}); err != nil {
 				opts.logf("audio disabled: %v", err)
 			} else {
+				w.audioMu.Lock()
 				w.audio = a
+				w.audioMu.Unlock()
 			}
 		}
 	}
@@ -559,6 +572,39 @@ func (w *tier1Window) syncCursor() {
 	}
 }
 
+// playArrived plays one decoded PCM batch at arrival time on the producer
+// thread — never queued for the render loop — so a stalled window thread
+// (a host window drag holds it inside the OS move loop) freezes video but
+// never starves playback. Muted sessions and missing devices drop the batch.
+// The backend copies the buffer synchronously, so the caller keeps ownership.
+func (w *tier1Window) playArrived(pcm []byte) {
+	if len(pcm) == 0 || w.muted.Load() {
+		return
+	}
+	w.audioMu.Lock()
+	audio := w.audio
+	w.audioMu.Unlock()
+	if audio == nil {
+		return
+	}
+	audio.PlayPCM(pcm)
+}
+
+// audioLive reports whether decoded PCM currently reaches the output
+// device. audioPresent reports whether a device exists at all (muted
+// sessions have one that is momentarily silent). Safe from any goroutine.
+func (w *tier1Window) audioLive() bool {
+	w.audioMu.Lock()
+	defer w.audioMu.Unlock()
+	return w.audio != nil && !w.muted.Load()
+}
+
+func (w *tier1Window) audioPresent() bool {
+	w.audioMu.Lock()
+	defer w.audioMu.Unlock()
+	return w.audio != nil
+}
+
 // releaseGrab hands the keyboard back, for focus loss and shutdown. Errors
 // are ignored: it runs where a dead backend is expected and there is
 // nothing useful to do about one.
@@ -586,10 +632,12 @@ func (d *Tier1Detached) Close() {
 		d.joined = true
 	}
 	_ = d.w.inp.ResetKeys()
+	d.w.audioMu.Lock()
 	if d.w.audio != nil {
 		d.w.audio.CloseAudio()
 		d.w.audio = nil
 	}
+	d.w.audioMu.Unlock()
 	d.w.be.Close()
 }
 
@@ -600,13 +648,20 @@ type tier1Window struct {
 	inp  Tier1Input
 	sink *Tier1Sink
 
-	audio AudioSink
+	// audio is the backend's output device. It is opened/closed on the
+	// window thread but played from the producer thread (see Tier1Sink),
+	// so every access takes audioMu.
+	audioMu sync.Mutex
+	audio   AudioSink
 
 	events                   []Event
 	pinned                   bool
 	quit                     bool
 	disposition              connection.CloseDisposition
-	clipboardDisabled, muted bool
+	clipboardDisabled        bool
+	// muted is read on the producer thread (arrival-time playback) and
+	// toggled on the window thread.
+	muted                    atomic.Bool
 	mods                     keysym.Tracker
 	held                     []keysym.Keysym
 	swallow                  map[hotkeyID]bool
@@ -669,7 +724,10 @@ func (w *tier1Window) syncGeneration() {
 		w.scheduleGuestResize(time.Now(), w.winW, w.winH)
 		w.hostClip, w.clipHint = "", false
 		// Clear any PCM already queued in the output device, not just the
-		// producer queue. All device calls remain on the window thread.
+		// producer queue. Device open/close stays on the window thread;
+		// arrival-time playback on the producer thread serialises against
+		// it inside the backend.
+		w.audioMu.Lock()
 		if w.audio != nil {
 			w.audio.CloseAudio()
 			if err := w.audio.OpenAudio(AudioFormat{Channels: 2, SampleRate: 48000, BytesPerSample: 2, LittleEndian: true}); err != nil {
@@ -677,6 +735,7 @@ func (w *tier1Window) syncGeneration() {
 				w.audio = nil
 			}
 		}
+		w.audioMu.Unlock()
 	}
 }
 
@@ -1245,13 +1304,12 @@ func (w *tier1Window) syncGuestClipboard(now time.Time) error {
 	return w.inp.SetClipboard(text)
 }
 
-// presentFrame uploads the newest frame, plays any PCM, and draws the frame
-// (or the connecting plate) at the letterboxed rectangle.
+// presentFrame uploads the newest frame and draws it (or the connecting
+// plate) at the letterboxed rectangle. Audio is not drained here: decoded
+// PCM plays at arrival time on the producer thread (see Tier1Sink), so a
+// stalled window thread freezes video but never starves playback.
 func (w *tier1Window) presentFrame(now time.Time) error {
-	frame, pcm := w.sink.frames.take()
-	if w.audio != nil && len(pcm) > 0 && !w.muted {
-		w.audio.PlayPCM(pcm)
-	}
+	frame, _ := w.sink.frames.take()
 
 	overlay := Overlay{}
 	var draw Rect

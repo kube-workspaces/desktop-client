@@ -182,10 +182,12 @@ type SDLBackend struct {
 
 	// audio holds the output device playing guest PCM. It is only used when
 	// this backend is also an [AudioSink]; audio opens lazily when a connection
-	// that negotiated it becomes live, and is closed with the session. It
-	// follows the same concurrency rule as everything else here: only the
-	// window-owning goroutine touches it.
+	// that negotiated it becomes live, and is closed with the session.
+	// PlayPCM runs on the producer thread while open/close run on the
+	// window thread, so audioMu serialises all three: destroying a stream
+	// concurrently with a queued write would be a use-after-free.
 	audio struct {
+		mu     sync.Mutex
 		opened bool
 		dev    sdl.AudioDeviceID
 		stream *sdl.AudioStream
@@ -928,8 +930,10 @@ func (b *SDLBackend) OpenAudio(format AudioFormat) error {
 	if err != nil {
 		return err
 	}
+	b.audio.mu.Lock()
+	defer b.audio.mu.Unlock()
 	if b.audio.opened {
-		b.CloseAudio()
+		b.closeAudioLocked()
 	}
 	spec := &sdl.AudioSpec{Format: fmtType, Channels: format.Channels, Freq: format.SampleRate}
 	dev, err := sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK.OpenAudioDevice(spec)
@@ -958,22 +962,39 @@ func (b *SDLBackend) OpenAudio(format AudioFormat) error {
 }
 
 // PlayPCM queues one batch of samples for playback. It is a no-op when no
-// device is open.
+// device is open. Safe from any goroutine: the producer thread calls it at
+// arrival time while the window thread owns open/close.
 func (b *SDLBackend) PlayPCM(data []byte) {
+	b.audio.mu.Lock()
 	if !b.audio.opened || b.audio.stream == nil {
+		b.audio.mu.Unlock()
 		return
 	}
-	if err := b.audio.stream.PutData(data); err != nil {
-		// A failing stream is going to fail on every write; drop it rather
-		// than erroring the frame loop over audio. The next OpenAudio after a
-		// reconnect rebuilds the chain.
-		b.CloseAudio()
+	if err := b.audio.stream.PutData(data); err == nil {
+		b.audio.mu.Unlock()
+		return
 	}
+	// A failing stream is going to fail on every write; drop the chain
+	// rather than erroring the frame loop over audio. The next OpenAudio
+	// after a reconnect rebuilds it. Unlink under the lock, destroy
+	// outside it: nothing else can reach the saved handles past this.
+	stream, dev := b.audio.stream, b.audio.dev
+	b.audio.stream, b.audio.opened = nil, false
+	b.audio.mu.Unlock()
+	stream.Destroy()
+	dev.Close()
 }
 
 // CloseAudio stops and frees the audio device and stream. It is safe when no
-// device is open.
+// device is open, and safe from any goroutine.
 func (b *SDLBackend) CloseAudio() {
+	b.audio.mu.Lock()
+	defer b.audio.mu.Unlock()
+	b.closeAudioLocked()
+}
+
+// closeAudioLocked frees the device and stream. The caller holds audioMu.
+func (b *SDLBackend) closeAudioLocked() {
 	if b.audio.stream != nil {
 		b.audio.stream.Destroy()
 		b.audio.stream = nil
