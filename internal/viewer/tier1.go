@@ -654,17 +654,17 @@ type tier1Window struct {
 	audioMu sync.Mutex
 	audio   AudioSink
 
-	events                   []Event
-	pinned                   bool
-	quit                     bool
-	disposition              connection.CloseDisposition
-	clipboardDisabled        bool
+	events            []Event
+	pinned            bool
+	quit              bool
+	disposition       connection.CloseDisposition
+	clipboardDisabled bool
 	// muted is read on the producer thread (arrival-time playback) and
 	// toggled on the window thread.
-	muted                    atomic.Bool
-	mods                     keysym.Tracker
-	held                     []keysym.Keysym
-	swallow                  map[hotkeyID]bool
+	muted   atomic.Bool
+	mods    keysym.Tracker
+	held    []keysym.Keysym
+	swallow map[hotkeyID]bool
 
 	buttons    Buttons
 	ptrX, ptrY int
