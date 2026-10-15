@@ -27,7 +27,7 @@ var ErrAgentInputPending = errors.New("agent input injection unavailable")
 
 // ErrAgentConsoleRequired requests the existing authenticated console path
 // after admission. It never authorizes fallback around a refused/busy session.
-var ErrAgentConsoleRequired = errors.New("Windows protected UI requires console")
+var ErrAgentConsoleRequired = errors.New("windows protected UI requires console")
 
 func agentConsoleRequirement(payload map[string]any) error {
 	if suspended, _ := payload["captureSuspended"].(bool); suspended {
