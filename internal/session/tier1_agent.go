@@ -27,9 +27,13 @@ var ErrAgentInputPending = errors.New("agent input injection unavailable")
 
 // ErrAgentConsoleRequired requests the existing authenticated console path
 // after admission. It never authorizes fallback around a refused/busy session.
-// It is driven only by typed desktop classification (protected desktop or a
-// higher-integrity foreground window): a transient `captureSuspended` is
-// tolerated by the agent, which re-establishes capture without a handoff.
+// It is driven only by the typed secure-desktop classification
+// (`requiresConsole` + `protected-desktop`, e.g. a UAC prompt), which the agent
+// cannot capture or inject into at all. A mere higher-integrity foreground
+// window does NOT hand off: the agent still captures it, so the premium session
+// keeps streaming and only input stays UIPI-blocked until the user opens the
+// console themselves. A transient `captureSuspended` is likewise tolerated by
+// the agent, which re-establishes capture without a handoff.
 var ErrAgentConsoleRequired = errors.New("windows protected UI requires console")
 
 func agentConsoleRequirement(payload map[string]any) error {
@@ -37,7 +41,7 @@ func agentConsoleRequirement(payload map[string]any) error {
 	desktop, _ := session["desktop"].(map[string]any)
 	required, _ := desktop["requiresConsole"].(bool)
 	reason, _ := desktop["reason"].(string)
-	if required && (reason == "protected-desktop" || reason == "higher-integrity-window") {
+	if required && reason == "protected-desktop" {
 		return fmt.Errorf("%w: %s", ErrAgentConsoleRequired, reason)
 	}
 	return nil

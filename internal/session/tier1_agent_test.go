@@ -31,9 +31,10 @@ func TestMapAgentResultClasses(t *testing.T) {
 }
 
 func TestProtectedDesktopConsoleRequirementIsTypedAndPostAdmission(t *testing.T) {
+	// Only the secure desktop (protected-desktop) hands off. A higher-integrity
+	// foreground window keeps the premium session; see below.
 	for _, payload := range []map[string]any{
 		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}},
-		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "higher-integrity-window"}}},
 		{"captureSuspended": true, "session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}},
 	} {
 		err := agentConsoleRequirement(payload)
@@ -49,6 +50,9 @@ func TestProtectedDesktopConsoleRequirementIsTypedAndPostAdmission(t *testing.T)
 		{"captureSuspended": true},
 		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "ticket-refused"}}},
 		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": false, "reason": "higher-integrity-window"}}},
+		// The agent can still capture a higher-integrity foreground window, so
+		// it stays on the premium session: only input is UIPI-blocked there.
+		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "higher-integrity-window"}}},
 	} {
 		if err := agentConsoleRequirement(payload); err != nil {
 			t.Fatalf("must not infer console from untyped/unknown telemetry: %v", err)
