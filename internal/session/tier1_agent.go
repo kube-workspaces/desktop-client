@@ -27,12 +27,12 @@ var ErrAgentInputPending = errors.New("agent input injection unavailable")
 
 // ErrAgentConsoleRequired requests the existing authenticated console path
 // after admission. It never authorizes fallback around a refused/busy session.
+// It is driven only by typed desktop classification (protected desktop or a
+// higher-integrity foreground window): a transient `captureSuspended` is
+// tolerated by the agent, which re-establishes capture without a handoff.
 var ErrAgentConsoleRequired = errors.New("windows protected UI requires console")
 
 func agentConsoleRequirement(payload map[string]any) error {
-	if suspended, _ := payload["captureSuspended"].(bool); suspended {
-		return fmt.Errorf("%w: desktop capture suspended", ErrAgentConsoleRequired)
-	}
 	session, _ := payload["session"].(map[string]any)
 	desktop, _ := session["desktop"].(map[string]any)
 	required, _ := desktop["requiresConsole"].(bool)

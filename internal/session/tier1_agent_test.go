@@ -32,9 +32,9 @@ func TestMapAgentResultClasses(t *testing.T) {
 
 func TestProtectedDesktopConsoleRequirementIsTypedAndPostAdmission(t *testing.T) {
 	for _, payload := range []map[string]any{
-		{"captureSuspended": true},
 		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}},
 		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "higher-integrity-window"}}},
+		{"captureSuspended": true, "session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}},
 	} {
 		err := agentConsoleRequirement(payload)
 		if !errors.Is(err, ErrAgentConsoleRequired) {
@@ -46,6 +46,7 @@ func TestProtectedDesktopConsoleRequirementIsTypedAndPostAdmission(t *testing.T)
 	}
 	for _, payload := range []map[string]any{
 		nil, {}, {"inputDropped": 10}, {"captureSuspended": "true"},
+		{"captureSuspended": true},
 		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "ticket-refused"}}},
 		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": false, "reason": "higher-integrity-window"}}},
 	} {
