@@ -619,6 +619,30 @@ Tier 0 is the universal floor and is never going away — it is the out-of-band
 console. Tier 1 is the premium path and also keeps pixel traffic off the
 Kubernetes control plane, which Tier 0 unavoidably transits.
 
+### Windows elevation: Agent ↔ Console
+
+For a Windows VM using `kw-agent`, the client automatically switches to the
+authenticated RFB **Console** when the agent reports a UAC/secure desktop or
+an elevated foreground window it cannot interact with. Once both restrictions
+clear, it returns to **Agent**. The toolbar also offers **Switch to console** /
+**Switch to agent**. Choosing Console on a clear desktop keeps that choice until
+you switch back; seeing and then clearing an elevation condition arms automatic
+return. While a secure desktop is active, the return button is disabled and
+reads **Console required: secure desktop**.
+
+The console remains usable while the background watcher releases its ticket;
+the next premium attachment waits for that release without freezing the UI.
+New agents advertise a telemetry-only watcher attach, which stops media
+production while Console is in use. Older agents remain compatible but still
+send media that the watcher discards without decoding. Closing and reopening a
+parked console keeps its toggle and automatic-return state.
+
+Shell and VM display windows remember their normal position and size. Transport
+switches carry the current arrangement into the replacement window, and missing
+monitors fall back to the launch display. Fullscreen/maximized/minimized states
+do not overwrite the last normal rectangle. Window-manager placement rules still
+apply. Pure-console sessions started with `--no-agent-tier` have no agent toggle.
+
 Tier 1 uses the pinned Selkies **2.0.0rc0** WebSocket protocol. Release
 packages bundle the required libraries (see
 [desktop-client install docs](https://github.com/kube-workspaces/deploy/blob/main/docs/desktop-client.md#tier-1-media-libraries-where-to-get-them));

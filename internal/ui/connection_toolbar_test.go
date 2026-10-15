@@ -81,6 +81,20 @@ func TestConnectionToolbarDispatchesTransportToggle(t *testing.T) {
 	if requested != connection.ToggleTransport {
 		t.Fatalf("console window did not dispatch the transport toggle: %q", requested)
 	}
+	s.ProtectedDesktop = true
+	h.frame(nil, body)
+	h.ctx.Focus().Set("toolbar-toggle-transport")
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if requested != "" {
+		t.Fatal("secure desktop allowed a toolbar return to premium")
+	}
+	s.ProtectedDesktop = false
+	h.frame(nil, body)
+	h.ctx.Focus().Set("toolbar-toggle-transport")
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if requested != connection.ToggleTransport {
+		t.Fatal("cleared desktop did not re-enable the toolbar toggle")
+	}
 }
 
 func TestConnectionToolbarHidesTransportToggleWithoutCapability(t *testing.T) {

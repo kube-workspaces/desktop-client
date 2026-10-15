@@ -165,7 +165,9 @@ type Config struct {
 	// presses it; the owner performs the swap asynchronously. The toggle only
 	// appears when both are set.
 	CanSwitchTransport bool
-	OnSwitchTransport  func()
+	// TransportSwitchBlocked reports a secure desktop that requires the console.
+	TransportSwitchBlocked func() bool
+	OnSwitchTransport      func()
 
 	// Logf, if set, receives diagnostic messages.
 	Logf func(format string, args ...any)

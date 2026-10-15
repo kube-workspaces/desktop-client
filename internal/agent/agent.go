@@ -266,6 +266,17 @@ func (s *Session) readControl() (Envelope, error) {
 // rejects raw strings (malformed-ticket) and unstamped claims alike.
 // The caller owns closing: Bye is sent by Close.
 func Attach(conn *wsio.Conn, signed string) (*Session, error) {
+	return attach(conn, signed, false)
+}
+
+// AttachControlOnly requests a telemetry-only session when the guest advertises
+// it. Older guests retain their original attach behavior so auto-return remains
+// usable during an agent upgrade; no media is decoded by the watcher.
+func AttachControlOnly(conn *wsio.Conn, signed string) (*Session, error) {
+	return attach(conn, signed, true)
+}
+
+func attach(conn *wsio.Conn, signed string, controlOnly bool) (*Session, error) {
 	_, ticket, err := DecodeTicket(signed)
 	if err != nil {
 		return nil, err
@@ -296,7 +307,11 @@ func Attach(conn *wsio.Conn, signed string) (*Session, error) {
 		}
 	}
 	ticket.SessionID = hello.SessionID
-	if err := session.writeControl("attach", map[string]any{"ticket": ticket}); err != nil {
+	payload := map[string]any{"ticket": ticket}
+	if available, _ := hello.Payload["controlOnlyAvailable"].(bool); controlOnly && available {
+		payload["controlOnly"] = true
+	}
+	if err := session.writeControl("attach", payload); err != nil {
 		return nil, fmt.Errorf("agent: attach: %w", err)
 	}
 	result, err := session.readControl()
@@ -313,6 +328,12 @@ func Attach(conn *wsio.Conn, signed string) (*Session, error) {
 			reason = ReasonTicketRefused
 		}
 		return nil, fmt.Errorf("agent: refused (%s): %w", reason, ErrRefused)
+	}
+	if payload["controlOnly"] == true {
+		if result.Payload["controlOnly"] != true {
+			return nil, fmt.Errorf("agent: control-only attach was not acknowledged")
+		}
+		session.clipboard, session.input, session.resize = false, false, false
 	}
 	return session, nil
 }

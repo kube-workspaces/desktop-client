@@ -60,24 +60,26 @@ type Capabilities struct {
 // they actually measure, never estimates. A transport that tracks nothing
 // leaves HasActivity false and the card says so.
 type Snapshot struct {
-	Workspace    string
-	Surface      Surface
-	State        State
-	Role         Role
-	Transport    string
-	Tier         string // "Tier 0" or "Tier 1", classified by the adapter
-	Proto        string // wire detail, e.g. "RFB over WebSocket"
-	Capabilities Capabilities
-	Fullscreen   bool
-	Clipboard    bool
-	ResizeGuest  bool
-	Muted        bool
-	AudioLive    bool // negotiated/open and unmuted
-	FPS, Kbps    float64
-	HasMetrics   bool
-	BytesIn      uint64
-	BytesOut     uint64
-	HasActivity  bool
+	Workspace string
+	Surface   Surface
+	State     State
+	Role      Role
+	Transport string
+	// ProtectedDesktop keeps the console selected while Windows owns secure UI.
+	ProtectedDesktop bool
+	Tier             string // "Tier 0" or "Tier 1", classified by the adapter
+	Proto            string // wire detail, e.g. "RFB over WebSocket"
+	Capabilities     Capabilities
+	Fullscreen       bool
+	Clipboard        bool
+	ResizeGuest      bool
+	Muted            bool
+	AudioLive        bool // negotiated/open and unmuted
+	FPS, Kbps        float64
+	HasMetrics       bool
+	BytesIn          uint64
+	BytesOut         uint64
+	HasActivity      bool
 	// Extra holds adapter detail rows (label, value) in display order,
 	// e.g. framebuffer size, encoding mix, agent video/audio counters.
 	Extra [][2]string
@@ -163,6 +165,9 @@ func (s Snapshot) Availability(a Action) Availability {
 	if needsLive && s.State != Connected {
 		return Availability{Visible: true, Reason: string(s.State)}
 	}
+	if a == ToggleTransport && s.ProtectedDesktop {
+		return Availability{Visible: true, Reason: "protectedDesktop"}
+	}
 	return Availability{Visible: true, Enabled: true}
 }
 
@@ -182,7 +187,7 @@ func (s Snapshot) Tools() []Action {
 // comparable with ==.
 func (s Snapshot) Equal(o Snapshot) bool {
 	if s.Workspace != o.Workspace || s.Surface != o.Surface || s.State != o.State ||
-		s.Role != o.Role || s.Transport != o.Transport || s.Tier != o.Tier ||
+		s.Role != o.Role || s.Transport != o.Transport || s.ProtectedDesktop != o.ProtectedDesktop || s.Tier != o.Tier ||
 		s.Proto != o.Proto || s.Capabilities != o.Capabilities ||
 		s.Fullscreen != o.Fullscreen || s.Clipboard != o.Clipboard ||
 		s.ResizeGuest != o.ResizeGuest || s.Muted != o.Muted ||

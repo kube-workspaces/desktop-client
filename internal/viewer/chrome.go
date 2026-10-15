@@ -145,6 +145,9 @@ func (v *Viewer) connectionSnapshot() connection.Snapshot {
 		Clipboard: !v.clipboardDisabled, ResizeGuest: !v.resizeDisabled, Muted: v.muted,
 		FPS: v.lastFPS, Kbps: v.lastKbps, HasMetrics: true,
 		Capabilities: connection.Capabilities{SpecialKeys: true, TypeClipboard: true, ClipboardSync: true, SharedControl: v.controlAction() != nil, TransportToggle: v.cfg.CanSwitchTransport}}
+	if v.cfg.TransportSwitchBlocked != nil {
+		s.ProtectedDesktop = v.cfg.TransportSwitchBlocked()
+	}
 	if v.conn == nil && s.State == connection.Connected {
 		s.State = connection.Connecting
 	}

@@ -68,6 +68,7 @@ var english = map[string]string{
 	"toolbar.toggle-transport":      "Connection mode",
 	"toolbar.to-console":            "Switch to console",
 	"toolbar.to-agent":              "Switch to agent",
+	"toolbar.protectedDesktop":      "Console required: secure desktop",
 	"toolbar.shared-control":        "Request control",
 	"toolbar.releaseControl":        "Release control",
 	"toolbar.paste":                 "Paste",

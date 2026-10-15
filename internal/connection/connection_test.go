@@ -93,6 +93,19 @@ func TestTransportToggleNeedsDesktopLiveAgentCapability(t *testing.T) {
 	}
 }
 
+func TestSecureDesktopBlocksReturnWithoutHidingToggle(t *testing.T) {
+	s := Snapshot{Surface: Desktop, State: Connected, Transport: "RFB", ProtectedDesktop: true,
+		Capabilities: Capabilities{TransportToggle: true}}
+	if got := s.Availability(ToggleTransport); !got.Visible || got.Enabled || got.Reason != "protectedDesktop" {
+		t.Fatalf("secure-desktop toggle availability: %+v", got)
+	}
+	cleared := s
+	cleared.ProtectedDesktop = false
+	if s.Equal(cleared) || !cleared.Availability(ToggleTransport).Enabled {
+		t.Fatal("clearing secure desktop must redraw and enable the toggle")
+	}
+}
+
 func TestDebugCardIsDesktopChromeAvailableWhileBroken(t *testing.T) {
 	// The debug readout must be there while connecting, reconnecting and
 	// failed too — that is when connection detail is most useful — and for

@@ -226,7 +226,9 @@ func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scal
 			label = i18n.Get("toolbar.unmute")
 		}
 	case connection.ToggleTransport:
-		if s.Transport == "Agent" {
+		if s.ProtectedDesktop {
+			label = i18n.Get("toolbar.protectedDesktop")
+		} else if s.Transport == "Agent" {
 			label = i18n.Get("toolbar.to-console")
 		} else {
 			label = i18n.Get("toolbar.to-agent")

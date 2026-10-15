@@ -321,6 +321,7 @@ type SessionOptions struct {
 	// premium window or the console fallback, so both draw the same control.
 	// Nil disables the toggle (non-agent transports, observer windows).
 	switchTransport func()
+	switchBlocked   func() bool
 	// Logf, if set, receives session diagnostics.
 	Logf func(format string, args ...any)
 }
@@ -603,12 +604,13 @@ func (h *exclusiveHandle) newView(ctx context.Context) *viewer.Viewer {
 		title += " — " + i18n.Get("session.windowsConsole")
 	}
 	cfg := viewer.Config{
-		AdaptiveQuality:    !h.opts.FixedQuality,
-		Title:              title,
-		ScaleQuality:       h.opts.ScaleQuality,
-		CanSwitchTransport: h.opts.switchTransport != nil,
-		OnSwitchTransport:  h.opts.switchTransport,
-		Logf:               h.opts.Logf,
+		AdaptiveQuality:        !h.opts.FixedQuality,
+		Title:                  title,
+		ScaleQuality:           h.opts.ScaleQuality,
+		CanSwitchTransport:     h.opts.switchTransport != nil,
+		OnSwitchTransport:      h.opts.switchTransport,
+		TransportSwitchBlocked: h.opts.switchBlocked,
+		Logf:                   h.opts.Logf,
 	}
 	view := viewer.New(h.opts.displayBackend(h.ws.Key()), cfg)
 	// Match the CLI consent flow, including after Tier 1 falls back.
@@ -1004,8 +1006,18 @@ type agentHandle struct {
 	ws     kwclient.Workspace
 	opts   SessionOptions
 
-	mu       sync.Mutex
-	fallback *exclusiveHandle
+	mu                             sync.Mutex
+	fallback                       *exclusiveHandle
+	consoleArmed, consoleProtected bool
+	// Optional window opener for lifecycle tests without SDL or a live RFB seat.
+	consoleOpener func(context.Context, *exclusiveHandle) (liveWindow, error)
+}
+
+func (h *agentHandle) openConsoleWindow(ctx context.Context, fb *exclusiveHandle) (liveWindow, error) {
+	if h.consoleOpener != nil {
+		return h.consoleOpener(ctx, fb)
+	}
+	return fb.openWindow(ctx)
 }
 
 // Kind implements [SessionHandle].
@@ -1022,16 +1034,24 @@ func (h *agentHandle) Kind() string {
 func (h *agentHandle) Open(ctx context.Context) (liveWindow, error) {
 	h.mu.Lock()
 	fb := h.fallback
+	armed, protected := h.consoleArmed, h.consoleProtected
 	h.mu.Unlock()
 	// A held console fallback resumes as a console-mode agent window so the
 	// in-session toggle survives a window close/reopen; it is not a bare
 	// Tier 0 window.
 	if fb != nil {
-		win, err := fb.openWindow(ctx)
+		w := &agentLiveWindow{handle: h}
+		w.sawRequired.Store(armed)
+		w.protectedDesktop.Store(protected)
+		// Rebind callbacks before opening: the parked window no longer owns
+		// mode requests or desktop status for this attachment.
+		fb.opts.switchTransport = func() { w.wantToggle.Store(true) }
+		fb.opts.switchBlocked = w.protectedDesktop.Load
+		win, err := h.openConsoleWindow(ctx, fb)
 		if err != nil {
 			return nil, err
 		}
-		w := &agentLiveWindow{handle: h, fb: win}
+		w.fb = win
 		w.startWatcher(ctx)
 		return w, nil
 	}
@@ -1102,11 +1122,14 @@ type agentLiveWindow struct {
 	// records that a console-requiring desktop was seen this console visit,
 	// so auto-return fires only on a required->clear transition and never
 	// yanks a user who chose the console with no condition present.
-	watching    atomic.Bool
-	sawRequired atomic.Bool
-	watchCancel context.CancelFunc
-	watchWG     sync.WaitGroup
-	geometry    *viewer.WindowRect
+	watching                    atomic.Bool
+	sawRequired                 atomic.Bool
+	protectedDesktop            atomic.Bool
+	desktopRequired             atomic.Bool
+	watchCancel                 context.CancelFunc
+	watchDone                   <-chan struct{}
+	returnPending, returnManual bool
+	geometry                    *viewer.WindowRect
 
 	// dialAgent and dialConsole are test seams for the mode switch; nil means
 	// the production dialers. They let the transition matrix be unit-tested
@@ -1172,6 +1195,7 @@ func (w *agentLiveWindow) Step(ctx context.Context, now time.Time, events []view
 	}
 	res := session.MapAgentResult(ctx, w.det.Result())
 	w.disposition = w.det.CloseDisposition()
+	w.rememberTransitionGeometry()
 	w.det.Close()
 	w.det = nil
 	if res == nil || ctx.Err() != nil || errors.Is(res, session.ErrNoFallback) {
@@ -1205,10 +1229,31 @@ func (w *agentLiveWindow) Step(ctx context.Context, now time.Time, events []view
 func (w *agentLiveWindow) serveSwitch(ctx context.Context) error {
 	manual := w.wantToggle.Swap(false)
 	auto := w.wantAgent.Swap(false)
+	if w.returnPending {
+		select {
+		case <-w.watchDone:
+			w.returnPending = false
+			if w.protectedDesktop.Load() || (!w.returnManual && w.desktopRequired.Load()) {
+				w.startWatcher(ctx)
+				return nil
+			}
+			return w.activateAgent(ctx)
+		default:
+			return nil // Keep rendering and routing console input during release.
+		}
+	}
 	if !manual && !auto {
 		return nil
 	}
 	if w.fb != nil {
+		if w.protectedDesktop.Load() {
+			return nil // Recheck at execution, including queued/stale UI requests.
+		}
+		if w.watching.Load() {
+			w.returnPending, w.returnManual = true, manual
+			w.stopWatcher()
+			return nil
+		}
 		return w.activateAgent(ctx)
 	}
 	if manual {
@@ -1230,7 +1275,10 @@ func (w *agentLiveWindow) activateConsole(ctx context.Context, protected, arm bo
 	}
 	opts := w.transitionOptions()
 	opts.ProtectedConsole = protected
+	w.protectedDesktop.Store(protected)
+	w.desktopRequired.Store(arm)
 	opts.switchTransport = func() { w.wantToggle.Store(true) }
+	opts.switchBlocked = w.protectedDesktop.Load
 	fb, derr := w.dialConsoleSession(ctx, opts)
 	if derr != nil {
 		w.closed, w.result = true, derr
@@ -1239,7 +1287,7 @@ func (w *agentLiveWindow) activateConsole(ctx context.Context, protected, arm bo
 	w.handle.mu.Lock()
 	w.handle.fallback = fb
 	w.handle.mu.Unlock()
-	win, err := fb.openWindow(ctx)
+	win, err := w.handle.openConsoleWindow(ctx, fb)
 	if err != nil {
 		w.closed, w.result = true, err
 		return nil
@@ -1325,16 +1373,18 @@ func (w *agentLiveWindow) startWatcher(ctx context.Context) {
 	if w.watching.Swap(true) {
 		return
 	}
-	wctx, cancel := context.WithCancel(context.Background())
+	wctx, cancel := context.WithCancel(ctx)
 	w.watchCancel = cancel
-	w.watchWG.Add(1)
+	done := make(chan struct{})
+	w.watchDone = done
 	go func() {
-		defer w.watchWG.Done()
+		defer close(done)
 		w.watchLoop(wctx)
 	}()
 }
 
-// stopWatcher cancels and joins the watcher. It is a no-op when none runs.
+// stopWatcher cancels without blocking the window thread. A return to premium
+// waits cooperatively for watchDone before acquiring the agent seat again.
 func (w *agentLiveWindow) stopWatcher() {
 	if !w.watching.Swap(false) {
 		return
@@ -1343,7 +1393,6 @@ func (w *agentLiveWindow) stopWatcher() {
 		w.watchCancel()
 		w.watchCancel = nil
 	}
-	w.watchWG.Wait()
 }
 
 // watchLoop keeps a desktop watcher session alive until cancelled, retrying
@@ -1369,8 +1418,11 @@ func (w *agentLiveWindow) watchLoop(ctx context.Context) {
 // console is shown. A console-requiring desktop arms the return; only a later
 // clear reading fires it, so a user who chose the console with no condition
 // present is never yanked back to the agent.
-func (w *agentLiveWindow) desktopChanged(required bool, _ string) {
+func (w *agentLiveWindow) desktopChanged(required bool, reason string) {
+	w.desktopRequired.Store(required)
+	w.protectedDesktop.Store(required && reason == "protected-desktop")
 	if required {
+		w.wantAgent.Store(false)
 		w.sawRequired.Store(true)
 		return
 	}
@@ -1392,7 +1444,7 @@ func (w *agentLiveWindow) IdleWait(now time.Time) time.Duration {
 	}
 	// While a watcher runs, cap the wait so an auto-return is applied within
 	// switchPollInterval even on a static console.
-	if w.watching.Load() && d > switchPollInterval {
+	if (w.watching.Load() || w.returnPending) && d > switchPollInterval {
 		d = switchPollInterval
 	}
 	return d
@@ -1424,6 +1476,10 @@ func (w *agentLiveWindow) CloseDisposition() connection.CloseDisposition {
 // Close implements [liveWindow].
 func (w *agentLiveWindow) Close() {
 	w.stopWatcher()
+	w.handle.mu.Lock()
+	w.handle.consoleArmed = w.sawRequired.Load()
+	w.handle.consoleProtected = w.protectedDesktop.Load()
+	w.handle.mu.Unlock()
 	if w.det != nil {
 		w.det.Close()
 		w.det = nil

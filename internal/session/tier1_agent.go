@@ -548,10 +548,13 @@ func renewAgent(ctx context.Context, client *kwclient.Client, ns, name string, t
 // premium window can return automatically once the secure desktop and any
 // higher-integrity foreground window clear. It holds a control agent session
 // -- the console rides a separate transport, so the agent seat is free -- and
-// drops decoded media; it never touches the display or input. onChange fires
+// negotiates control-only attach when supported, discarding media from older
+// guests without decoding it. It never touches display or input. onChange fires
 // only when the classification changes, including the first reading. It
 // returns when ctx ends or the agent connection closes.
 func WatchAgentDesktop(ctx context.Context, client *kwclient.Client, ns, name string, onChange func(required bool, reason string)) error {
+	ctx, cancelWatch := context.WithCancel(ctx)
+	defer cancelWatch()
 	ticket, err := client.AgentAttach(ctx, ns, name, "")
 	if err != nil {
 		return err
@@ -565,24 +568,22 @@ func WatchAgentDesktop(ctx context.Context, client *kwclient.Client, ns, name st
 	if err != nil {
 		return err
 	}
-	session, err := agent.Attach(wsio.New(conn), ticket.Ticket)
+	// Cancel even during hello/attach, before an admitted Session exists.
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
+	defer conn.Close() //nolint:errcheck // raw close cannot block on a protocol write
+	session, err := agent.AttachControlOnly(wsio.New(conn), ticket.Ticket)
 	if err != nil {
 		_ = conn.Close()
 		return err
 	}
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = session.Close()
-		case <-done:
-		}
-	}()
-	renewCtx, stopRenew := context.WithCancel(context.Background())
+	renewCtx, stopRenew := context.WithCancel(ctx)
 	defer stopRenew()
 	go renewAgent(renewCtx, client, ns, name, ticket, session)
 	if session.TelemetryAvailable() {
+		if err := session.RequestTelemetry(); err != nil {
+			return err
+		}
 		go func() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
@@ -593,7 +594,7 @@ func WatchAgentDesktop(ctx context.Context, client *kwclient.Client, ns, name st
 				case <-ticker.C:
 					if session.TelemetryAvailable() {
 						if err := session.RequestTelemetry(); err != nil {
-							_ = session.Close()
+							_ = conn.Close()
 							return
 						}
 					}
@@ -604,9 +605,14 @@ func WatchAgentDesktop(ctx context.Context, client *kwclient.Client, ns, name st
 	var lastRequired bool
 	var lastReason string
 	first := true
-	defer session.Close() //nolint:errcheck // release on every return path
 	return session.Run(agent.Callbacks{
 		OnTelemetry: func(payload map[string]any) {
+			// Only a real typed reading can clear a known secure desktop.
+			state, _ := payload["session"].(map[string]any)
+			desktop, _ := state["desktop"].(map[string]any)
+			if _, valid := desktop["requiresConsole"].(bool); !valid {
+				return
+			}
 			required, reason := agentDesktopState(payload)
 			if first || required != lastRequired || reason != lastReason {
 				first, lastRequired, lastReason = false, required, reason

@@ -158,9 +158,10 @@ func TestAgentWindowLiveStepErrorSurfaces(t *testing.T) {
 // fakeConsole stands in for the Tier 0 live window the console fallback opens.
 type fakeConsole struct {
 	closed bool
+	steps  int
 }
 
-func (f *fakeConsole) Step(context.Context, time.Time, []viewer.Event) error { return nil }
+func (f *fakeConsole) Step(context.Context, time.Time, []viewer.Event) error { f.steps++; return nil }
 func (f *fakeConsole) IdleWait(time.Time) time.Duration                      { return 0 }
 func (f *fakeConsole) Closed() bool                                          { return f.closed }
 func (f *fakeConsole) Result() error                                         { return nil }
@@ -266,5 +267,85 @@ func TestAgentWindowAutoReturnSwitchesToAgent(t *testing.T) {
 	}
 	if w.fb != nil {
 		t.Fatal("auto-return must tear down the console window")
+	}
+}
+
+func TestSecureDesktopRejectsQueuedToggleAndStaleAutoReturn(t *testing.T) {
+	w := newAgentWindow(nil)
+	w.fb = &fakeConsole{}
+	w.dialAgent = func(context.Context) (agentDetached, error) {
+		t.Fatal("must not dial premium while protected desktop is active")
+		return nil, nil
+	}
+	w.desktopChanged(false, "")
+	w.wantAgent.Store(true) // A clear reading queued immediately before UAC.
+	w.desktopChanged(true, "protected-desktop")
+	w.wantToggle.Store(true)
+	if err := w.Step(context.Background(), time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if w.wantAgent.Load() || w.fb == nil || !w.protectedDesktop.Load() {
+		t.Fatal("secure desktop must clear stale return requests and retain console")
+	}
+}
+
+func TestWatcherReleaseDoesNotBlockConsolePump(t *testing.T) {
+	w := newAgentWindow(nil)
+	console := &fakeConsole{}
+	w.fb = console
+	released := make(chan struct{})
+	w.watchDone = released
+	watchCtx, cancel := context.WithCancel(context.Background())
+	w.watchCancel = cancel
+	w.watching.Store(true)
+	dials := 0
+	w.dialAgent = func(context.Context) (agentDetached, error) {
+		dials++
+		return &fakeAgentDet{}, nil
+	}
+	w.desktopChanged(true, "higher-integrity-window")
+	w.desktopChanged(false, "")
+	for i := 0; i < 3; i++ {
+		if err := w.Step(context.Background(), time.Now(), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if watchCtx.Err() == nil || console.steps != 3 || dials != 0 {
+		t.Fatalf("release must cancel watcher but keep console responsive: steps=%d dials=%d", console.steps, dials)
+	}
+	close(released)
+	if err := w.Step(context.Background(), time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if dials != 1 || !console.closed || w.det == nil {
+		t.Fatal("premium must open only after watcher released its ticket")
+	}
+}
+
+func TestParkedConsoleRebindsToggleAndKeepsSecureState(t *testing.T) {
+	h := &agentHandle{fallback: &exclusiveHandle{}, consoleArmed: true, consoleProtected: true,
+		consoleOpener: func(context.Context, *exclusiveHandle) (liveWindow, error) { return &fakeConsole{}, nil }}
+	first, err := h.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := first.(*agentLiveWindow)
+	old.Close()
+	second, err := h.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := second.(*agentLiveWindow)
+	defer current.Close()
+	h.fallback.opts.switchTransport()
+	if old.wantToggle.Load() || !current.wantToggle.Load() {
+		t.Fatal("parked console dispatched its toggle to the retired window")
+	}
+	if !h.fallback.opts.switchBlocked() || !current.sawRequired.Load() {
+		t.Fatal("park/reopen lost the secure desktop gate or auto-return arm")
+	}
+	current.desktopChanged(false, "")
+	if h.fallback.opts.switchBlocked() || !current.wantAgent.Load() {
+		t.Fatal("clearing secure desktop after reopen must enable return")
 	}
 }
