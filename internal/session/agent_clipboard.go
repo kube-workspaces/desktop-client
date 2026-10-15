@@ -33,7 +33,7 @@ func OpenAgentClipboard(ctx context.Context, client *kwclient.Client, ns, name s
 		defer cancel()
 		_ = client.AgentRelease(releaseCtx, ns, name, ticket.ID)
 	}
-	conn, _, err := client.DialAgentWS(ctx, ns, name)
+	conn, _, err := client.DialAgentWSPurpose(ctx, ns, name, "clipboard")
 	if err != nil {
 		release()
 		return nil, err

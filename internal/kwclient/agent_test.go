@@ -120,6 +120,9 @@ func TestDialAgentWSBusyMaps(t *testing.T) {
 		if r.URL.Path != "/proxy/alice/desktop-0/agent/" {
 			t.Errorf("unexpected bridge path %s", r.URL.Path)
 		}
+		if r.URL.Query().Get("purpose") != "v1.display" {
+			t.Errorf("missing display purpose: %s", r.URL.RawQuery)
+		}
 		w.WriteHeader(http.StatusConflict)
 	}))
 	defer srv.Close()
@@ -130,5 +133,21 @@ func TestDialAgentWSBusyMaps(t *testing.T) {
 	_, _, err = c.DialAgentWS(context.Background(), "alice", "desktop-0")
 	if !errors.Is(err, ErrAgentBusy) {
 		t.Fatalf("busy must surface ErrAgentBusy, got %v", err)
+	}
+}
+
+func TestAgentHelperPurposeIsExplicit(t *testing.T) {
+	for _, purpose := range []string{"clipboard", "telemetry"} {
+		t.Run(purpose, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("purpose") != "v1."+purpose || r.Header.Get("Authorization") != "Bearer test-token" { t.Errorf("incorrect helper request: %s %v", r.URL, r.Header) }
+				w.WriteHeader(http.StatusConflict)
+			}))
+			defer srv.Close()
+			c, err := New(srv.URL, WithToken("test-token"))
+			if err != nil { t.Fatal(err) }
+			if _, _, err := c.DialAgentWSPurpose(context.Background(), "alice", "desktop-0", purpose); !errors.Is(err, ErrAgentBusy) { t.Fatal(err) }
+			if _, _, err := c.DialAgentWSPurpose(context.Background(), "alice", "desktop-0", "observer"); err == nil { t.Fatal("unknown purpose accepted") }
+		})
 	}
 }

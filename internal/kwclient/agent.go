@@ -141,12 +141,24 @@ func agentSentinel(status int) error {
 // The stream carries framed-protocol bytes 1:1 in binary messages; no
 // subprotocol is negotiated (an empty subprotocol list is deliberate).
 func (c *Client) DialAgentWS(ctx context.Context, namespace, name string) (*websocket.Conn, *http.Response, error) {
+	return c.DialAgentWSPurpose(ctx, namespace, name, "display")
+}
+
+// DialAgentWSPurpose declares a versioned edge-enforced connection purpose.
+// Helpers coexist with an RFB seat but cannot send display mutations.
+func (c *Client) DialAgentWSPurpose(ctx context.Context, namespace, name, purpose string) (*websocket.Conn, *http.Response, error) {
+	if purpose != "display" && purpose != "telemetry" && purpose != "clipboard" {
+		return nil, nil, fmt.Errorf("kwclient: unsupported agent purpose %q", purpose)
+	}
 	path, err := AgentPath(namespace, name)
 	if err != nil {
 		return nil, nil, err
 	}
 	u := *c.baseURL
 	u.Path = c.baseURL.Path + path
+	query := u.Query()
+	query.Set("purpose", "v1."+purpose)
+	u.RawQuery = query.Encode()
 	switch u.Scheme {
 	case "https":
 		u.Scheme = "wss"
