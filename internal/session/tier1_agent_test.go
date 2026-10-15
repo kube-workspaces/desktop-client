@@ -84,6 +84,24 @@ func TestAgentDesktopStateParsesTypedClassification(t *testing.T) {
 	}
 }
 
+// The premium window reads the desktop classification off the shared input to
+// draw the blocked-input banner. Detaching the session must clear it so a
+// stale "blocked" reading cannot outlive the transport.
+func TestAgentInputReportsAndClearsDesktopState(t *testing.T) {
+	input := &agentInput{}
+	if required, reason := input.DesktopRequired(); required || reason != "" {
+		t.Fatalf("fresh input reported (%v, %q), want clear", required, reason)
+	}
+	input.setDesktopState(true, "higher-integrity-window")
+	if required, reason := input.DesktopRequired(); !required || reason != "higher-integrity-window" {
+		t.Fatalf("blocked state not recorded: (%v, %q)", required, reason)
+	}
+	input.attach(nil)
+	if required, _ := input.DesktopRequired(); required {
+		t.Fatal("detaching the session must clear the desktop state")
+	}
+}
+
 func TestAgentFrameCropsPaddingWithoutApplyingStaleResizeDimensions(t *testing.T) {
 	frame := image.NewRGBA(image.Rect(0, 0, 1920, 1088))
 	cropped := cropAgentFrame(frame, 1920, 1080)

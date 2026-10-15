@@ -213,14 +213,33 @@ const (
 	// overlayMaxScale caps the glyph scale. Past this the pixels of a 5x7
 	// font are the only thing on screen.
 	overlayMaxScale = 10
+
+	// bannerMaxScale caps the glyph scale of the input-blocked banner. The
+	// banner annotates a live frame rather than replacing it, so it stays
+	// smaller than a status plate: it must not rival the content for
+	// attention, only explain why the keyboard is dead.
+	bannerMaxScale = 4
+
+	// bannerTopMargin is the gap in surface pixels between the window's top
+	// edge and the banner.
+	bannerTopMargin = 8
+
+	// bannerHeightNumer/Denom bounds the banner to a tenth of the window
+	// height so a long hint cannot cover the guest.
+	bannerHeightNumer = 1
+	bannerHeightDenom = 10
 )
 
 // overlayKey identifies a rasterised overlay, so that the image is rebuilt
-// only when the text or the window size actually changes rather than on every
-// frame of a reconnect that may last minutes.
+// only when the text, the window size or the kind (status plate vs banner)
+// actually changes rather than on every frame of a reconnect that may last
+// minutes. The kind is part of the key because the plate and the banner share
+// one overlay texture: switching between them must force a re-upload rather
+// than trust the previous raster.
 type overlayKey struct {
-	text string
-	w, h int
+	text   string
+	w, h   int
+	banner bool
 }
 
 // overlayImage is a rasterised overlay panel in RGBA, ready to upload.
@@ -284,6 +303,58 @@ func renderOverlay(lines []string, winW, winH int) overlayImage {
 	for _, line := range folded {
 		lineW := len([]rune(line))*glyphAdvance - (glyphAdvance - glyphWidth)
 		img.text(line, (w-lineW*scale)/2, y, scale)
+		y += lineAdvance * scale
+	}
+	return img
+}
+
+// renderBanner rasterises lines into a full-width panel drawn at the top of a
+// winW by winH window. Unlike renderOverlay it does not dim the frame: the
+// guest is still being captured and shown, only input is blocked, so the
+// banner annotates rather than replaces the picture.
+func renderBanner(lines []string, winW, winH int) overlayImage {
+	folded := make([]string, 0, len(lines))
+	widest := 0
+	for _, line := range lines {
+		line = foldToFont(line)
+		folded = append(folded, line)
+		if n := len([]rune(line)); n > widest {
+			widest = n
+		}
+	}
+	if len(folded) == 0 || widest == 0 || winW <= 0 || winH <= 0 {
+		return overlayImage{}
+	}
+
+	textW := widest*glyphAdvance - (glyphAdvance - glyphWidth)
+	textH := len(folded)*lineAdvance - (lineAdvance - glyphHeight)
+
+	// Scale the glyphs to the window but keep the banner modest: a third of
+	// the width would be a status plate, not an annotation.
+	scale := winW / 3 / textW
+	if scale > bannerMaxScale {
+		scale = bannerMaxScale
+	}
+	if maxByHeight := winH * bannerHeightNumer / bannerHeightDenom / textH; scale > maxByHeight {
+		scale = maxByHeight
+	}
+	scale = clamp(scale, 1, bannerMaxScale)
+
+	padY := glyphHeight * scale / 2
+	h := textH*scale + 2*padY
+	if h > winH {
+		h = winH
+	}
+
+	img := overlayImage{w: winW, h: h, stride: winW * 4, scale: scale}
+	img.pix = make([]byte, img.stride*h)
+	img.fill(Rect{W: winW, H: h}, 0, 0, 0, overlayPanelAlpha)
+	img.fill(Rect{Y: h - max(1, scale/2), W: winW, H: max(1, scale/2)}, 255, 255, 255, overlayBorderAlpha)
+
+	y := (h - textH*scale) / 2
+	for _, line := range folded {
+		lineW := len([]rune(line))*glyphAdvance - (glyphAdvance - glyphWidth)
+		img.text(line, (winW-lineW*scale)/2, y, scale)
 		y += lineAdvance * scale
 	}
 	return img

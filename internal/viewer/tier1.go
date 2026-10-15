@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/connection"
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
 )
@@ -1358,6 +1359,15 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 			return err
 		}
 	}
+	// With a live frame and no status plate, annotate blocked input: the
+	// agent keeps streaming a higher-integrity foreground window it cannot
+	// inject into, so the keyboard is dead with no other sign of why.
+	if overlay.Empty() && w.haveFrame {
+		var err error
+		if overlay, err = w.deskBanner(); err != nil {
+			return err
+		}
+	}
 
 	if err := w.be.Present(draw, overlay); err != nil {
 		return fmt.Errorf("viewer: tier-1 present: %w", err)
@@ -1397,10 +1407,51 @@ func (w *tier1Window) statusOverlay(status Status) (Overlay, error) {
 	if status == StatusDisplayInUse && w.opts.Takeover != nil {
 		lines = append(lines, "Press Enter to take over the display")
 	}
-	key := overlayKey{text: strings.Join(lines, "\n"), w: w.winW, h: w.winH}
+	return w.buildOverlay(lines, false)
+}
+
+// deskBanner renders the input-blocked banner for the live frame, or an empty
+// overlay when input is not blocked or the guest reports no desktop state.
+func (w *tier1Window) deskBanner() (Overlay, error) {
+	rep, ok := w.inp.(agentDesktopReporter)
+	if !ok {
+		return Overlay{}, nil
+	}
+	required, reason := rep.DesktopRequired()
+	if !required {
+		return Overlay{}, nil
+	}
+	return w.buildOverlay(desktopBannerLines(reason), true)
+}
+
+// desktopBannerLines words the banner for a typed desktop reason. The reason
+// comes from the guest's input-desktop classifier; an unknown or empty reason
+// falls back to the higher-integrity wording, the recoverable case.
+func desktopBannerLines(reason string) []string {
+	if reason == "protected-desktop" {
+		return []string{i18n.Get("viewer.secureDesktop")}
+	}
+	return []string{i18n.Get("viewer.desktopBlocked"), i18n.Get("viewer.desktopBlockedHint")}
+}
+
+// buildOverlay rasterises, uploads and positions an overlay panel for this
+// window, caching by text, size and kind. A status plate dims the whole frame
+// and is centred; a banner sits at the top and leaves the frame visible.
+func (w *tier1Window) buildOverlay(lines []string, banner bool) (Overlay, error) {
+	key := overlayKey{text: strings.Join(lines, "\n"), w: w.winW, h: w.winH, banner: banner}
 	if key != w.ovKey {
-		img := renderOverlay(lines, w.winW, w.winH)
+		var img overlayImage
+		if banner {
+			img = renderBanner(lines, w.winW, w.winH)
+		} else {
+			img = renderOverlay(lines, w.winW, w.winH)
+		}
 		if img.w <= 0 || img.h <= 0 {
+			// Too small for even one glyph. A plate still dims so the state
+			// is visible; a banner that cannot be read draws nothing.
+			if banner {
+				return Overlay{}, nil
+			}
 			return Overlay{Dim: overlayDim}, nil
 		}
 		if img.w != w.ovW || img.h != w.ovH {
@@ -1413,6 +1464,9 @@ func (w *tier1Window) statusOverlay(status Status) (Overlay, error) {
 			return Overlay{}, fmt.Errorf("viewer: upload overlay: %w", err)
 		}
 		w.ovKey, w.ovPix, w.ovStride = key, img.pix, img.stride
+	}
+	if banner {
+		return Overlay{Rect: Rect{X: (w.winW - w.ovW) / 2, Y: bannerTopMargin, W: w.ovW, H: w.ovH}}, nil
 	}
 	return Overlay{
 		Dim: overlayDim,

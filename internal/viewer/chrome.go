@@ -78,6 +78,16 @@ type agentDebugger interface {
 	DebugCounters() (AgentCounters, bool)
 }
 
+// agentDesktopReporter is implemented by the session-owned agent input when
+// the guest reports its input-desktop classification. It is how the premium
+// window learns that the agent can capture but not inject — a foreground
+// elevated (higher-integrity) window — so it can explain blocked input
+// instead of leaving the user with a dead keyboard. Absent means no desktop
+// state is known.
+type agentDesktopReporter interface {
+	DesktopRequired() (required bool, reason string)
+}
+
 func ConnectionState(status Status) connection.State {
 	switch status {
 	case StatusLive:

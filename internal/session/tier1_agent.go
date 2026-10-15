@@ -68,6 +68,11 @@ type agentInput struct {
 	x, y                    int
 	videoWidth, videoHeight int
 	modes                   [][2]int
+	// deskRequired/deskReason hold the latest input-desktop classification the
+	// guest reported, so the premium window can explain blocked input (a
+	// higher-integrity foreground window the agent cannot inject into).
+	deskRequired bool
+	deskReason   string
 }
 
 func (in *agentInput) attach(session *agent.Session) {
@@ -77,10 +82,28 @@ func (in *agentInput) attach(session *agent.Session) {
 	in.keys = make(map[keysym.Keysym]bool)
 	in.videoWidth, in.videoHeight = 0, 0
 	in.modes = nil
+	in.deskRequired, in.deskReason = false, ""
 	if session != nil {
 		in.videoWidth, in.videoHeight = session.CaptureSize()
 		in.modes = session.DisplayModes()
 	}
+}
+
+// setDesktopState records the guest's input-desktop classification. It is
+// called on the produce goroutine for each telemetry message.
+func (in *agentInput) setDesktopState(required bool, reason string) {
+	in.mu.Lock()
+	in.deskRequired, in.deskReason = required, reason
+	in.mu.Unlock()
+}
+
+// DesktopRequired implements [viewer.agentDesktopReporter]: whether the
+// guest's input desktop currently needs the console, and why. Read on the
+// window thread to draw the input-blocked banner.
+func (in *agentInput) DesktopRequired() (bool, string) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.deskRequired, in.deskReason
 }
 
 // DebugCounters serves the toolbar debug card without exposing the session:
@@ -385,6 +408,7 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 	runErr := session.Run(agent.Callbacks{
 		OnTelemetryResult: agentConsoleRequirement,
 		OnTelemetry: func(payload map[string]any) {
+			input.setDesktopState(agentDesktopState(payload))
 			if logf != nil {
 				logf("agent telemetry: input=%v dropped=%v session=%v", payload["inputEvents"], payload["inputDropped"], payload["session"])
 			}
