@@ -30,32 +30,60 @@ func TestMapAgentResultClasses(t *testing.T) {
 	}
 }
 
-func TestProtectedDesktopConsoleRequirementIsTypedAndPostAdmission(t *testing.T) {
-	// Only the secure desktop (protected-desktop) hands off. A higher-integrity
-	// foreground window keeps the premium session; see below.
-	for _, payload := range []map[string]any{
-		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}},
-		{"captureSuspended": true, "session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}},
-	} {
-		err := agentConsoleRequirement(payload)
+func TestConsoleHandoffPolicy(t *testing.T) {
+	protected := map[string]any{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}}
+	protectedSuspended := map[string]any{"captureSuspended": true, "session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}}
+	higher := map[string]any{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "higher-integrity-window"}}}
+	clearHigher := map[string]any{"session": map[string]any{"desktop": map[string]any{"requiresConsole": false, "reason": "higher-integrity-window"}}}
+	unknown := map[string]any{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "ticket-refused"}}}
+
+	// The secure desktop hands off at once, and the boundary permits the
+	// authorized console (never ErrNoFallback).
+	for _, payload := range []map[string]any{protected, protectedSuspended} {
+		err := (&consoleHandoff{}).observe(payload)
 		if !errors.Is(err, ErrAgentConsoleRequired) {
-			t.Fatalf("want console handoff, got %v", err)
+			t.Fatalf("protected desktop must hand off, got %v", err)
+		}
+		var cre *ConsoleRequiredError
+		if !errors.As(err, &cre) || cre.Reason != "protected-desktop" {
+			t.Fatalf("protected handoff must carry the reason, got %v", err)
 		}
 		if errors.Is(MapAgentResult(context.Background(), err), ErrNoFallback) {
 			t.Fatal("desktop boundary must permit authorized console")
 		}
 	}
-	for _, payload := range []map[string]any{
-		nil, {}, {"inputDropped": 10}, {"captureSuspended": "true"},
-		{"captureSuspended": true},
-		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "ticket-refused"}}},
-		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": false, "reason": "higher-integrity-window"}}},
-		// The agent can still capture a higher-integrity foreground window, so
-		// it stays on the premium session: only input is UIPI-blocked there.
-		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "higher-integrity-window"}}},
-	} {
-		if err := agentConsoleRequirement(payload); err != nil {
-			t.Fatalf("must not infer console from untyped/unknown telemetry: %v", err)
+
+	// A higher-integrity foreground window hands off, but only after it
+	// persists for higherIntegrityTicks readings, so a window that flashes
+	// foreground does not bounce the session.
+	h := &consoleHandoff{}
+	for i := 1; i < higherIntegrityTicks; i++ {
+		if err := h.observe(higher); err != nil {
+			t.Fatalf("reading %d must not hand off yet: %v", i, err)
+		}
+	}
+	err := h.observe(higher)
+	var cre *ConsoleRequiredError
+	if !errors.As(err, &cre) || cre.Reason != "higher-integrity-window" {
+		t.Fatalf("a stable higher-integrity window must hand off, got %v", err)
+	}
+
+	// A clear reading resets the streak, so an interrupted condition is not
+	// carried across a gap.
+	h = &consoleHandoff{}
+	h.observe(higher)
+	h.observe(clearHigher)
+	if err := h.observe(higher); err != nil {
+		t.Fatalf("a reset streak must not hand off: %v", err)
+	}
+
+	// Untyped, missing or unknown telemetry never infers a boundary.
+	h = &consoleHandoff{}
+	for i := 0; i < higherIntegrityTicks+2; i++ {
+		for _, payload := range []map[string]any{nil, {}, {"inputDropped": 10}, {"captureSuspended": "true"}, {"captureSuspended": true}, unknown, clearHigher} {
+			if err := h.observe(payload); err != nil {
+				t.Fatalf("unknown telemetry must not hand off: %v", err)
+			}
 		}
 	}
 }

@@ -59,7 +59,7 @@ var english = map[string]string{
 	"viewer.clipboardUnavailable":   "Could not read the host clipboard.",
 	"viewer.clipboardInvalid":       "Use 1–256 printable ASCII characters on a single line.",
 	"viewer.desktopBlocked":         "Input blocked: an elevated window is in the foreground",
-	"viewer.desktopBlockedHint":     "Use “Switch to console” on the toolbar to type and click, or close the elevated window.",
+	"viewer.desktopBlockedHint":     "Switching to the console so you can type and click.",
 	"viewer.secureDesktop":          "Secure desktop active (UAC) — switching to the console",
 	"toolbar.fit-desktop":           "Fit desktop",
 	"toolbar.guest-resize":          "Resize guest to window",

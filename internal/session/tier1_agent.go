@@ -27,18 +27,61 @@ var ErrAgentInputPending = errors.New("agent input injection unavailable")
 
 // ErrAgentConsoleRequired requests the existing authenticated console path
 // after admission. It never authorizes fallback around a refused/busy session.
-// It is driven only by the typed secure-desktop classification
-// (`requiresConsole` + `protected-desktop`, e.g. a UAC prompt), which the agent
-// cannot capture or inject into at all. A mere higher-integrity foreground
-// window does NOT hand off: the agent still captures it, so the premium session
-// keeps streaming and only input stays UIPI-blocked until the user opens the
-// console themselves. A transient `captureSuspended` is likewise tolerated by
-// the agent, which re-establishes capture without a handoff.
+// It is driven by the guest's typed input-desktop classification
+// (`requiresConsole` + `reason`) whenever the agent cannot inject input: the
+// secure desktop (`protected-desktop`, a UAC prompt) can be neither captured
+// nor injected into, and a higher-integrity foreground window
+// (`higher-integrity-window`) is captured but UIPI-blocks synthetic input.
+// Both yield to the console; see [consoleHandoff] for the debounce that keeps a
+// briefly-flashing elevated window from interrupting a working session.
 var ErrAgentConsoleRequired = errors.New("windows protected UI requires console")
 
-func agentConsoleRequirement(payload map[string]any) error {
-	if required, reason := agentDesktopState(payload); required && reason == "protected-desktop" {
-		return fmt.Errorf("%w: %s", ErrAgentConsoleRequired, reason)
+// ConsoleRequiredError ends the premium session so the shell hands the display
+// to the authenticated console. Reason carries the guest's typed classification
+// so the shell can label the console and arm the automatic return: the secure
+// desktop is labelled protected; a higher-integrity foreground window uses the
+// interactive label but still returns to the agent once it clears.
+type ConsoleRequiredError struct{ Reason string }
+
+func (e *ConsoleRequiredError) Error() string {
+	return fmt.Sprintf("%v: %s", ErrAgentConsoleRequired, e.Reason)
+}
+
+// Unwrap lets errors.Is(err, ErrAgentConsoleRequired) stay true for callers
+// that only care whether the session yielded, not why.
+func (e *ConsoleRequiredError) Unwrap() error { return ErrAgentConsoleRequired }
+
+// consoleHandoff decides when the premium session yields to the console from
+// the guest's input-desktop classification. The secure desktop hands off at
+// once: it cannot be captured or injected into at all. A higher-integrity
+// foreground window hands off only after it persists for a few readings, so a
+// window that merely flashes foreground — and would bounce the user to the
+// console and straight back — does not interrupt a working session.
+type consoleHandoff struct{ hiTicks int }
+
+// higherIntegrityTicks is how many consecutive higher-integrity readings are
+// needed before handing off. Telemetry is requested about once a second, so
+// this is roughly two seconds of a stable elevated foreground window.
+const higherIntegrityTicks = 2
+
+// observe feeds one telemetry payload to the policy and returns a
+// [ConsoleRequiredError] when the session must yield.
+func (h *consoleHandoff) observe(payload map[string]any) error {
+	required, reason := agentDesktopState(payload)
+	if !required {
+		h.hiTicks = 0
+		return nil
+	}
+	switch reason {
+	case "protected-desktop":
+		return &ConsoleRequiredError{Reason: reason}
+	case "higher-integrity-window":
+		h.hiTicks++
+		if h.hiTicks >= higherIntegrityTicks {
+			return &ConsoleRequiredError{Reason: reason}
+		}
+	default:
+		h.hiTicks = 0
 	}
 	return nil
 }
@@ -405,8 +448,9 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 		}()
 	}
 	var lastClipboard *string
+	handoff := &consoleHandoff{}
 	runErr := session.Run(agent.Callbacks{
-		OnTelemetryResult: agentConsoleRequirement,
+		OnTelemetryResult: handoff.observe,
 		OnTelemetry: func(payload map[string]any) {
 			input.setDesktopState(agentDesktopState(payload))
 			if logf != nil {

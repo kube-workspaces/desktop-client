@@ -1167,10 +1167,22 @@ func (w *agentLiveWindow) Step(ctx context.Context, now time.Time, events []view
 	if w.handle.opts.Logf != nil {
 		w.handle.opts.Logf("agent premium to %s failed (%v); falling back to Tier 0", w.handle.ws.Key(), res)
 	}
-	// ErrAgentConsoleRequired is the protected desktop (UAC): dial the console
-	// pre-labeled and arm the watcher to return once it clears. Any other
-	// recoverable failure keeps the console but is not a desktop condition.
-	return w.activateConsole(ctx, errors.Is(res, session.ErrAgentConsoleRequired))
+	// A desktop boundary is a handoff, not a failure: dial the console
+	// pre-labeled and arm the watcher to return once the desktop clears. The
+	// secure desktop is labeled protected; a higher-integrity foreground
+	// window uses the interactive label. Any other recoverable failure keeps
+	// the console but is not a desktop condition, so it is not armed.
+	var cre *session.ConsoleRequiredError
+	switch {
+	case errors.As(res, &cre):
+		return w.activateConsole(ctx, cre.Reason == "protected-desktop", true)
+	case errors.Is(res, session.ErrAgentConsoleRequired):
+		// Defensive: an untyped console-required result keeps the protected
+		// labeling and arms the return, matching the typed secure-desktop case.
+		return w.activateConsole(ctx, true, true)
+	default:
+		return w.activateConsole(ctx, false, false)
+	}
 }
 
 // serveSwitch drains the manual and automatic mode requests and performs the
@@ -1186,15 +1198,16 @@ func (w *agentLiveWindow) serveSwitch(ctx context.Context) error {
 		return w.activateAgent(ctx)
 	}
 	if manual {
-		return w.activateConsole(ctx, false)
+		return w.activateConsole(ctx, false, false)
 	}
 	return nil
 }
 
 // activateConsole tears down any premium window and dials the authenticated
-// RFB console in place. protected selects the UAC-labeled window; the watcher
-// is armed so the console returns to the agent once the desktop clears.
-func (w *agentLiveWindow) activateConsole(ctx context.Context, protected bool) error {
+// RFB console in place. protected selects the UAC-labeled window; arm records
+// that a console-requiring desktop was seen, so the watcher returns to the
+// agent once it clears. A manual console is neither protected nor armed.
+func (w *agentLiveWindow) activateConsole(ctx context.Context, protected, arm bool) error {
 	w.stopWatcher()
 	if w.det != nil {
 		w.det.Close()
@@ -1217,10 +1230,10 @@ func (w *agentLiveWindow) activateConsole(ctx context.Context, protected bool) e
 		return nil
 	}
 	w.fb = win
-	// A protected handoff means a console-requiring desktop was present; arm
-	// the transition so the first clear reading returns to the agent even if
-	// the UAC prompt is gone by the time the watcher attaches.
-	w.sawRequired.Store(protected)
+	// A desktop handoff means a console-requiring desktop was present; arm the
+	// transition so the first clear reading returns to the agent even if the
+	// condition is gone by the time the watcher attaches.
+	w.sawRequired.Store(arm)
 	w.startWatcher(ctx)
 	return nil
 }
@@ -1246,7 +1259,10 @@ func (w *agentLiveWindow) activateAgent(ctx context.Context) error {
 		if w.handle.opts.Logf != nil {
 			w.handle.opts.Logf("agent premium reopen for %s failed (%v); keeping the console", w.handle.ws.Key(), err)
 		}
-		return w.activateConsole(ctx, false)
+		// Not armed: an auto-return to a premium transport that keeps failing
+		// would otherwise retry every watcher reading. A re-appearing desktop
+		// condition re-arms through desktopChanged.
+		return w.activateConsole(ctx, false, false)
 	}
 	w.det = det
 	if w.handle.opts.Logf != nil {

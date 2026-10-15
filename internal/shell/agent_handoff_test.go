@@ -75,6 +75,43 @@ func TestAgentWindowConsoleRequiredIsHandoffNotFailure(t *testing.T) {
 	}
 }
 
+// A typed desktop boundary chooses the console label by reason: the secure
+// desktop is protected, a higher-integrity foreground window is the
+// interactive console. Both arm the automatic return.
+func TestAgentWindowHandoffConsoleLabelByReason(t *testing.T) {
+	cases := []struct {
+		reason    string
+		protected bool
+	}{
+		{"protected-desktop", true},
+		{"higher-integrity-window", false},
+	}
+	for _, tc := range cases {
+		var got SessionOptions
+		called := false
+		w := newAgentWindow(&fakeAgentDet{
+			closed: true,
+			result: &session.ConsoleRequiredError{Reason: tc.reason},
+		})
+		w.dialConsole = func(_ context.Context, opts SessionOptions) (*exclusiveHandle, error) {
+			got, called = opts, true
+			return nil, errors.New("no console in test")
+		}
+		if err := w.Step(context.Background(), time.Now(), nil); err != nil {
+			t.Fatalf("%s: Step returned %v", tc.reason, err)
+		}
+		if !called {
+			t.Fatalf("%s: console was not dialed", tc.reason)
+		}
+		if got.ProtectedConsole != tc.protected {
+			t.Fatalf("%s: ProtectedConsole=%v, want %v", tc.reason, got.ProtectedConsole, tc.protected)
+		}
+		if got.switchTransport == nil {
+			t.Fatalf("%s: console must expose the Agent/Console toggle", tc.reason)
+		}
+	}
+}
+
 // A premium window whose producer ends with a recoverable transport error
 // falls back to Tier 0 (the console), exactly like the blocking path. The
 // classification must reach MapAgentResult; the raw error must not surface as
