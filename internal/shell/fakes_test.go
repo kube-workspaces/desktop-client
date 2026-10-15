@@ -391,6 +391,9 @@ type fakeAPI struct {
 	createCalls []kwclient.CreateWorkspacePayload
 	createErr   error
 
+	// credsErr makes GetWorkspaceCredentials fail.
+	credsErr error
+
 	// grantPaths records the redirect each GrantBrowserSession is asked for.
 	grantPaths []string
 	grantErr   error
@@ -566,6 +569,13 @@ func (f *fakeAPI) CreateWorkspace(_ context.Context, payload kwclient.CreateWork
 	}
 	f.workspaces = append(f.workspaces, ws)
 	return &ws, nil
+}
+
+func (f *fakeAPI) GetWorkspaceCredentials(_ context.Context, _, _ string) (*kwclient.InitialCredentials, error) {
+	if f.credsErr != nil {
+		return nil, f.credsErr
+	}
+	return &kwclient.InitialCredentials{Username: "workspace", Password: "s3cret!9aA"}, nil
 }
 
 func (f *fakeAPI) WorkspaceURL(ws kwclient.Workspace, img *kwclient.Image) string {

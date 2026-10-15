@@ -56,6 +56,10 @@ type API interface {
 	// CreateWorkspace powers the shell's "+ New" control. A taken name
 	// reports an [*APIError] wrapping [kwclient.ErrAlreadyExists].
 	CreateWorkspace(ctx context.Context, payload kwclient.CreateWorkspacePayload) (*kwclient.Workspace, error)
+	// GetWorkspaceCredentials fetches a Windows workspace's initial
+	// sign-in over GET /v1/workspaces/{name}/credentials. The password
+	// is shown, never stored; a 503 means setup is still running.
+	GetWorkspaceCredentials(ctx context.Context, namespace, name string) (*kwclient.InitialCredentials, error)
 	// WorkspaceURL builds the URL a browser should open for a workspace.
 	WorkspaceURL(ws kwclient.Workspace, img *kwclient.Image) string
 	// GrantBrowserSession hands this client's session to the browser: the

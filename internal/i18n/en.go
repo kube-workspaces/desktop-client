@@ -185,6 +185,7 @@ var english = map[string]string{
 	"busy.starting":       "Starting",
 	"busy.stopping":       "Stopping",
 	"busy.creating":       "Creating",
+	"busy.signin":         "Loading sign-in",
 	"busy.started":        "Started",
 	"busy.stopped":        "Stopped",
 
@@ -211,6 +212,7 @@ var english = map[string]string{
 	"workspaces.observer":      " (observer)",
 	"workspaces.serial":        "Serial",
 	"workspaces.ssh":           "SSH",
+	"workspaces.signin":        "Sign-in",
 	"workspaces.stop":          "Stop",
 	"workspaces.info":          "Info",
 	"workspaces.close":         "Close",
@@ -230,19 +232,23 @@ var english = map[string]string{
 	"workspaces.cancelled":     "Cancelled.",
 
 	// Workspace info modal.
-	"info.namespace": "Namespace",
-	"info.type":      "Type",
-	"info.status":    "Status",
-	"info.image":     "Image",
-	"info.port":      "Port",
-	"info.transport": "Transport",
-	"info.cpu":       "CPU",
-	"info.memory":    "Memory",
-	"info.created":   "Created",
-	"info.volume":    "Volume",
-	"info.condition": "Condition %s",
-	"info.request":   "request %s",
-	"info.limit":     "limit %s",
+	"info.namespace":    "Namespace",
+	"info.type":         "Type",
+	"info.status":       "Status",
+	"info.image":        "Image",
+	"info.port":         "Port",
+	"info.transport":    "Transport",
+	"info.profile":      "Profile",
+	"info.setup":        "Windows setup",
+	"info.provisioned":  "Complete",
+	"info.provisioning": "Still running",
+	"info.cpu":          "CPU",
+	"info.memory":       "Memory",
+	"info.created":      "Created",
+	"info.volume":       "Volume",
+	"info.condition":    "Condition %s",
+	"info.request":      "request %s",
+	"info.limit":        "limit %s",
 
 	// New-workspace form modal.
 	"create.title":           "New workspace",
@@ -261,6 +267,9 @@ var english = map[string]string{
 	"create.hint":            "Tab moves between fields  ·  Enter creates  ·  Esc closes",
 	"create.invalidName":     "Name must be 1–63 lowercase letters, digits or dashes, starting and ending with one.",
 	"create.noImage":         "Pick an image for the workspace.",
+	"create.nodeWindows":     "WORKER NODE (WINDOWS)",
+	"create.nodePlaceholder": "certified-worker-01",
+	"create.nodeHint":        "Windows needs an operator-certified worker; the server refuses the create without one.",
 	"create.created":         "Created %s.",
 	"create.taken":           "A workspace named %s already exists.",
 
@@ -432,4 +441,15 @@ var english = map[string]string{
 	"ssh.needUser":        "Enter the guest username.",
 	"ssh.badKey":          "Private key could not be loaded: %v.",
 	"ssh.gone":            "That workspace is no longer available.",
+
+	// Windows guests: no serial/SSH/Linux consoles; the agent display is
+	// the surface and the initial sign-in comes from the API.
+	"windows.noSerial": "Windows guests have no serial console; open the display instead.",
+	"windows.noSSH":    "Windows guests have no SSH server; use Sign-in for the initial account.",
+
+	// Windows initial-sign-in modal.
+	"credentials.title":    "Windows sign-in",
+	"credentials.user":     "USERNAME",
+	"credentials.password": "PASSWORD",
+	"credentials.hint":     "The one-time initial password. It is shown, never saved; closing forgets it.",
 }

@@ -57,6 +57,8 @@ const (
 	intentOpenSSH
 	intentSSHSubmit
 	intentSSHClose
+	intentCredentials
+	intentCredentialsClose
 	intentOpenWeb
 	intentOpenInBrowser
 	intentStartWorkspace
@@ -148,12 +150,26 @@ func (a *App) act(ctx context.Context, in intent) {
 		}
 	case intentOpenSerial:
 		if ws, ok := a.resolve(in.workspace); ok && ws.IsVM() && ws.Running() {
+			if ws.IsWindows() {
+				a.m.Notice = i18n.Get("windows.noSerial")
+				break
+			}
 			a.m.OpenConsole(ws, "serial", "", nil)
 		}
 	case intentOpenSSH:
 		if ws, ok := a.resolve(in.workspace); ok && ws.IsVM() && ws.Running() {
+			if ws.IsWindows() {
+				a.m.Notice = i18n.Get("windows.noSSH")
+				break
+			}
 			a.openSSH(ws)
 		}
+	case intentCredentials:
+		if ws, ok := a.resolve(in.workspace); ok && ws.WindowsSignInReady() {
+			a.fetchCredentials(ctx, ws)
+		}
+	case intentCredentialsClose:
+		a.m.CloseCredentials()
 	case intentSSHSubmit:
 		a.submitSSH()
 	case intentSSHClose:
@@ -920,6 +936,12 @@ func (a *App) submitSSH() {
 		a.ctx.Focus().Set(idSSH)
 		return
 	}
+	if ws.IsWindows() {
+		a.m.Err = i18n.Get("windows.noSSH")
+		a.m.CloseSSH()
+		a.ctx.Focus().Set(idSSH)
+		return
+	}
 	user := strings.TrimSpace(a.sshUserField.Value())
 	if user == "" {
 		a.m.Err = i18n.Get("ssh.needUser")
@@ -935,6 +957,37 @@ func (a *App) submitSSH() {
 	a.m.CloseSSH()
 	a.ctx.Focus().Set(idSSH)
 	a.m.OpenConsole(ws, "ssh", user, pem)
+}
+
+// fetchCredentials loads a Windows workspace's initial sign-in in the
+// background and opens the credentials modal on success. The password is
+// shown, never stored: closing the modal forgets it. A still-provisioning
+// workspace reports its state instead of a secret.
+func (a *App) fetchCredentials(ctx context.Context, ws kwclient.Workspace) {
+	api := a.api
+	if api == nil {
+		return
+	}
+	a.m.Working(i18n.Sprintf("busy.signin", ws.Name))
+	opCtx, cancel := context.WithTimeout(ctx, listTimeout)
+	a.cancelInFlight()
+	a.cancelPending = cancel
+	a.background(func() func() {
+		creds, err := api.GetWorkspaceCredentials(opCtx, ws.Namespace, ws.Name)
+		return func() {
+			cancel()
+			a.cancelPending = nil
+			if a.m.State != StateWorkspaces {
+				return
+			}
+			a.m.Done()
+			if err != nil {
+				a.m.Err = Describe(err)
+				return
+			}
+			a.m.ShowCredentials(ws, creds)
+		}
+	})
 }
 
 // readSSHKeyFile loads a PEM private key for the SSH form. A leading ~/ is
@@ -972,6 +1025,7 @@ func (a *App) openCreate() {
 		ns = a.profile.Namespace
 	}
 	a.createNamespaceField.SetValue(ns)
+	a.createNodeField.SetValue("")
 	a.createType = kwclient.WorkspaceTypeContainer
 	a.createImageIdx = 0
 	a.createImageList.Selected = 0
@@ -1030,12 +1084,25 @@ func (a *App) submitCreate(ctx context.Context) {
 	}
 	img := images[a.createImageIdx]
 	a.m.Err = ""
-	a.createWorkspace(ctx, kwclient.CreateWorkspacePayload{
+	payload := kwclient.CreateWorkspacePayload{
 		Name:      name,
 		Namespace: namespace,
 		Type:      a.createType,
 		Container: &kwclient.WorkspaceContainerSpec{Name: name, Image: img.Image},
-	})
+	}
+	if img.IsWindowsImage() {
+		// Windows creates are type vm against a Windows catalog image
+		// and need an operator-certified worker. The node field is the
+		// only Windows extra the form collects; every other Windows
+		// option (root size, import secret, storage class) stays
+		// server-defaulted from the catalog, and an empty node fails
+		// server-side with the certified-worker error.
+		payload.Type = kwclient.WorkspaceTypeVM
+		if node := strings.TrimSpace(a.createNodeField.Value()); node != "" {
+			payload.NodeSelector = map[string]string{"kubernetes.io/hostname": node}
+		}
+	}
+	a.createWorkspace(ctx, payload)
 }
 
 // createWorkspace posts the form and refreshes the list so the new workspace
@@ -1496,6 +1563,7 @@ const (
 	idOpenInBrowser ui.FocusID = "open-in-browser"
 	idConsole       ui.FocusID = "console"
 	idObserve       ui.FocusID = "observe"
+	idCredentials   ui.FocusID = "credentials"
 	idSerial        ui.FocusID = "serial"
 	idSSH           ui.FocusID = "ssh"
 	idStop          ui.FocusID = "stop"
@@ -1514,9 +1582,14 @@ const (
 	idCreate          ui.FocusID = "create"
 	idCreateName      ui.FocusID = "create-name"
 	idCreateNamespace ui.FocusID = "create-namespace"
+	idCreateNode      ui.FocusID = "create-node"
 	idCreateImages    ui.FocusID = "create-images"
 	idCreateSubmit    ui.FocusID = "create-submit"
 	idCreateClose     ui.FocusID = "create-close"
+
+	idCredUser  ui.FocusID = "credentials-user"
+	idCredPass  ui.FocusID = "credentials-password"
+	idCredClose ui.FocusID = "credentials-close"
 
 	idUserMenu      ui.FocusID = "user-menu"
 	idProfiles      ui.FocusID = "profiles"

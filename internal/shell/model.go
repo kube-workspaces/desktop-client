@@ -147,6 +147,11 @@ type Model struct {
 	// what Connect will open.
 	SSH *kwclient.Workspace
 
+	// Credentials is the Windows initial sign-in the modal is showing, or
+	// nil when it is closed. The password lives here only while the modal
+	// is open; closing it forgets the secret.
+	Credentials *WorkspaceCredentials
+
 	// Sessions are the held transports, for the switcher: workspaces whose
 	// windows are closed but whose connections are still up.
 	Sessions []SessionEntry
@@ -353,6 +358,26 @@ func (m *Model) OpenConsole(ws kwclient.Workspace, kind, user string, keyPEM []b
 	m.OpenSSHUser = user
 	m.OpenSSHKeyPEM = keyPEM
 }
+
+// WorkspaceCredentials is one Windows workspace's initial sign-in, held
+// only while the credentials modal is open.
+type WorkspaceCredentials struct {
+	// Workspace is the snapshot the credentials were fetched for.
+	Workspace kwclient.Workspace
+	// Username and Password are the provisioned local account. The
+	// password is shown, never stored.
+	Username string
+	Password string
+}
+
+// ShowCredentials opens the credentials modal for ws with creds.
+func (m *Model) ShowCredentials(ws kwclient.Workspace, creds *kwclient.InitialCredentials) {
+	m.Credentials = &WorkspaceCredentials{Workspace: ws, Username: creds.Username, Password: creds.Password}
+	m.Err, m.Notice = "", ""
+}
+
+// CloseCredentials dismisses the credentials modal, forgetting the secret.
+func (m *Model) CloseCredentials() { m.Credentials = nil }
 
 // ShowSSH opens the SSH credential form for ws.
 func (m *Model) ShowSSH(ws kwclient.Workspace) {

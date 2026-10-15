@@ -25,6 +25,15 @@ const (
 	WorkspaceTypeScratch WorkspaceType = "scratch"
 )
 
+// Known VM guest profiles.
+const (
+	// VMProfileWindows11AMD64V1 is the managed Windows 11 amd64 profile:
+	// a digest-pinned private root with native Sysprep provisioning and
+	// the kw-agent-v1 premium transport. Workspaces carrying it are
+	// Windows guests: no SSH/serial/Linux-console options apply.
+	VMProfileWindows11AMD64V1 = "windows11-amd64-v1"
+)
+
 // ContainerState is the observed state of a workspace's main container.
 type ContainerState struct {
 	// State is "running", "waiting" or "terminated".
@@ -111,6 +120,13 @@ type Workspace struct {
 	// RemoteDesktop is the in-guest agent configuration, if the workspace
 	// image supports it.
 	RemoteDesktop *ImageRemoteDesktop `json:"remote_desktop,omitempty"`
+	// VMProfile is the resolved guest profile ID, e.g.
+	// "windows11-amd64-v1". Nil on instances whose API predates the
+	// field; callers must treat nil as "unknown, not Windows".
+	VMProfile *string `json:"vm_profile,omitempty"`
+	// Provisioned reports whether Windows native setup and bootstrap
+	// removal have completed. Only meaningful alongside [Workspace.IsWindows].
+	Provisioned *bool `json:"provisioned,omitempty"`
 }
 
 // Running reports whether the workspace can be connected to.
@@ -131,6 +147,36 @@ func (w *Workspace) IsVM() bool {
 // HasTier1 reports whether the workspace image advertises a Tier 1 transport.
 func (w *Workspace) HasTier1() bool {
 	return w != nil && w.RemoteDesktop != nil && w.RemoteDesktop.Protocol != ""
+}
+
+// IsWindows reports whether the workspace is a managed Windows guest: type
+// "vm" carrying a known Windows profile. A nil profile (older API, or a
+// non-Windows VM image) is not Windows, which keeps every gate below a
+// no-op against servers that do not serve the field.
+func (w *Workspace) IsWindows() bool {
+	return w != nil && w.Type == WorkspaceTypeVM && w.VMProfile != nil &&
+		*w.VMProfile == VMProfileWindows11AMD64V1
+}
+
+// IsProvisioned reports whether Windows native setup and bootstrap removal
+// have completed. Non-Windows workspaces are never provisioned in this
+// sense; a nil field (older API) reads as not yet provisioned.
+func (w *Workspace) IsProvisioned() bool {
+	return w.IsWindows() && w.Provisioned != nil && *w.Provisioned
+}
+
+// HasAgentTransport reports whether the workspace advertises the premium
+// agent transport. For Windows guests the agent display is the primary
+// surface and the serial/SSH consoles do not apply.
+func (w *Workspace) HasAgentTransport() bool {
+	return w != nil && w.RemoteDesktop != nil && w.RemoteDesktop.Protocol == "agent"
+}
+
+// WindowsSignInReady reports whether a Windows workspace is ready for an
+// interactive premium session: managed Windows, setup complete, and
+// connectable. Console/VNC recovery stays available outside it.
+func (w *Workspace) WindowsSignInReady() bool {
+	return w.IsProvisioned() && w.Running()
 }
 
 // Key returns "namespace/name", the canonical identifier for a workspace.
@@ -175,6 +221,16 @@ type Image struct {
 	// RemoteDesktop is the in-guest agent configuration, if the image
 	// supports it.
 	RemoteDesktop *ImageRemoteDesktop `json:"remote_desktop,omitempty"`
+	// VMProfile is the guest profile ID the image opts into, e.g.
+	// "windows11-amd64-v1". Empty for Linux/legacy images.
+	VMProfile *string `json:"vm_profile,omitempty"`
+	// PersistentRootDisk reports whether the image needs a persistent root.
+	PersistentRootDisk *bool `json:"persistent_root_disk,omitempty"`
+	// PersistentRootDiskSize is the catalog's root disk size, e.g. "80Gi".
+	PersistentRootDiskSize *string `json:"persistent_root_disk_size,omitempty"`
+	// MemoryLimit and MemoryRequest are the catalog's memory sizing.
+	MemoryLimit   *string `json:"memory_limit,omitempty"`
+	MemoryRequest *string `json:"memory_request,omitempty"`
 }
 
 // SupportsType reports whether the image can back the given workspace type.
@@ -192,6 +248,12 @@ func (i *Image) SupportsType(t WorkspaceType) bool {
 		}
 	}
 	return false
+}
+
+// IsWindowsImage reports whether the catalog entry is a managed Windows
+// image. A nil profile (older API, or a Linux image) is not Windows.
+func (i *Image) IsWindowsImage() bool {
+	return i != nil && i.VMProfile != nil && *i.VMProfile == VMProfileWindows11AMD64V1
 }
 
 // ListWorkspaces fetches GET /v1/workspaces?namespace=<ns>.
@@ -292,6 +354,22 @@ type WorkspaceContainerSpec struct {
 	MemoryLimit *string `json:"memory_limit,omitempty"`
 }
 
+// WorkspaceVMOptions carries the Windows-only create options
+// (POST /v1/workspaces vm_options). Every field is optional and left for
+// the server to default from the image catalog when absent; pointers with
+// omitempty keep an unset field out of the body entirely. Sending
+// vm_options for a non-Windows catalog image is rejected server-side.
+type WorkspaceVMOptions struct {
+	// ImportSecretName is the private-registry pull secret for the root.
+	ImportSecretName *string `json:"import_secret_name,omitempty"`
+	// ImportCertConfigMapName carries the registry CA trust.
+	ImportCertConfigMapName *string `json:"import_cert_config_map_name,omitempty"`
+	// StorageClassName selects the root/state storage class.
+	StorageClassName *string `json:"storage_class_name,omitempty"`
+	// RootDiskSize overrides the catalog root disk size, e.g. "80Gi".
+	RootDiskSize *string `json:"root_disk_size,omitempty"`
+}
+
 // CreateWorkspacePayload is the POST /v1/workspaces body.
 //
 // Name and Container are required. Namespace defaults server-side when empty,
@@ -306,6 +384,12 @@ type CreateWorkspacePayload struct {
 	Type WorkspaceType `json:"type,omitempty"`
 	// Container is the main container spec.
 	Container *WorkspaceContainerSpec `json:"container,omitempty"`
+	// VMOptions carries Windows-only options; nil for everything else.
+	VMOptions *WorkspaceVMOptions `json:"vm_options,omitempty"`
+	// NodeSelector pins scheduling labels. Windows creates require the
+	// operator-certified worker (kubernetes.io/hostname); omit for
+	// container/scratch workspaces.
+	NodeSelector map[string]string `json:"node_selector,omitempty"`
 }
 
 // createSentinel maps the create endpoint's statuses: 409 is a taken name
@@ -332,6 +416,33 @@ func (c *Client) CreateWorkspace(ctx context.Context, payload CreateWorkspacePay
 		path:     "/v1/workspaces",
 		body:     payload,
 		sentinel: createSentinel,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// InitialCredentials is a Windows workspace's native initial sign-in:
+// GET /v1/workspaces/{name}/credentials. The server answers
+// Cache-Control: no-store and restricts the endpoint to editors/admins with
+// namespace access; callers must not persist the password. A 503 means the
+// workspace is not provisioned yet (or was reset), a 403 that the caller
+// may not see credentials, a 404 that the workspace or its secret is gone.
+type InitialCredentials struct {
+	// Username is the provisioned local account, e.g. "workspace".
+	Username string `json:"username"`
+	// Password is the one-time initial password. Never stored.
+	Password string `json:"password"`
+}
+
+// GetWorkspaceCredentials fetches GET
+// /v1/workspaces/{name}/credentials?namespace=<ns>.
+func (c *Client) GetWorkspaceCredentials(ctx context.Context, namespace, name string) (*InitialCredentials, error) {
+	var out InitialCredentials
+	if err := c.doJSON(ctx, requestSpec{
+		method: http.MethodGet,
+		path:   "/v1/workspaces/" + url.PathEscape(name) + "/credentials",
+		query:  namespaceQuery(namespace),
 	}, &out); err != nil {
 		return nil, err
 	}

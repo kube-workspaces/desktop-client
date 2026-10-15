@@ -847,14 +847,25 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	if observe {
 		observeBtn = ui.Button{ID: idObserve, Text: i18n.Get("workspaces.observe"), Variant: ui.ButtonSecondary}
 	}
-	// A running VM's out-of-band consoles sit beside its display: the
-	// serial console over /exec and the SSH console over /ssh, each an
-	// independent single-seat slot with its own status/takeover consent.
+	// A running non-Windows VM's out-of-band consoles sit beside its
+	// display: the serial console over /exec and the SSH console over
+	// /ssh, each an independent single-seat slot with its own
+	// status/takeover consent. Windows guests have neither (no SSH
+	// server, no useful serial text); their sign-in travels the
+	// credentials modal instead.
 	serialBtn := ui.Button{}
 	sshBtn := ui.Button{}
-	if observe {
+	if observe && has && !ws.IsWindows() {
 		serialBtn = ui.Button{ID: idSerial, Text: i18n.Get("workspaces.serial"), Variant: ui.ButtonSecondary}
 		sshBtn = ui.Button{ID: idSSH, Text: i18n.Get("workspaces.ssh"), Variant: ui.ButtonSecondary}
+	}
+	consoles := observe && has && !ws.IsWindows()
+	// A provisioned Windows workspace offers its one-time initial
+	// sign-in: the username and password the guest was Sysprepped with.
+	signinBtn := ui.Button{}
+	signin := has && ws.WindowsSignInReady()
+	if signin {
+		signinBtn = ui.Button{ID: idCredentials, Text: i18n.Get("workspaces.signin"), Variant: ui.ButtonSecondary}
 	}
 	// Stop is the quiet inverse of the primary action, offered for exactly the
 	// workspaces that have one to stop: the running ones.
@@ -868,14 +879,20 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	}
 
 	// Order: the open buttons first (primary open, then open-in-browser,
-	// then the shared-display observer and the VM consoles), then stop,
-	// with Console second to last and Info last.
+	// then the shared-display observer, the Windows sign-in and the VM
+	// consoles), then stop, with Console second to last and Info last.
 	widths := []int{max(180, open.Width(ctx))}
 	if browser {
 		widths = append(widths, browserBtn.Width(ctx))
 	}
 	if observe {
-		widths = append(widths, observeBtn.Width(ctx), serialBtn.Width(ctx), sshBtn.Width(ctx))
+		widths = append(widths, observeBtn.Width(ctx))
+	}
+	if signin {
+		widths = append(widths, signinBtn.Width(ctx))
+	}
+	if consoles {
+		widths = append(widths, serialBtn.Width(ctx), sshBtn.Width(ctx))
 	}
 	if showStop {
 		widths = append(widths, stop.Width(ctx))
@@ -902,6 +919,14 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 			*out = intent{kind: intentOpenObserver, workspace: ws}
 		}
 		ci++
+	}
+	if signin {
+		if signinBtn.Layout(ctx, cols[ci]) {
+			*out = intent{kind: intentCredentials, workspace: ws}
+		}
+		ci++
+	}
+	if consoles {
 		if serialBtn.Layout(ctx, cols[ci]) {
 			*out = intent{kind: intentOpenSerial, workspace: ws}
 		}
@@ -1110,6 +1135,14 @@ func (a *App) drawCreateModal(bounds ui.Rect) intent {
 		labelH, th.ControlHeight, // type row
 		labelH, listH, // image list
 	}
+	// Windows images need an operator-certified worker node; the field is
+	// only drawn for them so Linux/container creates stay untouched.
+	windowsImage := false
+	if a.createImageIdx >= 0 && a.createImageIdx < len(images) && images[a.createImageIdx].IsWindowsImage() {
+		windowsImage = true
+		nodeHintH := 2 * ui.LineHeight(th.Small, th.Font)
+		rows = append(rows, labelH, fieldH, nodeHintH) // worker node + hint
+	}
 	if a.m.Err != "" {
 		rows = append(rows, ui.LineHeight(th.Body, th.Font)) // error line
 	}
@@ -1217,6 +1250,16 @@ func (a *App) drawCreateModal(bounds ui.Rect) intent {
 		}
 	}
 
+	if windowsImage {
+		ui.Label(ctx, body.Next(labelH), i18n.Get("create.nodeWindows"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+		if a.createNodeField.Layout(ctx, body.Next(fieldH)) && !a.m.Busy {
+			out = intent{kind: intentCreateSubmit}
+		}
+		ui.Label(ctx, body.Next(2*ui.LineHeight(th.Small, th.Font)), i18n.Get("create.nodeHint"), ui.LabelStyle{
+			Color: th.TextMuted, Scale: th.Small, Wrap: true,
+		})
+	}
+
 	if a.m.Err != "" {
 		ui.Label(ctx, body.Next(rows[len(rows)-2]), a.m.Err, ui.LabelStyle{Color: th.Danger, Wrap: true})
 	}
@@ -1317,6 +1360,83 @@ func (a *App) drawSSHModal(bounds ui.Rect) intent {
 	}
 	if cancel.Layout(ctx, cancelRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentSSHClose}
+	}
+	return out
+}
+
+// drawCredentialsModal shows one Windows workspace's initial sign-in over a
+// dimmed, frozen copy of the list. The username and the one-time password
+// are selectable for copying; closing the modal forgets the password.
+// Enter and Esc both close — there is nothing to submit.
+func (a *App) drawCredentialsModal(bounds ui.Rect) intent {
+	th := a.opts.Theme
+	ctx := a.ctx
+	var out intent
+
+	ctx.Canvas.Fill(bounds, modalScrim)
+
+	creds := a.m.Credentials
+	name := ""
+	if creds != nil {
+		name = creds.Workspace.Key()
+	}
+
+	fieldH := ui.LineHeight(th.Body, th.Font) + th.Gap
+	labelH := ui.LineHeight(th.Small, th.Font)
+	rows := []int{
+		ui.TextHeight(th.Title, th.Font), // title
+		ui.LineHeight(th.Body, th.Font),  // subtitle (which workspace)
+		labelH, fieldH,                   // username
+		labelH, fieldH, // password
+		ui.LineHeight(th.Small, th.Font), // hint
+		th.ControlHeight,                 // close
+	}
+	content := 2 * th.Pad
+	for i, h := range rows {
+		if i > 0 {
+			content += th.Gap
+		}
+		content += h
+	}
+
+	width := min(bounds.W-2*th.Pad, infoCardWidth)
+	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
+	if card.W <= 0 || card.H <= 0 {
+		return out
+	}
+	card.Y = max(card.Y, th.Gap)
+
+	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
+	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
+
+	ui.Label(ctx, body.Next(rows[0]), i18n.Get("credentials.title"), ui.LabelStyle{Scale: th.Title})
+	ui.Label(ctx, body.Next(rows[1]), name, ui.LabelStyle{Color: th.TextMuted})
+
+	user, pass := "", ""
+	if creds != nil {
+		user, pass = creds.Username, creds.Password
+	}
+	ui.Label(ctx, body.Next(labelH), i18n.Get("credentials.user"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	a.credUserSel.Layout(ctx, body.Next(fieldH), user, ui.SelectableStyle{Scale: th.Body})
+	ui.Label(ctx, body.Next(labelH), i18n.Get("credentials.password"), ui.LabelStyle{Color: th.TextMuted, Scale: th.Small})
+	a.credPassSel.Layout(ctx, body.Next(fieldH), pass, ui.SelectableStyle{Scale: th.Body})
+
+	ui.Label(ctx, body.Next(ui.LineHeight(th.Small, th.Font)), i18n.Get("credentials.hint"), ui.LabelStyle{
+		Color: th.TextMuted, Scale: th.Small, Wrap: true,
+	})
+
+	foot := body.Next(rows[len(rows)-1])
+	copyPass := ui.Button{ID: idCredPass, Text: i18n.Get("common.copy"), Variant: ui.ButtonSecondary}
+	closeBtn := ui.Button{ID: idCredClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
+	closeRect, rest := ui.CutRight(foot, closeBtn.Width(ctx))
+	rest = ui.CutRightGap(rest, th.Gap)
+	copyRect, _ := ui.CutRight(rest, copyPass.Width(ctx))
+	if copyPass.Layout(ctx, copyRect) {
+		ctx.Copy(pass)
+	}
+	if closeBtn.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentCredentialsClose}
 	}
 	return out
 }
@@ -1521,6 +1641,16 @@ func workspaceInfoRows(ws *kwclient.Workspace) [][2]string {
 	add(i18n.Get("info.type"), string(ws.Type))
 	add(i18n.Get("info.status"), StatusText(*ws))
 	add(i18n.Get("info.image"), ws.Image)
+	if ws.VMProfile != nil {
+		add(i18n.Get("info.profile"), *ws.VMProfile)
+	}
+	if ws.IsWindows() {
+		provisioned := i18n.Get("info.provisioning")
+		if ws.IsProvisioned() {
+			provisioned = i18n.Get("info.provisioned")
+		}
+		add(i18n.Get("info.setup"), provisioned)
+	}
 	if ws.Port != nil {
 		add(i18n.Get("info.port"), fmt.Sprintf("%d", *ws.Port))
 	}

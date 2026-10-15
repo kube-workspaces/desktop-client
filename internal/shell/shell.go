@@ -273,15 +273,27 @@ type App struct {
 	// images ride a second list widget.
 	createNameField      ui.TextInput
 	createNamespaceField ui.TextInput
-	createType           kwclient.WorkspaceType
-	createImageIdx       int
-	createImageList      ui.List
+	// createNodeField pins the Windows worker hostname (the server
+	// requires an operator-certified kubernetes.io/hostname for Windows
+	// creates). It is only drawn when the picked image is a Windows
+	// image; empty means "let the server decide", which it will refuse
+	// for Windows — the hint next to the field says so.
+	createNodeField ui.TextInput
+	createType      kwclient.WorkspaceType
+	createImageIdx  int
+	createImageList ui.List
 
 	// The SSH credential form's widget state: the guest username and the
 	// private key file. The key bytes themselves are read at submit and
 	// carried in the model for the opening window only — never written.
 	sshUserField    ui.TextInput
 	sshKeyFileField ui.TextInput
+
+	// The Windows credentials modal's selectable values: the provisioned
+	// username and the one-time password, each copyable with its own
+	// selection. They mirror Model.Credentials while it is open.
+	credUserSel ui.SelectableText
+	credPassSel ui.SelectableText
 
 	// The system tray: its backend, the click queue from the tray's
 	// thread, the signature of the last menu built (to skip rebuilds),
@@ -368,6 +380,8 @@ func New(opts Options) (*App, error) {
 	a.createNameField.Placeholder = i18n.Get("create.namePlaceholder")
 	a.createNamespaceField.ID = idCreateNamespace
 	a.createNamespaceField.Placeholder = "workspaces"
+	a.createNodeField.ID = idCreateNode
+	a.createNodeField.Placeholder = i18n.Get("create.nodePlaceholder")
 	a.sshUserField.ID = idSSHUser
 	a.sshUserField.Placeholder = i18n.Get("ssh.userPlaceholder")
 	a.sshKeyFileField.ID = idSSHKeyFile
@@ -380,6 +394,8 @@ func New(opts Options) (*App, error) {
 	a.urlSel.ID = idURLSel
 	a.verSel.ID = idVerSel
 	a.statusSel.ID = idStatusSel
+	a.credUserSel.ID = idCredUser
+	a.credPassSel.ID = idCredPass
 
 	a.ctx.Clipboard = a.be.Clipboard
 	a.ctx.SetClipboard = a.be.SetClipboard
@@ -735,7 +751,7 @@ func (a *App) draw(ctx context.Context) error {
 	// A modal keeps the previous frame as a frozen, dimmed backdrop. The
 	// background is deliberately not cleared and the list is not drawn, so the
 	// buffer still holds the frame the user last saw and the modal dims it.
-	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList || a.m.SSH != nil)
+	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList || a.m.SSH != nil || a.m.Credentials != nil)
 	if a.m.State != StateWorkspaces || modal || a.m.CloseConfirm {
 		a.userMenuOpen = false
 		a.userMenuScroll = 0
@@ -760,6 +776,8 @@ func (a *App) draw(ctx context.Context) error {
 			intent = a.drawCreateModal(a.canvas.Bounds())
 		case a.m.SSH != nil:
 			intent = a.drawSSHModal(a.canvas.Bounds())
+		case a.m.Credentials != nil:
+			intent = a.drawCredentialsModal(a.canvas.Bounds())
 		case modal:
 			intent = a.drawWorkspaceInfoModal(a.canvas.Bounds())
 		default:

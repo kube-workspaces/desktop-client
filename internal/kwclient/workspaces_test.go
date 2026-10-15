@@ -637,4 +637,222 @@ func TestCreateWorkspace(t *testing.T) {
 			t.Fatalf("err = %v, want ErrInvalidRequest", err)
 		}
 	})
+
+	t.Run("windows options round trip", func(t *testing.T) {
+		var gotBody map[string]any
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Errorf("decode request body: %v", err)
+			}
+			writeJSON(t, w, http.StatusCreated, `{"name":"win","namespace":"demo","type":"vm","ready_replicas":0,"stopped":false}`)
+		})
+		hostname, root := "talkie", "80Gi"
+		_, err := c.CreateWorkspace(context.Background(), CreateWorkspacePayload{
+			Name:         "win",
+			Namespace:    "demo",
+			Type:         WorkspaceTypeVM,
+			Container:    &WorkspaceContainerSpec{Name: "win", Image: "registry/private/windows11@sha256:0"},
+			VMOptions:    &WorkspaceVMOptions{RootDiskSize: &root},
+			NodeSelector: map[string]string{"kubernetes.io/hostname": hostname},
+		})
+		if err != nil {
+			t.Fatalf("CreateWorkspace: %v", err)
+		}
+		opts, _ := gotBody["vm_options"].(map[string]any)
+		if opts["root_disk_size"] != root {
+			t.Errorf("vm_options = %v, want root_disk_size %q", opts, root)
+		}
+		sel, _ := gotBody["node_selector"].(map[string]any)
+		if sel["kubernetes.io/hostname"] != hostname {
+			t.Errorf("node_selector = %v, want hostname %q", sel, hostname)
+		}
+	})
+
+	t.Run("windows create omits unset options", func(t *testing.T) {
+		var gotBody map[string]any
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Errorf("decode request body: %v", err)
+			}
+			writeJSON(t, w, http.StatusCreated, `{"name":"dev","namespace":"demo","type":"container","ready_replicas":0,"stopped":false}`)
+		})
+		_, err := c.CreateWorkspace(context.Background(), CreateWorkspacePayload{
+			Name:      "dev",
+			Namespace: "demo",
+			Type:      WorkspaceTypeContainer,
+			Container: &WorkspaceContainerSpec{Name: "dev", Image: "example.com/img:latest"},
+		})
+		if err != nil {
+			t.Fatalf("CreateWorkspace: %v", err)
+		}
+		if _, ok := gotBody["vm_options"]; ok {
+			t.Errorf("vm_options sent for a container; server must apply catalog defaults")
+		}
+		if _, ok := gotBody["node_selector"]; ok {
+			t.Errorf("node_selector sent for a container; scheduling stays server-side")
+		}
+	})
+}
+
+func TestWindowsMetadataDecodes(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `[
+		  {"name":"win","namespace":"demo","type":"vm","image":"registry/private/windows11@sha256:0",
+		   "ready_replicas":1,"stopped":false,"vm_profile":"windows11-amd64-v1","provisioned":true,
+		   "remote_desktop":{"protocol":"agent","port":44787,"path":"/"}},
+		  {"name":"legacy","namespace":"demo","type":"vm","image":"quay.io/vm:old",
+		   "ready_replicas":1,"stopped":false}
+		]`)
+	})
+	list, err := c.ListWorkspaces(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("len(list) = %d, want 2", len(list))
+	}
+	win := list[0]
+	if !win.IsWindows() {
+		t.Errorf("win.IsWindows() = false, want true")
+	}
+	if !win.IsProvisioned() {
+		t.Errorf("win.IsProvisioned() = false, want true")
+	}
+	if !win.HasAgentTransport() {
+		t.Errorf("win.HasAgentTransport() = false, want true")
+	}
+	if !win.WindowsSignInReady() {
+		t.Errorf("win.WindowsSignInReady() = false, want true (provisioned + running)")
+	}
+	legacy := list[1]
+	if legacy.IsWindows() {
+		t.Errorf("legacy.IsWindows() = true, want false (nil profile keeps old servers unchanged)")
+	}
+	if legacy.IsProvisioned() {
+		t.Errorf("legacy.IsProvisioned() = true, want false")
+	}
+	if legacy.WindowsSignInReady() {
+		t.Errorf("legacy.WindowsSignInReady() = true, want false")
+	}
+}
+
+func TestWindowsGatesNeedProfileAndProvisioning(t *testing.T) {
+	profile := VMProfileWindows11AMD64V1
+	other := "other-profile"
+	yes := true
+	cases := []struct {
+		name        string
+		ws          Workspace
+		windows     bool
+		provisioned bool
+		signInReady bool
+	}{
+		{"nil workspace", Workspace{}, false, false, false},
+		{"container with profile", Workspace{Type: WorkspaceTypeContainer, VMProfile: &profile}, false, false, false},
+		{"windows vm unprovisioned", Workspace{Type: WorkspaceTypeVM, VMProfile: &profile}, true, false, false},
+		{"windows vm provisioned stopped", Workspace{
+			Type: WorkspaceTypeVM, VMProfile: &profile, Provisioned: &yes,
+			Stopped: true, ReadyReplicas: 1,
+		}, true, true, false},
+		{"windows vm provisioning", Workspace{
+			Type: WorkspaceTypeVM, VMProfile: &profile,
+			Stopped: false, ReadyReplicas: 1,
+		}, true, false, false},
+		{"windows vm ready", Workspace{
+			Type: WorkspaceTypeVM, VMProfile: &profile, Provisioned: &yes,
+			Stopped: false, ReadyReplicas: 1,
+		}, true, true, true},
+		{"unknown profile", Workspace{Type: WorkspaceTypeVM, VMProfile: &other, Provisioned: &yes}, false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := tc.ws
+			if got := ws.IsWindows(); got != tc.windows {
+				t.Errorf("IsWindows() = %v, want %v", got, tc.windows)
+			}
+			if got := ws.IsProvisioned(); got != tc.provisioned {
+				t.Errorf("IsProvisioned() = %v, want %v", got, tc.provisioned)
+			}
+			if got := ws.WindowsSignInReady(); got != tc.signInReady {
+				t.Errorf("WindowsSignInReady() = %v, want %v", got, tc.signInReady)
+			}
+		})
+	}
+}
+
+func TestImageWindowsFields(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, `[
+		  {"name":"winimg","display_name":"Windows","image":"registry/private/w@sha256:0",
+		   "default_path":"/","default_port":3389,"default_user":"","workspace_types":["vm"],
+		   "vm_profile":"windows11-amd64-v1","persistent_root_disk":true,
+		   "persistent_root_disk_size":"80Gi","memory_limit":"8Gi","memory_request":"8Gi",
+		   "remote_desktop":{"protocol":"agent","port":44787,"path":"/"}},
+		  {"name":"plain","display_name":"Plain","image":"example.com/img:latest",
+		   "default_path":"/","default_user":"","workspace_types":["container"]}
+		]`)
+	})
+	images, err := c.ListImages(context.Background())
+	if err != nil {
+		t.Fatalf("ListImages: %v", err)
+	}
+	if len(images) != 2 {
+		t.Fatalf("len(images) = %d, want 2", len(images))
+	}
+	win := images[0]
+	if !win.IsWindowsImage() {
+		t.Errorf("IsWindowsImage() = false, want true")
+	}
+	if win.PersistentRootDisk == nil || !*win.PersistentRootDisk {
+		t.Errorf("PersistentRootDisk = %v, want true", win.PersistentRootDisk)
+	}
+	if win.PersistentRootDiskSize == nil || *win.PersistentRootDiskSize != "80Gi" {
+		t.Errorf("PersistentRootDiskSize = %v, want 80Gi", win.PersistentRootDiskSize)
+	}
+	if images[1].IsWindowsImage() {
+		t.Errorf("plain IsWindowsImage() = true, want false")
+	}
+}
+
+func TestGetWorkspaceCredentials(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		var gotPath, gotQuery string
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+			writeJSON(t, w, http.StatusOK, `{"username":"workspace","password":"s3cret!9aA"}`)
+		})
+		creds, err := c.GetWorkspaceCredentials(context.Background(), "demo", "win")
+		if err != nil {
+			t.Fatalf("GetWorkspaceCredentials: %v", err)
+		}
+		if gotPath != "/v1/workspaces/win/credentials" {
+			t.Errorf("path = %q, want /v1/workspaces/win/credentials", gotPath)
+		}
+		if gotQuery != "namespace=demo" {
+			t.Errorf("query = %q, want namespace=demo", gotQuery)
+		}
+		if creds.Username != "workspace" || creds.Password != "s3cret!9aA" {
+			t.Errorf("credentials = %+v, want the served pair", creds)
+		}
+	})
+
+	t.Run("not provisioned", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(t, w, http.StatusServiceUnavailable, `"windows setup is still running"`)
+		})
+		_, err := c.GetWorkspaceCredentials(context.Background(), "demo", "win")
+		if err == nil {
+			t.Fatalf("err = nil, want the 503")
+		}
+	})
+
+	t.Run("forbidden", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(t, w, http.StatusForbidden, `"credentials are not visible to this account"`)
+		})
+		_, err := c.GetWorkspaceCredentials(context.Background(), "demo", "win")
+		if err == nil {
+			t.Fatalf("err = nil, want the 403")
+		}
+	})
 }

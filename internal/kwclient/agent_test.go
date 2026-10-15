@@ -140,14 +140,22 @@ func TestAgentHelperPurposeIsExplicit(t *testing.T) {
 	for _, purpose := range []string{"clipboard", "telemetry"} {
 		t.Run(purpose, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Query().Get("purpose") != "v1."+purpose || r.Header.Get("Authorization") != "Bearer test-token" { t.Errorf("incorrect helper request: %s %v", r.URL, r.Header) }
+				if r.URL.Query().Get("purpose") != "v1."+purpose || r.Header.Get("Authorization") != "Bearer test-token" {
+					t.Errorf("incorrect helper request: %s %v", r.URL, r.Header)
+				}
 				w.WriteHeader(http.StatusConflict)
 			}))
 			defer srv.Close()
 			c, err := New(srv.URL, WithToken("test-token"))
-			if err != nil { t.Fatal(err) }
-			if _, _, err := c.DialAgentWSPurpose(context.Background(), "alice", "desktop-0", purpose); !errors.Is(err, ErrAgentBusy) { t.Fatal(err) }
-			if _, _, err := c.DialAgentWSPurpose(context.Background(), "alice", "desktop-0", "observer"); err == nil { t.Fatal("unknown purpose accepted") }
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := c.DialAgentWSPurpose(context.Background(), "alice", "desktop-0", purpose); !errors.Is(err, ErrAgentBusy) {
+				t.Fatal(err)
+			}
+			if _, _, err := c.DialAgentWSPurpose(context.Background(), "alice", "desktop-0", "observer"); err == nil {
+				t.Fatal("unknown purpose accepted")
+			}
 		})
 	}
 }

@@ -134,7 +134,17 @@ Implemented and working:
 - **Workspace create.** The footer **New** button opens a form (name,
   namespace, container/VM/scratch type, catalog image filtered by type) over
   `POST /v1/workspaces` (`kwclient.CreateWorkspace`; taken names report
-  `ErrAlreadyExists`).
+  `ErrAlreadyExists`). Picking a Windows image pins the create to type `vm`
+  and reveals the certified-worker node field (`vm_options` stay
+  catalog-defaulted); container/scratch creates send neither node pinning
+  nor `vm_options`.
+- **Windows guests.** A managed Windows workspace (`vm_profile
+  windows11-amd64-v1`) hides the serial/SSH consoles — Windows has neither
+  useful endpoint — and a provisioned one offers **Sign-in**: the API's
+  initial username/password over `GET /v1/workspaces/{name}/credentials`,
+  shown in a modal and forgotten on close. The info modal names the guest
+  profile and the setup state. Older APIs without the profile fields keep
+  the previous behaviour.
 - **In-shell profile switching.** **Profiles** in the header avatar menu and the
   server screen list every configured profile; switching rebuilds the client
   for the new instance, restores its token and verifies it, with no relaunch.
