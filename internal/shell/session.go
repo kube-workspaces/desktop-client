@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -312,6 +313,12 @@ type SessionOptions struct {
 	// AgentClipboard adds guest Unicode clipboard to the normal RFB console.
 	// Explicit opt-in; requires serve --clipboard in the logged-in guest.
 	AgentClipboard bool
+	// switchTransport, when set, is the in-session Agent/Console toggle the
+	// Windows VM windows expose. It is owned by the agent live window (the
+	// only place mode state lives), which sets it before dialing either the
+	// premium window or the console fallback, so both draw the same control.
+	// Nil disables the toggle (non-agent transports, observer windows).
+	switchTransport func()
 	// Logf, if set, receives session diagnostics.
 	Logf func(format string, args ...any)
 }
@@ -580,12 +587,16 @@ func (h *exclusiveHandle) newView(ctx context.Context) *viewer.Viewer {
 	title := h.ws.Key()
 	if h.opts.ProtectedConsole {
 		title += " — " + i18n.Get("session.protectedWindowsConsole")
+	} else if h.opts.switchTransport != nil {
+		title += " — " + i18n.Get("session.windowsConsole")
 	}
 	cfg := viewer.Config{
-		AdaptiveQuality: !h.opts.FixedQuality,
-		Title:           title,
-		ScaleQuality:    h.opts.ScaleQuality,
-		Logf:            h.opts.Logf,
+		AdaptiveQuality:    !h.opts.FixedQuality,
+		Title:              title,
+		ScaleQuality:       h.opts.ScaleQuality,
+		CanSwitchTransport: h.opts.switchTransport != nil,
+		OnSwitchTransport:  h.opts.switchTransport,
+		Logf:               h.opts.Logf,
 	}
 	view := viewer.New(chrome.New(viewer.NewSDLBackend()), cfg)
 	// Match the CLI consent flow, including after Tier 1 falls back.
@@ -1000,21 +1011,26 @@ func (h *agentHandle) Open(ctx context.Context) (liveWindow, error) {
 	h.mu.Lock()
 	fb := h.fallback
 	h.mu.Unlock()
+	// A held console fallback resumes as a console-mode agent window so the
+	// in-session toggle survives a window close/reopen; it is not a bare
+	// Tier 0 window.
 	if fb != nil {
-		return fb.openWindow(ctx)
+		win, err := fb.openWindow(ctx)
+		if err != nil {
+			return nil, err
+		}
+		w := &agentLiveWindow{handle: h, fb: win}
+		w.startWatcher(ctx)
+		return w, nil
 	}
 
-	live, err := session.OpenAgentPremium(ctx, h.client, h.ws.Namespace, h.ws.Name, "",
-		chrome.New(viewer.NewSDLBackend()), session.Tier1Config{
-			Title:        h.ws.Key(),
-			Audio:        true,
-			ScaleQuality: h.opts.ScaleQuality,
-			Logf:         h.opts.Logf,
-		})
+	w := &agentLiveWindow{handle: h}
+	det, err := w.openAgentWindow(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &agentLiveWindow{handle: h, det: live.Detached}, nil
+	w.det = det
+	return w, nil
 }
 
 // agentDetached is the subset of [viewer.Tier1Detached] the premium window
@@ -1032,10 +1048,28 @@ type agentDetached interface {
 	ReleaseInput()
 }
 
+// switchPollInterval bounds how long the pump may sleep while a desktop
+// watcher is running, so an auto-return is noticed promptly on a static
+// console. The watcher also runs on its own goroutine; this only caps the
+// detection latency.
+const switchPollInterval = 250 * time.Millisecond
+
+// consoleWatchRetry is the backoff between watcher dials, covering the brief
+// window where the agent seat is still being released after the handoff.
+const consoleWatchRetry = 2 * time.Second
+
 // agentLiveWindow is the live window of an [agentHandle]: a premium window
 // that swaps itself for a Tier 0 window on a recoverable failure. A refused
 // ticket, a rejected credential or a busy seat surfaces instead of being
 // routed around.
+//
+// The swap is bidirectional. The toolbar's in-session toggle and the desktop
+// watcher set the want-bits below; [Step] applies them before stepping the
+// window, so a Windows VM can move between the premium agent view and the
+// interactive console in place: UAC (protected-desktop) hands off
+// automatically and returns once the secure desktop, and any higher-integrity
+// foreground window, clear; a user-triggered console stays until the user
+// toggles back unless a desktop condition later clears.
 type agentLiveWindow struct {
 	handle *agentHandle
 	det    agentDetached
@@ -1044,10 +1078,67 @@ type agentLiveWindow struct {
 	closed      bool
 	result      error
 	disposition connection.CloseDisposition
+
+	// wantToggle is the manual toolbar request (agent<->console); wantAgent is
+	// the watcher's auto-return request (console->agent only). Both are set
+	// from other goroutines and drained in [Step].
+	wantToggle atomic.Bool
+	wantAgent  atomic.Bool
+
+	// watching guards the watcher's lifetime and, while set, bounds
+	// [IdleWait] so the pump notices an auto-return promptly. sawRequired
+	// records that a console-requiring desktop was seen this console visit,
+	// so auto-return fires only on a required->clear transition and never
+	// yanks a user who chose the console with no condition present.
+	watching    atomic.Bool
+	sawRequired atomic.Bool
+	watchCancel context.CancelFunc
+	watchWG     sync.WaitGroup
+
+	// dialAgent and dialConsole are test seams for the mode switch; nil means
+	// the production dialers. They let the transition matrix be unit-tested
+	// without a live transport or window.
+	dialAgent   func(ctx context.Context) (agentDetached, error)
+	dialConsole func(ctx context.Context, opts SessionOptions) (*exclusiveHandle, error)
+}
+
+// openAgentWindow dials a fresh premium window wired to this state machine:
+// the toolbar toggle sets wantToggle, which [Step] applies.
+func (w *agentLiveWindow) openAgentWindow(ctx context.Context) (agentDetached, error) {
+	if w.dialAgent != nil {
+		return w.dialAgent(ctx)
+	}
+	live, err := session.OpenAgentPremium(ctx, w.handle.client, w.handle.ws.Namespace, w.handle.ws.Name, "",
+		chrome.New(viewer.NewSDLBackend()), session.Tier1Config{
+			Title:              w.handle.ws.Key(),
+			Audio:              true,
+			ScaleQuality:       w.handle.opts.ScaleQuality,
+			CanSwitchTransport: true,
+			OnSwitchTransport:  func() { w.wantToggle.Store(true) },
+			Logf:               w.handle.opts.Logf,
+		})
+	if err != nil {
+		return nil, err
+	}
+	return live.Detached, nil
+}
+
+// dialConsoleSession dials the authenticated RFB console, via the test seam
+// when set.
+func (w *agentLiveWindow) dialConsoleSession(ctx context.Context, opts SessionOptions) (*exclusiveHandle, error) {
+	if w.dialConsole != nil {
+		return w.dialConsole(ctx, opts)
+	}
+	return dialExclusiveSession(ctx, w.handle.client, w.handle.ws, opts)
 }
 
 // Step implements [liveWindow].
 func (w *agentLiveWindow) Step(ctx context.Context, now time.Time, events []viewer.Event) error {
+	// A pending Agent/Console switch is applied before stepping so the new
+	// transport receives this frame's input.
+	if err := w.serveSwitch(ctx); err != nil {
+		return err
+	}
 	if w.fb != nil {
 		return w.fb.Step(ctx, now, events)
 	}
@@ -1076,9 +1167,43 @@ func (w *agentLiveWindow) Step(ctx context.Context, now time.Time, events []view
 	if w.handle.opts.Logf != nil {
 		w.handle.opts.Logf("agent premium to %s failed (%v); falling back to Tier 0", w.handle.ws.Key(), res)
 	}
+	// ErrAgentConsoleRequired is the protected desktop (UAC): dial the console
+	// pre-labeled and arm the watcher to return once it clears. Any other
+	// recoverable failure keeps the console but is not a desktop condition.
+	return w.activateConsole(ctx, errors.Is(res, session.ErrAgentConsoleRequired))
+}
+
+// serveSwitch drains the manual and automatic mode requests and performs the
+// swap. A manual request moves to the other transport; the automatic request
+// only ever returns to the agent.
+func (w *agentLiveWindow) serveSwitch(ctx context.Context) error {
+	manual := w.wantToggle.Swap(false)
+	auto := w.wantAgent.Swap(false)
+	if !manual && !auto {
+		return nil
+	}
+	if w.fb != nil {
+		return w.activateAgent(ctx)
+	}
+	if manual {
+		return w.activateConsole(ctx, false)
+	}
+	return nil
+}
+
+// activateConsole tears down any premium window and dials the authenticated
+// RFB console in place. protected selects the UAC-labeled window; the watcher
+// is armed so the console returns to the agent once the desktop clears.
+func (w *agentLiveWindow) activateConsole(ctx context.Context, protected bool) error {
+	w.stopWatcher()
+	if w.det != nil {
+		w.det.Close()
+		w.det = nil
+	}
 	opts := w.handle.opts
-	opts.ProtectedConsole = errors.Is(res, session.ErrAgentConsoleRequired)
-	fb, derr := dialExclusiveSession(ctx, w.handle.client, w.handle.ws, opts)
+	opts.ProtectedConsole = protected
+	opts.switchTransport = func() { w.wantToggle.Store(true) }
+	fb, derr := w.dialConsoleSession(ctx, opts)
 	if derr != nil {
 		w.closed, w.result = true, derr
 		return nil
@@ -1092,18 +1217,124 @@ func (w *agentLiveWindow) Step(ctx context.Context, now time.Time, events []view
 		return nil
 	}
 	w.fb = win
+	// A protected handoff means a console-requiring desktop was present; arm
+	// the transition so the first clear reading returns to the agent even if
+	// the UAC prompt is gone by the time the watcher attaches.
+	w.sawRequired.Store(protected)
+	w.startWatcher(ctx)
 	return nil
+}
+
+// activateAgent tears down the console and reopens the premium window. If the
+// premium transport cannot be re-established (e.g. the desktop is still
+// protected), it falls back to the console rather than failing the session.
+func (w *agentLiveWindow) activateAgent(ctx context.Context) error {
+	w.stopWatcher()
+	w.handle.mu.Lock()
+	fb := w.handle.fallback
+	w.handle.fallback = nil
+	w.handle.mu.Unlock()
+	if w.fb != nil {
+		w.fb.Close()
+		w.fb = nil
+	}
+	if fb != nil {
+		fb.Close()
+	}
+	det, err := w.openAgentWindow(ctx)
+	if err != nil {
+		if w.handle.opts.Logf != nil {
+			w.handle.opts.Logf("agent premium reopen for %s failed (%v); keeping the console", w.handle.ws.Key(), err)
+		}
+		return w.activateConsole(ctx, false)
+	}
+	w.det = det
+	if w.handle.opts.Logf != nil {
+		w.handle.opts.Logf("agent premium restored for %s", w.handle.ws.Key())
+	}
+	return nil
+}
+
+// startWatcher polls the guest desktop in the background while the console is
+// shown. It is idempotent; a watcher already running is left in place.
+func (w *agentLiveWindow) startWatcher(ctx context.Context) {
+	if w.handle.client == nil {
+		return
+	}
+	if w.watching.Swap(true) {
+		return
+	}
+	wctx, cancel := context.WithCancel(context.Background())
+	w.watchCancel = cancel
+	w.watchWG.Add(1)
+	go func() {
+		defer w.watchWG.Done()
+		w.watchLoop(wctx)
+	}()
+}
+
+// stopWatcher cancels and joins the watcher. It is a no-op when none runs.
+func (w *agentLiveWindow) stopWatcher() {
+	if !w.watching.Swap(false) {
+		return
+	}
+	if w.watchCancel != nil {
+		w.watchCancel()
+		w.watchCancel = nil
+	}
+	w.watchWG.Wait()
+}
+
+// watchLoop keeps a desktop watcher session alive until cancelled, retrying
+// across the brief agent-seat release window after a handoff.
+func (w *agentLiveWindow) watchLoop(ctx context.Context) {
+	onState := w.desktopChanged
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := session.WatchAgentDesktop(ctx, w.handle.client, w.handle.ws.Namespace, w.handle.ws.Name, onState); err != nil && w.handle.opts.Logf != nil && ctx.Err() == nil {
+			w.handle.opts.Logf("agent desktop watcher for %s ended (%v); retrying", w.handle.ws.Key(), err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(consoleWatchRetry):
+		}
+	}
+}
+
+// desktopChanged records a desktop classification the watcher read while the
+// console is shown. A console-requiring desktop arms the return; only a later
+// clear reading fires it, so a user who chose the console with no condition
+// present is never yanked back to the agent.
+func (w *agentLiveWindow) desktopChanged(required bool, _ string) {
+	if required {
+		w.sawRequired.Store(true)
+		return
+	}
+	if w.sawRequired.Load() {
+		w.wantAgent.Store(true)
+	}
 }
 
 // IdleWait implements [liveWindow].
 func (w *agentLiveWindow) IdleWait(now time.Time) time.Duration {
-	if w.fb != nil {
-		return w.fb.IdleWait(now)
-	}
-	if w.det == nil {
+	var d time.Duration
+	switch {
+	case w.fb != nil:
+		d = w.fb.IdleWait(now)
+	case w.det != nil:
+		d = w.det.IdleWait(now)
+	default:
 		return 0
 	}
-	return w.det.IdleWait(now)
+	// While a watcher runs, cap the wait so an auto-return is applied within
+	// switchPollInterval even on a static console.
+	if w.watching.Load() && d > switchPollInterval {
+		d = switchPollInterval
+	}
+	return d
 }
 
 // Closed implements [liveWindow].
@@ -1131,6 +1362,7 @@ func (w *agentLiveWindow) CloseDisposition() connection.CloseDisposition {
 
 // Close implements [liveWindow].
 func (w *agentLiveWindow) Close() {
+	w.stopWatcher()
 	if w.det != nil {
 		w.det.Close()
 		w.det = nil

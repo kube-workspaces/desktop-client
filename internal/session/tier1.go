@@ -98,6 +98,11 @@ type Tier1Config struct {
 	// RecoveryBudget bounds two reconnect attempts after a live drop. Zero
 	// means ten seconds. A negative value disables reconnect (fixed sessions).
 	RecoveryBudget time.Duration
+	// CanSwitchTransport advertises the in-session Agent/Console toggle on a
+	// Windows VM premium window; OnSwitchTransport is invoked when the user
+	// presses it. The toggle only appears when both are set.
+	CanSwitchTransport bool
+	OnSwitchTransport  func()
 	// Logf, if set, receives session diagnostics.
 	Logf func(format string, args ...any)
 }

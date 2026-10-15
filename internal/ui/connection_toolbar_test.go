@@ -58,6 +58,45 @@ func TestConnectionToolbarDoesNotDispatchDisabledTool(t *testing.T) {
 	}
 }
 
+func TestConnectionToolbarDispatchesTransportToggle(t *testing.T) {
+	h := newHarness(1280, 720)
+	bar := &ConnectionToolbar{}
+	s := connection.Snapshot{Workspace: "team/win", Surface: connection.Desktop, State: connection.Connected,
+		Transport: "Agent", Capabilities: connection.Capabilities{TransportToggle: true}}
+	var requested connection.Action
+	body := func(ctx *Context) { _, requested = bar.Layout(ctx, Rect{W: 1280, H: 720}, s) }
+	h.frame(nil, body)
+	h.ctx.Focus().Set("toolbar-toggle-transport")
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if requested != connection.ToggleTransport {
+		t.Fatalf("premium window did not dispatch the transport toggle: %q", requested)
+	}
+
+	// The console window drives the same action back to the agent.
+	s.Transport = "RFB"
+	requested = ""
+	h.frame(nil, body)
+	h.ctx.Focus().Set("toolbar-toggle-transport")
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if requested != connection.ToggleTransport {
+		t.Fatalf("console window did not dispatch the transport toggle: %q", requested)
+	}
+}
+
+func TestConnectionToolbarHidesTransportToggleWithoutCapability(t *testing.T) {
+	h := newHarness(1280, 720)
+	bar := &ConnectionToolbar{}
+	s := connection.Snapshot{Surface: connection.Desktop, State: connection.Connected, Transport: "RFB"}
+	var requested connection.Action
+	body := func(ctx *Context) { _, requested = bar.Layout(ctx, Rect{W: 1280, H: 720}, s) }
+	h.frame(nil, body)
+	h.ctx.Focus().Set("toolbar-toggle-transport")
+	h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+	if requested != "" {
+		t.Fatalf("a non-agent console exposed the toggle: %q", requested)
+	}
+}
+
 func TestConnectionToolbarEscapeAndDisconnectDuringRecovery(t *testing.T) {
 	h := newHarness(500, 720)
 	bar := &ConnectionToolbar{Menu: "connection"}

@@ -36,6 +36,13 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	if s.Availability(connection.Sessions).Visible {
 		wideItems = append(wideItems, toolbarItem{action: connection.Sessions})
 	}
+	// The Agent/Console switch is a first-class control, not a buried tool:
+	// it is what a user reaches for when an elevated or UAC window blocks
+	// input, so it sits on the bar itself.
+	toggleTransport := s.Availability(connection.ToggleTransport).Visible
+	if toggleTransport {
+		wideItems = append(wideItems, toolbarItem{action: connection.ToggleTransport})
+	}
 	wideItems = append(wideItems, toolbarItem{action: connection.Fullscreen}, toolbarItem{menu: "tools"}, toolbarItem{menu: "connection"})
 	if s.Availability(connection.Debug).Visible {
 		wideItems = append(wideItems, toolbarItem{menu: "debug"})
@@ -87,7 +94,11 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	}
 	items := wideItems
 	if narrow {
-		items = []toolbarItem{{action: connection.Fullscreen}, {menu: "tools"}, {action: connection.Disconnect}}
+		items = []toolbarItem{{action: connection.Fullscreen}}
+		if toggleTransport {
+			items = append(items, toolbarItem{action: connection.ToggleTransport})
+		}
+		items = append(items, toolbarItem{menu: "tools"}, toolbarItem{action: connection.Disconnect})
 		if s.Availability(connection.Debug).Visible {
 			items = append(items, toolbarItem{menu: "debug"})
 		}
@@ -213,6 +224,12 @@ func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scal
 	case connection.Audio:
 		if s.Muted {
 			label = i18n.Get("toolbar.unmute")
+		}
+	case connection.ToggleTransport:
+		if s.Transport == "Agent" {
+			label = i18n.Get("toolbar.to-console")
+		} else {
+			label = i18n.Get("toolbar.to-agent")
 		}
 	}
 	if item.menu == "pin" && t.Pinned {

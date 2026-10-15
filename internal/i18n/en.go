@@ -62,6 +62,9 @@ var english = map[string]string{
 	"toolbar.guest-resize":          "Resize guest to window",
 	"toolbar.audio":                 "Mute audio",
 	"toolbar.unmute":                "Unmute audio",
+	"toolbar.toggle-transport":      "Connection mode",
+	"toolbar.to-console":            "Switch to console",
+	"toolbar.to-agent":              "Switch to agent",
 	"toolbar.shared-control":        "Request control",
 	"toolbar.releaseControl":        "Release control",
 	"toolbar.paste":                 "Paste",
@@ -410,6 +413,7 @@ var english = map[string]string{
 	// here rather than in Describe's fallback capitaliser.
 	"session.takeoverDeclined":        "server declined the takeover",
 	"session.protectedWindowsConsole": "Console — Windows protected UI",
+	"session.windowsConsole":          "Console — Windows interactive",
 	"session.sharedDisabled":          "shared display sessions are not enabled on this platform",
 
 	// SSH console credential form.

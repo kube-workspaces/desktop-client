@@ -37,14 +37,26 @@ var ErrAgentInputPending = errors.New("agent input injection unavailable")
 var ErrAgentConsoleRequired = errors.New("windows protected UI requires console")
 
 func agentConsoleRequirement(payload map[string]any) error {
-	session, _ := payload["session"].(map[string]any)
-	desktop, _ := session["desktop"].(map[string]any)
-	required, _ := desktop["requiresConsole"].(bool)
-	reason, _ := desktop["reason"].(string)
-	if required && reason == "protected-desktop" {
+	if required, reason := agentDesktopState(payload); required && reason == "protected-desktop" {
 		return fmt.Errorf("%w: %s", ErrAgentConsoleRequired, reason)
 	}
 	return nil
+}
+
+// agentDesktopState reads the typed desktop classification out of a telemetry
+// payload: whether the guest's input desktop needs the console, and why. It
+// mirrors what the guest emits at `session.desktop`:
+//
+//	{"requiresConsole":bool,"reason":"protected-desktop"|"higher-integrity-window",...}
+//
+// A missing or malformed block reads as "no requirement" so a telemetry
+// hiccup never forces a handoff.
+func agentDesktopState(payload map[string]any) (required bool, reason string) {
+	session, _ := payload["session"].(map[string]any)
+	desktop, _ := session["desktop"].(map[string]any)
+	required, _ = desktop["requiresConsole"].(bool)
+	reason, _ = desktop["reason"].(string)
+	return required, reason
 }
 
 // agentInput forwards window events to the held agent session. Resize is
@@ -245,16 +257,18 @@ func OpenAgentPremium(ctx context.Context, client *kwclient.Client, ns, name, pa
 	}
 	input := &agentInput{}
 	det, err := viewer.OpenTier1Detached(ctx, be, input, agentProduce(client, ns, name, participant, input, cfg.Audio, cfg.logf), viewer.Tier1Config{
-		Title:        cfg.Title,
-		Width:        cfg.Width,
-		Height:       cfg.Height,
-		Fullscreen:   cfg.Fullscreen,
-		ScaleQuality: cfg.ScaleQuality,
-		NoVSync:      cfg.NoVSync,
-		NoResize:     cfg.NoResize,
-		Transport:    "Agent",
-		Audio:        cfg.Audio,
-		Logf:         cfg.logf,
+		Title:              cfg.Title,
+		Width:              cfg.Width,
+		Height:             cfg.Height,
+		Fullscreen:         cfg.Fullscreen,
+		ScaleQuality:       cfg.ScaleQuality,
+		NoVSync:            cfg.NoVSync,
+		NoResize:           cfg.NoResize,
+		Transport:          "Agent",
+		Audio:              cfg.Audio,
+		CanSwitchTransport: cfg.CanSwitchTransport,
+		OnSwitchTransport:  cfg.OnSwitchTransport,
+		Logf:               cfg.logf,
 	})
 	if err != nil {
 		return nil, err
@@ -459,6 +473,81 @@ func renewAgent(ctx context.Context, client *kwclient.Client, ns, name string, t
 			}
 		}
 	}
+}
+
+// WatchAgentDesktop polls a workspace's guest desktop classification while a
+// different transport (the authenticated RFB console) owns the display, so a
+// premium window can return automatically once the secure desktop and any
+// higher-integrity foreground window clear. It holds a control agent session
+// -- the console rides a separate transport, so the agent seat is free -- and
+// drops decoded media; it never touches the display or input. onChange fires
+// only when the classification changes, including the first reading. It
+// returns when ctx ends or the agent connection closes.
+func WatchAgentDesktop(ctx context.Context, client *kwclient.Client, ns, name string, onChange func(required bool, reason string)) error {
+	ticket, err := client.AgentAttach(ctx, ns, name, "")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = client.AgentRelease(releaseCtx, ns, name, ticket.ID)
+	}()
+	conn, _, err := client.DialAgentWS(ctx, ns, name)
+	if err != nil {
+		return err
+	}
+	session, err := agent.Attach(wsio.New(conn), ticket.Ticket)
+	if err != nil {
+		_ = conn.Close()
+		return err
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = session.Close()
+		case <-done:
+		}
+	}()
+	renewCtx, stopRenew := context.WithCancel(context.Background())
+	defer stopRenew()
+	go renewAgent(renewCtx, client, ns, name, ticket, session)
+	if session.TelemetryAvailable() {
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if session.TelemetryAvailable() {
+						if err := session.RequestTelemetry(); err != nil {
+							_ = session.Close()
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
+	var lastRequired bool
+	var lastReason string
+	first := true
+	defer session.Close() //nolint:errcheck // release on every return path
+	return session.Run(agent.Callbacks{
+		OnTelemetry: func(payload map[string]any) {
+			required, reason := agentDesktopState(payload)
+			if first || required != lastRequired || reason != lastReason {
+				first, lastRequired, lastReason = false, required, reason
+				if onChange != nil {
+					onChange(required, reason)
+				}
+			}
+		},
+	}, time.Time{})
 }
 
 // Resize asks the guest to adopt the window size; the ACK pairs by id.

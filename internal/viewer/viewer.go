@@ -160,6 +160,13 @@ type Config struct {
 	// session's role changes.
 	ReadOnly bool
 
+	// CanSwitchTransport advertises the in-session Console/Agent toggle on a
+	// Windows VM console window. OnSwitchTransport is invoked when the user
+	// presses it; the owner performs the swap asynchronously. The toggle only
+	// appears when both are set.
+	CanSwitchTransport bool
+	OnSwitchTransport  func()
+
 	// Logf, if set, receives diagnostic messages.
 	Logf func(format string, args ...any)
 }

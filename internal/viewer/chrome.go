@@ -100,7 +100,7 @@ func (v *Viewer) connectionSnapshot() connection.Snapshot {
 		Tier: "Tier 0", Proto: "RFB over WebSocket",
 		Clipboard: !v.clipboardDisabled, ResizeGuest: !v.resizeDisabled, Muted: v.muted,
 		FPS: v.lastFPS, Kbps: v.lastKbps, HasMetrics: true,
-		Capabilities: connection.Capabilities{SpecialKeys: true, TypeClipboard: true, ClipboardSync: true, SharedControl: v.controlAction() != nil}}
+		Capabilities: connection.Capabilities{SpecialKeys: true, TypeClipboard: true, ClipboardSync: true, SharedControl: v.controlAction() != nil, TransportToggle: v.cfg.CanSwitchTransport}}
 	if v.conn == nil && s.State == connection.Connected {
 		s.State = connection.Connecting
 	}
@@ -143,6 +143,10 @@ func (v *Viewer) connectionAction(a connection.Action) error {
 	case connection.SharedControl:
 		if h := v.controlAction(); h != nil {
 			go h()
+		}
+	case connection.ToggleTransport:
+		if v.cfg.OnSwitchTransport != nil {
+			v.cfg.OnSwitchTransport()
 		}
 	case connection.ClipboardSync:
 		v.clipboardDisabled = !v.clipboardDisabled
@@ -263,7 +267,7 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 		Tier: "Tier 1", Proto: proto,
 		Clipboard: !w.clipboardDisabled && w.opts.ClipboardInterval >= 0, ResizeGuest: !w.opts.NoResize, Muted: w.muted.Load(),
 		AudioLive:    w.audioLive(),
-		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: guestResize, Audio: w.audioPresent()}}
+		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: guestResize, Audio: w.audioPresent(), TransportToggle: w.opts.CanSwitchTransport}}
 	if transport == "Agent" {
 		if dbg, ok := w.inp.(agentDebugger); ok && dbg != nil {
 			if counters, live := dbg.DebugCounters(); live {
@@ -294,6 +298,10 @@ func (w *tier1Window) connectionAction(a connection.Action) error {
 		w.requestDisconnect()
 	case connection.SpecialKeys:
 		return w.sendChord(keysym.ChordCtrlAltDel)
+	case connection.ToggleTransport:
+		if w.opts.OnSwitchTransport != nil {
+			w.opts.OnSwitchTransport()
+		}
 	case connection.ClipboardSync:
 		w.clipboardDisabled = !w.clipboardDisabled
 		w.hostClip, w.clipHint = "", true

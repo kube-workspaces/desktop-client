@@ -117,3 +117,117 @@ func TestAgentWindowLiveStepErrorSurfaces(t *testing.T) {
 		t.Fatalf("live window must not be marked closed")
 	}
 }
+
+// fakeConsole stands in for the Tier 0 live window the console fallback opens.
+type fakeConsole struct {
+	closed bool
+}
+
+func (f *fakeConsole) Step(context.Context, time.Time, []viewer.Event) error { return nil }
+func (f *fakeConsole) IdleWait(time.Time) time.Duration                      { return 0 }
+func (f *fakeConsole) Closed() bool                                          { return f.closed }
+func (f *fakeConsole) Result() error                                         { return nil }
+func (f *fakeConsole) CloseDisposition() connection.CloseDisposition         { return connection.Park }
+func (f *fakeConsole) Close()                                                { f.closed = true }
+func (f *fakeConsole) WindowBackend() viewer.Backend                         { return nil }
+func (f *fakeConsole) Raise() error                                          { return nil }
+func (f *fakeConsole) ReleaseInput()                                         {}
+
+// The toolbar toggle must move a premium window to the console, and back.
+// Regression guard for the follow-up where only a launch-time flag could
+// switch transports.
+func TestAgentWindowToggleSwitchesTransport(t *testing.T) {
+	var toConsole, toAgent int
+	w := newAgentWindow(&fakeAgentDet{})
+	w.handle.opts.Logf = nil
+	w.dialConsole = func(context.Context, SessionOptions) (*exclusiveHandle, error) {
+		toConsole++
+		return nil, errors.New("no console in test")
+	}
+	w.dialAgent = func(context.Context) (agentDetached, error) {
+		toAgent++
+		return &fakeAgentDet{}, nil
+	}
+
+	// Agent -> console: a manual toggle while the premium window is live.
+	w.wantToggle.Store(true)
+	if err := w.Step(context.Background(), time.Now(), nil); err != nil {
+		t.Fatalf("agent->console Step returned %v", err)
+	}
+	if toConsole != 1 || toAgent != 0 {
+		t.Fatalf("agent->console dials: console=%d agent=%d, want 1/0", toConsole, toAgent)
+	}
+	if !w.closed {
+		t.Fatalf("a console dial that fails must end the session window")
+	}
+
+	// Console -> agent: resume a console-mode window and toggle back.
+	w2 := &agentLiveWindow{handle: &agentHandle{
+		ws:   kwclient.Workspace{Namespace: "ns", Name: "vm"},
+		opts: SessionOptions{Logf: nil},
+	}}
+	w2.fb = &fakeConsole{}
+	w2.dialConsole = func(context.Context, SessionOptions) (*exclusiveHandle, error) {
+		toConsole++
+		return nil, errors.New("no console in test")
+	}
+	w2.dialAgent = func(context.Context) (agentDetached, error) {
+		toAgent++
+		return &fakeAgentDet{}, nil
+	}
+	w2.wantToggle.Store(true)
+	if err := w2.Step(context.Background(), time.Now(), nil); err != nil {
+		t.Fatalf("console->agent Step returned %v", err)
+	}
+	if toAgent != 1 || toConsole != 1 {
+		t.Fatalf("console->agent dials: console=%d agent=%d, want 1/1", toConsole, toAgent)
+	}
+	if w2.fb != nil || w2.det == nil {
+		t.Fatalf("console->agent must leave the agent window live: fb=%v det=%v", w2.fb, w2.det)
+	}
+}
+
+// The watcher returns to the agent only after a required->clear transition, so
+// a user who opens the console with no condition present is not yanked back,
+// while a UAC handoff returns when the secure desktop clears.
+func TestAgentWindowAutoReturnOnlyAfterConditionClears(t *testing.T) {
+	// A manual console visit with no condition: clear reading never arms it.
+	w := &agentLiveWindow{}
+	w.desktopChanged(false, "")
+	if w.wantAgent.Load() {
+		t.Fatal("a clear desktop must not auto-return a user-chosen console")
+	}
+
+	// A condition seen, then cleared: auto-return fires.
+	w.desktopChanged(true, "protected-desktop")
+	if w.wantAgent.Load() {
+		t.Fatal("a required desktop must not return yet")
+	}
+	w.desktopChanged(false, "")
+	if !w.wantAgent.Load() {
+		t.Fatal("clearing a seen condition must request the agent")
+	}
+}
+
+// An auto-return request on a console window drives the same switch as the
+// toolbar toggle.
+func TestAgentWindowAutoReturnSwitchesToAgent(t *testing.T) {
+	w := &agentLiveWindow{handle: &agentHandle{
+		ws:   kwclient.Workspace{Namespace: "ns", Name: "vm"},
+		opts: SessionOptions{},
+	}}
+	w.fb = &fakeConsole{}
+	w.dialAgent = func(context.Context) (agentDetached, error) {
+		return &fakeAgentDet{}, nil
+	}
+	w.wantAgent.Store(true)
+	if err := w.Step(context.Background(), time.Now(), nil); err != nil {
+		t.Fatalf("auto-return Step returned %v", err)
+	}
+	if w.det == nil {
+		t.Fatal("auto-return must open the premium window")
+	}
+	if w.fb != nil {
+		t.Fatal("auto-return must tear down the console window")
+	}
+}

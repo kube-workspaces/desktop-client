@@ -60,6 +60,30 @@ func TestProtectedDesktopConsoleRequirementIsTypedAndPostAdmission(t *testing.T)
 	}
 }
 
+func TestAgentDesktopStateParsesTypedClassification(t *testing.T) {
+	cases := []struct {
+		name     string
+		payload  map[string]any
+		required bool
+		reason   string
+	}{
+		{"protected", map[string]any{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}}, true, "protected-desktop"},
+		{"higher-integrity", map[string]any{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "higher-integrity-window"}}}, true, "higher-integrity-window"},
+		{"clear", map[string]any{"session": map[string]any{"desktop": map[string]any{"requiresConsole": false, "reason": ""}}}, false, ""},
+		{"missing", map[string]any{}, false, ""},
+		{"nil", nil, false, ""},
+		{"wrong-shape", map[string]any{"session": "nope"}, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			required, reason := agentDesktopState(tc.payload)
+			if required != tc.required || reason != tc.reason {
+				t.Fatalf("got (%v, %q), want (%v, %q)", required, reason, tc.required, tc.reason)
+			}
+		})
+	}
+}
+
 func TestAgentFrameCropsPaddingWithoutApplyingStaleResizeDimensions(t *testing.T) {
 	frame := image.NewRGBA(image.Rect(0, 0, 1920, 1088))
 	cropped := cropAgentFrame(frame, 1920, 1080)

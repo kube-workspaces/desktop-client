@@ -72,6 +72,13 @@ type Tier1Config struct {
 	// never a capability claim.
 	Transport string
 
+	// CanSwitchTransport advertises the in-session Agent/Console toggle for a
+	// Windows VM premium session. OnSwitchTransport is invoked (on the render
+	// goroutine) when the user presses it; the owner performs the swap
+	// asynchronously. The toggle only appears when both are set.
+	CanSwitchTransport bool
+	OnSwitchTransport  func()
+
 	// Logf, if set, receives diagnostic messages.
 	Logf func(format string, args ...any)
 }

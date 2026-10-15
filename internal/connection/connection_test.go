@@ -62,6 +62,37 @@ func TestToolsFollowSurfaceAndLiveCapabilities(t *testing.T) {
 	}
 }
 
+func TestTransportToggleNeedsDesktopLiveAgentCapability(t *testing.T) {
+	s := Snapshot{Surface: Desktop, State: Connected, Capabilities: Capabilities{TransportToggle: true}}
+	if v := s.Availability(ToggleTransport); !v.Visible || !v.Enabled {
+		t.Fatalf("live agent desktop toggle should be enabled: %+v", v)
+	}
+	// It is a live action: connecting/reconnecting disables but keeps it.
+	s.State = Reconnecting
+	if v := s.Availability(ToggleTransport); !v.Visible || v.Enabled {
+		t.Fatalf("toggle while reconnecting should be disabled: %+v", v)
+	}
+	// No capability (non-agent transport) hides it entirely.
+	s.State = Connected
+	s.Capabilities.TransportToggle = false
+	if s.Availability(ToggleTransport).Visible {
+		t.Fatal("toggle must not appear without the agent-capable transport")
+	}
+	// Consoles have their own surfaces; it is a desktop control.
+	s.Capabilities.TransportToggle = true
+	s.Surface = Serial
+	if s.Availability(ToggleTransport).Visible {
+		t.Fatal("toggle must not appear on a serial console")
+	}
+	// It is not a buried tool; it draws on the bar, not in Tools().
+	s.Surface = Desktop
+	for _, a := range s.Tools() {
+		if a == ToggleTransport {
+			t.Fatal("toggle must not be duplicated in the tools menu")
+		}
+	}
+}
+
 func TestDebugCardIsDesktopChromeAvailableWhileBroken(t *testing.T) {
 	// The debug readout must be there while connecting, reconnecting and
 	// failed too — that is when connection detail is most useful — and for

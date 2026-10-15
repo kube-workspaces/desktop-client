@@ -46,6 +46,11 @@ type Capabilities struct {
 	Shell, SpecialKeys, ClipboardSync, GuestResize, Audio, SharedControl bool
 	Paste, CopySelection                                                 bool
 	TypeClipboard                                                        bool
+	// TransportToggle enables the in-session Agent/Console switch a Windows
+	// VM session offers beside the premium agent transport: the toolbar button
+	// swaps between the agent (view, lower latency) and the authenticated RFB
+	// console (interactive on the secure desktop and elevated windows).
+	TransportToggle bool
 }
 
 // Snapshot is an immutable copy of the state the toolbar draws this frame.
@@ -92,11 +97,14 @@ const (
 	GuestResize   Action = "guest-resize"
 	Audio         Action = "audio"
 	SharedControl Action = "shared-control"
-	Paste         Action = "paste"
-	TypeClipboard Action = "type-clipboard"
-	CopySelection Action = "copy-selection"
-	HostInput     Action = "host-input"
-	Debug         Action = "debug"
+	// ToggleTransport swaps a Windows VM session between the premium agent
+	// transport and the authenticated RFB console in place.
+	ToggleTransport Action = "toggle-transport"
+	Paste           Action = "paste"
+	TypeClipboard   Action = "type-clipboard"
+	CopySelection   Action = "copy-selection"
+	HostInput       Action = "host-input"
+	Debug           Action = "debug"
 )
 
 // Availability distinguishes an unsupported action from a temporarily
@@ -137,6 +145,8 @@ func (s Snapshot) Availability(a Action) Availability {
 		supported, needsLive = desktop && c.Audio, true
 	case SharedControl:
 		supported, needsLive = desktop && c.SharedControl && (s.Role == Observer || s.Role == Controller), true
+	case ToggleTransport:
+		supported, needsLive = desktop && c.TransportToggle, true
 	case Paste:
 		supported, needsLive, mutatesGuest = terminal && c.Paste, true, true
 	case TypeClipboard:
