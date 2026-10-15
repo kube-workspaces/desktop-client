@@ -45,6 +45,40 @@ func SDLBackendFor(be Backend) (*SDLBackend, bool) {
 	return b, ok
 }
 
+// WindowGeometryFor reports a backend's native window-geometry capability,
+// unwrapping the connection toolbar when necessary.
+func WindowGeometryFor(be Backend) (WindowGeometry, bool) {
+	if g, ok := be.(WindowGeometry); ok {
+		return g, true
+	}
+	if wrapped, ok := be.(interface{ NativeBackend() Backend }); ok {
+		if g, ok := wrapped.NativeBackend().(WindowGeometry); ok {
+			return g, true
+		}
+	}
+	return nil, false
+}
+
+// WindowRectangle reads a normal (non-fullscreen) native window rectangle.
+func WindowRectangle(be Backend) (WindowRect, bool) {
+	g, ok := WindowGeometryFor(be)
+	if !ok {
+		return WindowRect{}, false
+	}
+	x, y, positioned := g.Position()
+	w, h, sized := g.WindowSize()
+	return WindowRect{X: x, Y: y, Width: w, Height: h}, positioned && sized && w > 0 && h > 0
+}
+
+func geometryRestored(be Backend) bool {
+	g, ok := WindowGeometryFor(be)
+	if !ok {
+		return false
+	}
+	r, ok := g.(interface{ GeometryRestored() bool })
+	return ok && r.GeometryRestored()
+}
+
 // ChromePresenter keeps toolbar pixels separate from status/consent overlays
 // and draws all layers in a single presentation.
 type ChromePresenter interface {

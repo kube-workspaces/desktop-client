@@ -408,7 +408,7 @@ func OpenTier1Detached(ctx context.Context, be Backend, inp Tier1Input,
 		return nil, fmt.Errorf("viewer: open tier-1 window: %w", err)
 	}
 	w.winW, w.winH = be.Size()
-	w.pinned = opts.Width > 0 && opts.Height > 0
+	w.pinned = (opts.Width > 0 && opts.Height > 0) || geometryRestored(be)
 	// Windows open focused; the first focus event corrects this if not.
 	w.focused = true
 
@@ -852,6 +852,11 @@ func nearestMode(modes [][2]int, maxW, maxH int, sixteenNine bool) (int, int, bo
 // mode change. A guest that NACKs the mode keeps streaming at its current
 // size, letterboxed — the same outcome as a failed manual resize today.
 func (w *tier1Window) fitInitialGuest(now time.Time, fbW, fbH int) {
+	if geometryRestored(w.be) && !w.initialResizeDone {
+		w.initialResizeDone = true
+		w.scheduleGuestResize(now, w.winW, w.winH)
+		return
+	}
 	if w.opts.Transport != "Agent" || w.pinned || w.opts.NoResize || w.initialResizeDone || w.resizePending {
 		w.fitGuest(fbW, fbH)
 		return

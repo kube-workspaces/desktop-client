@@ -136,6 +136,8 @@ type Options struct {
 
 	// Width and Height are the initial window size.
 	Width, Height int
+	X, Y          int
+	Positioned    bool
 
 	// UIScale overrides the interface scale: 0 means automatic (the
 	// display's scale factor, or the stored setting below it). A positive
@@ -243,8 +245,12 @@ type App struct {
 
 	// geomW/geomH cache the shell window's last seen size for the geometry
 	// persistence below; geomSavedAt rate-limits the writes.
-	geomW, geomH int
-	geomSavedAt  time.Time
+	geomW, geomH         int
+	geomX, geomY         int
+	geomPositioned       bool
+	windowGeometry       map[string]config.WindowRect
+	displayGeometryDirty bool
+	geomSavedAt          time.Time
 
 	// The widgets whose state has to survive a frame.
 	serverField   ui.TextInput
@@ -393,6 +399,9 @@ func (a *App) Run(ctx context.Context) error {
 		Title:        a.opts.Title,
 		Width:        a.opts.Width,
 		Height:       a.opts.Height,
+		X:            a.opts.X,
+		Y:            a.opts.Y,
+		Positioned:   a.opts.Positioned,
 		ScaleQuality: viewer.ScaleNearest,
 		VSync:        true,
 	}); err != nil {
@@ -529,6 +538,7 @@ func (a *App) Start(ctx context.Context) {
 	// Seed the geometry cache from the launch size so an appearance save
 	// before the first resize keeps the size the window actually opened at.
 	a.geomW, a.geomH = a.opts.Width, a.opts.Height
+	a.geomX, a.geomY, a.geomPositioned = a.opts.X, a.opts.Y, a.opts.Positioned
 
 	// Appearance first: unlike the profile it needs no instance, so even a
 	// first-run user sees their own chosen look on the very first screen.
@@ -539,6 +549,7 @@ func (a *App) Start(ctx context.Context) {
 		a.applySettings(DefaultSettings())
 	} else {
 		a.applySettings(settingsFromConfig(s))
+		a.windowGeometry = s.WindowGeometry
 		a.updates.auto = s.AutoUpdateEnabled()
 		a.updates.last = s.LastUpdateCheck
 	}

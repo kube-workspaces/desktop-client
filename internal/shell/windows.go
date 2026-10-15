@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/chrome"
+	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
@@ -199,6 +200,7 @@ func (a *App) stepLive(ctx context.Context, now time.Time) error {
 			continue
 		}
 		evs := e.pending
+		a.rememberDisplayGeometry(e)
 		if b, ok := e.window.WindowBackend().(*chrome.Backend); ok {
 			b.SetTheme(a.settings.Style, a.resolveMode())
 			b.SetNavigation(func(action connection.Action) {
@@ -233,7 +235,9 @@ func (a *App) parkLive(ctx context.Context, key string) {
 	delete(a.live, key)
 	res := e.window.Result()
 	disposition := e.window.CloseDisposition()
+	a.rememberDisplayGeometry(e)
 	e.window.Close()
+	a.flushDisplayGeometry()
 	if ctx.Err() != nil {
 		a.quit = true
 		return
@@ -263,7 +267,9 @@ func (a *App) closeLiveFailed(key string, err error) {
 		return
 	}
 	delete(a.live, key)
+	a.rememberDisplayGeometry(e)
 	e.window.Close()
+	a.flushDisplayGeometry()
 	a.closeSession(key)
 	a.m.SessionEnded(err)
 	a.dirty = true
@@ -275,8 +281,10 @@ func (a *App) closeLiveFailed(key string, err error) {
 // over a live display).
 func (a *App) closeLiveWindow(key string) {
 	if e, ok := a.live[key]; ok {
+		a.rememberDisplayGeometry(e)
 		delete(a.live, key)
 		e.window.Close()
+		a.flushDisplayGeometry()
 	}
 }
 
@@ -287,8 +295,37 @@ func (a *App) closeLiveWindow(key string) {
 // their keys are up while the connections are still open.
 func (a *App) closeAllLiveWindows() {
 	for key, e := range a.live {
+		a.rememberDisplayGeometry(e)
 		delete(a.live, key)
 		e.window.Close()
 	}
+	a.flushDisplayGeometry()
 	a.syncSessions()
+}
+
+// Display rectangles are separate from serial/SSH seats and observers, which
+// must not overwrite the primary viewport's arrangement.
+func (a *App) rememberDisplayGeometry(e *liveEntry) {
+	if e.observer || !e.ws.IsVM() || e.key != e.ws.Key() {
+		return
+	}
+	r, ok := viewer.WindowRectangle(e.window.WindowBackend())
+	if !ok {
+		return
+	}
+	if a.windowGeometry == nil {
+		a.windowGeometry = make(map[string]config.WindowRect)
+	}
+	rect := config.WindowRect{X: r.X, Y: r.Y, Width: r.Width, Height: r.Height}
+	if a.windowGeometry[e.key] != rect {
+		a.windowGeometry[e.key] = rect
+		a.displayGeometryDirty = true
+	}
+}
+
+func (a *App) flushDisplayGeometry() {
+	if a.displayGeometryDirty {
+		a.flushGeometry()
+		a.displayGeometryDirty = false
+	}
 }

@@ -103,15 +103,14 @@ func runShell(ctx context.Context, args []string) error {
 	// An unset size restores the last arrangement: the shell records its
 	// window on resize and on exit, so a relaunch opens where the user left
 	// it. An explicit flag always wins over the stored size.
+	store := profileStore{name: *profileName}
+	savedSettings, _ := store.LoadSettings()
 	if *width <= 0 || *height <= 0 {
-		store := profileStore{name: *profileName}
-		if s, err := store.LoadSettings(); err == nil {
-			if *width <= 0 && s.WindowWidth > 0 {
-				*width = s.WindowWidth
-			}
-			if *height <= 0 && s.WindowHeight > 0 {
-				*height = s.WindowHeight
-			}
+		if *width <= 0 && savedSettings.WindowWidth > 0 {
+			*width = savedSettings.WindowWidth
+		}
+		if *height <= 0 && savedSettings.WindowHeight > 0 {
+			*height = savedSettings.WindowHeight
 		}
 		if *width <= 0 {
 			*width = shell.DefaultWidth
@@ -129,6 +128,14 @@ func runShell(ctx context.Context, args []string) error {
 	}
 
 	sessionOpts := shell.SessionOptions{
+		RestoreGeometry: func(key string) (viewer.WindowRect, bool) {
+			s, err := store.LoadSettings()
+			if err != nil {
+				return viewer.WindowRect{}, false
+			}
+			r, ok := s.WindowGeometry[key]
+			return viewer.WindowRect{X: r.X, Y: r.Y, Width: r.Width, Height: r.Height}, ok
+		},
 		FixedQuality:   !adaptiveQualityEnabled(fs, *adaptive),
 		Quality:        *quality,
 		Compress:       *compress,
@@ -208,6 +215,9 @@ func runShell(ctx context.Context, args []string) error {
 		RefreshInterval: *refresh,
 		Width:           *width,
 		Height:          *height,
+		X:               savedSettings.WindowX,
+		Y:               savedSettings.WindowY,
+		Positioned:      savedSettings.WindowPositioned,
 		UIScale:         *uiScale,
 		NoTray:          *noTray,
 		Title:           windowTitle,

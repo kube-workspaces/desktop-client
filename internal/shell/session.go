@@ -283,6 +283,8 @@ func (w *terminalLiveWindow) ReleaseInput() { w.det.ReleaseInput() }
 
 // SessionOptions tunes the display sessions the shell opens.
 type SessionOptions struct {
+	// RestoreGeometry supplies a saved native display-window rectangle.
+	RestoreGeometry func(key string) (viewer.WindowRect, bool)
 	// ProtectedConsole labels an admitted agent's handoff for Windows UAC/UIPI.
 	// Set internally; authentication and display ownership still use the API.
 	ProtectedConsole bool
@@ -321,6 +323,16 @@ type SessionOptions struct {
 	switchTransport func()
 	// Logf, if set, receives session diagnostics.
 	Logf func(format string, args ...any)
+}
+
+func (o SessionOptions) displayBackend(key string) *chrome.Backend {
+	be := viewer.NewSDLBackend()
+	if o.RestoreGeometry != nil {
+		if r, ok := o.RestoreGeometry(key); ok {
+			be.RestoreGeometry(r)
+		}
+	}
+	return chrome.New(be)
 }
 
 // useAgentTransport reports whether a VM dial should take the premium agent
@@ -598,7 +610,7 @@ func (h *exclusiveHandle) newView(ctx context.Context) *viewer.Viewer {
 		OnSwitchTransport:  h.opts.switchTransport,
 		Logf:               h.opts.Logf,
 	}
-	view := viewer.New(chrome.New(viewer.NewSDLBackend()), cfg)
+	view := viewer.New(h.opts.displayBackend(h.ws.Key()), cfg)
 	// Match the CLI consent flow, including after Tier 1 falls back.
 	view.SetTakeoverHandler(func() error {
 		res, err := h.client.VNCTakeover(ctx, h.ws.Namespace, h.ws.Name)
@@ -826,7 +838,7 @@ func (h *tier1Handle) Open(ctx context.Context) (liveWindow, error) {
 		agentBase = *h.ws.RemoteDesktop.Path
 	}
 	live, err := session.OpenTier1(ctx, h.client, h.ws.Namespace, h.ws.Name, agentBase,
-		chrome.New(viewer.NewSDLBackend()), session.Tier1Config{
+		h.opts.displayBackend(h.ws.Key()), session.Tier1Config{
 			Title:        h.ws.Key(),
 			Audio:        true,
 			ScaleQuality: h.opts.ScaleQuality,
@@ -1094,6 +1106,7 @@ type agentLiveWindow struct {
 	sawRequired atomic.Bool
 	watchCancel context.CancelFunc
 	watchWG     sync.WaitGroup
+	geometry    *viewer.WindowRect
 
 	// dialAgent and dialConsole are test seams for the mode switch; nil means
 	// the production dialers. They let the transition matrix be unit-tested
@@ -1108,8 +1121,9 @@ func (w *agentLiveWindow) openAgentWindow(ctx context.Context) (agentDetached, e
 	if w.dialAgent != nil {
 		return w.dialAgent(ctx)
 	}
+	opts := w.transitionOptions()
 	live, err := session.OpenAgentPremium(ctx, w.handle.client, w.handle.ws.Namespace, w.handle.ws.Name, "",
-		chrome.New(viewer.NewSDLBackend()), session.Tier1Config{
+		opts.displayBackend(w.handle.ws.Key()), session.Tier1Config{
 			Title:              w.handle.ws.Key(),
 			Audio:              true,
 			ScaleQuality:       w.handle.opts.ScaleQuality,
@@ -1208,12 +1222,13 @@ func (w *agentLiveWindow) serveSwitch(ctx context.Context) error {
 // that a console-requiring desktop was seen, so the watcher returns to the
 // agent once it clears. A manual console is neither protected nor armed.
 func (w *agentLiveWindow) activateConsole(ctx context.Context, protected, arm bool) error {
+	w.rememberTransitionGeometry()
 	w.stopWatcher()
 	if w.det != nil {
 		w.det.Close()
 		w.det = nil
 	}
-	opts := w.handle.opts
+	opts := w.transitionOptions()
 	opts.ProtectedConsole = protected
 	opts.switchTransport = func() { w.wantToggle.Store(true) }
 	fb, derr := w.dialConsoleSession(ctx, opts)
@@ -1242,6 +1257,7 @@ func (w *agentLiveWindow) activateConsole(ctx context.Context, protected, arm bo
 // premium transport cannot be re-established (e.g. the desktop is still
 // protected), it falls back to the console rather than failing the session.
 func (w *agentLiveWindow) activateAgent(ctx context.Context) error {
+	w.rememberTransitionGeometry()
 	w.stopWatcher()
 	w.handle.mu.Lock()
 	fb := w.handle.fallback
@@ -1269,6 +1285,35 @@ func (w *agentLiveWindow) activateAgent(ctx context.Context) error {
 		w.handle.opts.Logf("agent premium restored for %s", w.handle.ws.Key())
 	}
 	return nil
+}
+
+// Keep the arranged native rectangle across the Agent/Console window swap.
+func (w *agentLiveWindow) rememberTransitionGeometry() {
+	if r, ok := viewer.WindowRectangle(w.WindowBackend()); ok {
+		w.geometry = &r
+	}
+}
+
+func (w *agentLiveWindow) transitionOptions() SessionOptions {
+	opts := w.handle.opts
+	if w.geometry != nil {
+		r := *w.geometry
+		restore := opts.RestoreGeometry
+		first := true
+		// The transition uses the current viewport; later parked-window reopens
+		// read the store again, including any arrangement made after the switch.
+		opts.RestoreGeometry = func(key string) (viewer.WindowRect, bool) {
+			if first {
+				first = false
+				return r, true
+			}
+			if restore != nil {
+				return restore(key)
+			}
+			return viewer.WindowRect{}, false
+		}
+	}
+	return opts
 }
 
 // startWatcher polls the guest desktop in the background while the console is

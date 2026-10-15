@@ -117,11 +117,12 @@ func releaseSDL() {
 // down. The bundled library is the only supportable option until the binding
 // gains a version check.
 type SDLBackend struct {
-	opened   bool
-	window   *sdl.Window
-	windowID sdl.WindowID
-	renderer *sdl.Renderer
-	texture  *sdl.Texture
+	restoreRect *WindowRect
+	opened      bool
+	window      *sdl.Window
+	windowID    sdl.WindowID
+	renderer    *sdl.Renderer
+	texture     *sdl.Texture
 
 	// overlay holds the status plate. It is a separate texture so that the
 	// frozen frame in the main texture is never overwritten to draw a state
@@ -207,6 +208,12 @@ func NewSDLBackend() *SDLBackend {
 // of calling this from main, but a caller that moves the loop elsewhere must
 // call runtime.LockOSThread itself.
 func (b *SDLBackend) Open(opts WindowOptions) error {
+	// Apply the remembered native rectangle after decorators have added their
+	// chrome. Saving and restoring the same units avoids toolbar/DPI size drift.
+	if r := b.restoreRect; r != nil {
+		opts.Width, opts.Height = r.Width, r.Height
+		opts.X, opts.Y, opts.Positioned = r.X, r.Y, true
+	}
 	if b.opened {
 		return fmt.Errorf("viewer: SDL backend already open")
 	}
@@ -244,6 +251,9 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 	// Move the window onto the display it was launched from before it is
 	// presented for the first time; see centerOnLaunchDisplay.
 	b.centerOnLaunchDisplay()
+	if opts.Positioned {
+		b.restorePosition(opts.X, opts.Y)
+	}
 
 	// The title-bar/taskbar icon. Not fatal on failure: a window with no icon
 	// is cosmetic damage, not a broken session.
@@ -280,6 +290,72 @@ func (b *SDLBackend) Open(opts WindowOptions) error {
 	b.wakeOK = true
 	b.wakeMu.Unlock()
 	return nil
+}
+
+// RestoreGeometry sets the native window rectangle for the next Open. The
+// rectangle includes any toolbar; it is applied after content sizing.
+func (b *SDLBackend) RestoreGeometry(r WindowRect) {
+	if r.Width > 0 && r.Height > 0 {
+		b.restoreRect = &r
+	}
+}
+
+// GeometryRestored keeps initial guest fitting from replacing the saved size.
+func (b *SDLBackend) GeometryRestored() bool { return b.restoreRect != nil }
+
+// Position implements WindowGeometry. Transient fullscreen/minimized/maximized
+// states must not overwrite the user's normal window arrangement.
+func (b *SDLBackend) Position() (int, int, bool) {
+	if !b.normalGeometry() {
+		return 0, 0, false
+	}
+	x, y, err := b.window.Position()
+	return int(x), int(y), err == nil
+}
+
+func (b *SDLBackend) WindowSize() (int, int, bool) {
+	if !b.normalGeometry() {
+		return 0, 0, false
+	}
+	w, h, err := b.window.Size()
+	return int(w), int(h), err == nil && w > 0 && h > 0
+}
+
+func (b *SDLBackend) normalGeometry() bool {
+	return b.window != nil && b.window.Flags()&(sdl.WINDOW_FULLSCREEN|sdl.WINDOW_MINIMIZED|sdl.WINDOW_MAXIMIZED) == 0
+}
+
+func (b *SDLBackend) restorePosition(x, y int) {
+	displays, err := sdl.GetDisplays()
+	if err != nil {
+		return
+	}
+	w, h, err := b.window.Size()
+	if err != nil {
+		return
+	}
+	for _, display := range displays {
+		bounds, err := display.UsableBounds()
+		if err != nil || bounds == nil || bounds.W <= 0 || bounds.H <= 0 {
+			continue
+		}
+		// The saved top-left identifies its monitor, including negative origins.
+		if x < int(bounds.X) || x >= int(bounds.X+bounds.W) || y < int(bounds.Y) || y >= int(bounds.Y+bounds.H) {
+			continue
+		}
+		w, h = min(w, bounds.W), min(h, bounds.H)
+		_ = b.window.SetSize(w, h)
+		x = max(int(bounds.X), min(x, int(bounds.X+bounds.W-w)))
+		y = max(int(bounds.Y), min(y, int(bounds.Y+bounds.H-h)))
+		_ = b.window.SetPosition(int32(x), int32(y))
+		_ = b.window.Sync()
+		return
+	}
+	// Disconnected monitor: retain the normal launch-display placement.
+	if bounds, ok := LaunchDisplayBounds(); ok {
+		_ = b.window.SetSize(min(w, int32(bounds.W)), min(h, int32(bounds.H)))
+		b.centerOnLaunchDisplay()
+	}
 }
 
 // setWindowIcon shows the embedded cube on the window's title bar and taskbar

@@ -4,11 +4,121 @@
 package shell
 
 import (
+	"context"
+	"os"
+	"runtime"
 	"testing"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/chrome"
+	"github.com/kube-workspaces/desktop-client/internal/config"
+	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
+
+type geometryBackend struct {
+	*fakeBackend
+	rect        viewer.WindowRect
+	unavailable bool
+}
+
+func (b *geometryBackend) Position() (int, int, bool) {
+	return b.rect.X, b.rect.Y, !b.unavailable
+}
+
+func (b *geometryBackend) WindowSize() (int, int, bool) {
+	return b.rect.Width, b.rect.Height, !b.unavailable
+}
+
+type geometryWindow struct {
+	fakeLiveWindow
+	be viewer.Backend
+}
+
+func (w *geometryWindow) WindowBackend() viewer.Backend { return w.be }
+
+func TestGeometryUsesWindowUnitsAndKeepsNormalRect(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.start()
+	r.be.resize(2400, 1600) // Retina drawable, not the window-manager units.
+	be := &geometryBackend{fakeBackend: r.be, rect: viewer.WindowRect{X: -1200, Y: 0, Width: 1200, Height: 800}}
+	r.app.be = be
+	r.app.flushGeometry()
+	saved := r.store.settings
+	if saved.WindowWidth != 1200 || saved.WindowHeight != 800 || saved.WindowX != -1200 || saved.WindowY != 0 || !saved.WindowPositioned {
+		t.Fatalf("wrong stored rectangle: %+v", saved)
+	}
+	be.unavailable = true // Fullscreen/minimized/maximized cannot replace it.
+	r.app.flushGeometry()
+	if r.store.settings.WindowWidth != saved.WindowWidth || r.store.settings.WindowX != saved.WindowX {
+		t.Fatalf("transient state replaced normal geometry: %+v", r.store.settings)
+	}
+}
+
+func TestDisplayGeometryPersistsOnParkWithoutToolbarSizeDrift(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.start()
+	ws := kwclient.Workspace{Namespace: "workspaces", Name: "desktop", Type: "vm"}
+	rect := viewer.WindowRect{X: 0, Y: 40, Width: 1200, Height: 840}
+	be := &geometryBackend{fakeBackend: r.be, rect: rect}
+	w := &geometryWindow{be: chrome.New(be)}
+	r.app.live[ws.Key()] = &liveEntry{key: ws.Key(), ws: ws, window: w}
+	r.app.parkLive(context.Background(), ws.Key())
+	want := config.WindowRect{X: rect.X, Y: rect.Y, Width: rect.Width, Height: rect.Height}
+	if got := r.store.settings.WindowGeometry[ws.Key()]; got != want {
+		t.Fatalf("native window rectangle = %+v, want %+v", got, want)
+	}
+	// Appearance saves and a console/observer seat must preserve the display.
+	be.rect.Height = 600
+	r.app.rememberDisplayGeometry(&liveEntry{key: ws.Key() + "#serial", ws: ws, window: w})
+	r.app.rememberDisplayGeometry(&liveEntry{key: ws.Key(), ws: ws, observer: true, window: w})
+	r.app.saveSettings()
+	r.settle()
+	if got := r.store.settings.WindowGeometry[ws.Key()]; got != want {
+		t.Fatalf("another save clobbered display rectangle: %+v", got)
+	}
+}
+
+func TestTransitionGeometryUsesCurrentRectThenFreshStore(t *testing.T) {
+	current := viewer.WindowRect{X: -1000, Y: 40, Width: 900, Height: 700}
+	later := viewer.WindowRect{X: 100, Y: 80, Width: 1100, Height: 850}
+	w := &agentLiveWindow{geometry: &current, handle: &agentHandle{opts: SessionOptions{
+		RestoreGeometry: func(string) (viewer.WindowRect, bool) { return later, true },
+	}}}
+	opts := w.transitionOptions()
+	if got, _ := opts.RestoreGeometry("workspace"); got != current {
+		t.Fatalf("transition rectangle = %+v, want %+v", got, current)
+	}
+	if got, _ := opts.RestoreGeometry("workspace"); got != later {
+		t.Fatalf("parked reopen rectangle = %+v, want fresh %+v", got, later)
+	}
+}
+
+func TestNativeGeometryRoundTripThroughChrome(t *testing.T) {
+	if os.Getenv("KW_NATIVE_MEDIA_TEST") != "1" {
+		t.Skip("set KW_NATIVE_MEDIA_TEST=1 for SDL dummy-window acceptance")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	t.Setenv("SDL_VIDEODRIVER", "dummy")
+	t.Setenv("SDL_AUDIODRIVER", "dummy")
+	want := viewer.WindowRect{Width: 800, Height: 600}
+	rect := want
+	for i := 0; i < 3; i++ {
+		be := viewer.NewSDLBackend()
+		be.RestoreGeometry(rect)
+		decorated := chrome.New(be)
+		if err := decorated.Open(viewer.WindowOptions{Title: "geometry", Width: 1280, Height: 800}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := viewer.WindowRectangle(decorated)
+		decorated.Close()
+		if !ok || got != want {
+			t.Fatalf("round trip %d: got %+v (valid=%v), want %+v", i, got, ok, want)
+		}
+		rect = got
+	}
+}
 
 // TestResizeRecordsGeometry: a window resize updates the cached size and,
 // once due, persists it with the settings.

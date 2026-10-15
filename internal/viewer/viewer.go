@@ -1186,7 +1186,7 @@ func (v *Viewer) fitWindow(fbW, fbH int) {
 		return
 	}
 	v.fitted = true
-	if v.be.Fullscreen() {
+	if v.be.Fullscreen() || geometryRestored(v.be) {
 		return
 	}
 	w, h := v.initialSize(fbW, fbH)

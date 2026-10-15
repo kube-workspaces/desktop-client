@@ -70,6 +70,32 @@ type Settings struct {
 	// newer build, as Unix seconds. Zero means never; the shell rate-limits
 	// its startup check against it (at most once per 24 h).
 	LastUpdateCheck int64 `json:"lastUpdateCheck,omitempty"`
+
+	// WindowX and WindowY remember the shell window's last top-left position
+	// in screen pixels. WindowPositioned records that a position was saved:
+	// without it, a legitimate 0,0 would be indistinguishable from a config
+	// written before positions existed, and an upgraded client would snap to
+	// the corner instead of centring. A saved position is clamped to a current
+	// display on restore, so a rearranged or unplugged monitor never strands
+	// the window off-screen.
+	WindowX          int  `json:"windowX,omitempty"`
+	WindowY          int  `json:"windowY,omitempty"`
+	WindowPositioned bool `json:"windowPositioned,omitempty"`
+	// WindowGeometry remembers each display window's last rectangle, keyed by
+	// the workspace key ("namespace/name"): the next session for a workspace
+	// reopens where the user left it, at the size they chose.
+	WindowGeometry map[string]WindowRect `json:"windowGeometry,omitempty"`
+}
+
+// WindowRect is a remembered window rectangle in window coordinates: the
+// top-left in screen pixels, and the width and height in the units the window
+// manager uses, independent of display scaling, so it round-trips between
+// launches on any display.
+type WindowRect struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // NoUpdateEnvVar disables the automatic release check when set to a true-ish

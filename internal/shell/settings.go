@@ -149,6 +149,7 @@ func (a *App) saveSettings() {
 			saved.AutoUpdate = config.Bool(a.updates.auto)
 			saved.LastUpdateCheck = a.updates.last
 			saved.WindowWidth, saved.WindowHeight = a.geomW, a.geomH
+			a.saveGeometryFields(&saved)
 			if err := a.opts.Store.SaveSettings(saved); err != nil {
 				a.logf("save settings: %v", err)
 			}
@@ -164,11 +165,11 @@ const geomSaveInterval = 5 * time.Second
 // size of a session is always written on the way out (see [App.Run]), so the
 // interval only bounds writes mid-drag.
 func (a *App) recordGeometry(now time.Time) {
-	w, h := a.be.Size()
-	if w <= 0 || h <= 0 || (w == a.geomW && h == a.geomH) {
+	w, h := a.geomW, a.geomH
+	x, y, positioned := a.geomX, a.geomY, a.geomPositioned
+	if !a.captureMainGeometry() || (w == a.geomW && h == a.geomH && x == a.geomX && y == a.geomY && positioned == a.geomPositioned) {
 		return
 	}
-	a.geomW, a.geomH = w, h
 	if now.Sub(a.geomSavedAt) < geomSaveInterval {
 		return
 	}
@@ -181,16 +182,36 @@ func (a *App) recordGeometry(now time.Time) {
 // arranged — is what the next launch restores, regardless of where the
 // rate limiter stood.
 func (a *App) flushGeometry() {
-	w, h := a.be.Size()
-	if w <= 0 || h <= 0 {
-		return
-	}
-	a.geomW, a.geomH = w, h
+	a.captureMainGeometry()
 	saved := a.settings.toConfig()
 	saved.AutoUpdate = config.Bool(a.updates.auto)
 	saved.LastUpdateCheck = a.updates.last
-	saved.WindowWidth, saved.WindowHeight = w, h
+	saved.WindowWidth, saved.WindowHeight = a.geomW, a.geomH
+	a.saveGeometryFields(&saved)
 	if err := a.opts.Store.SaveSettings(saved); err != nil {
 		a.logf("save window size: %v", err)
 	}
+}
+
+func (a *App) saveGeometryFields(saved *config.Settings) {
+	saved.WindowX, saved.WindowY, saved.WindowPositioned = a.geomX, a.geomY, a.geomPositioned
+	saved.WindowGeometry = a.windowGeometry
+}
+
+func (a *App) captureMainGeometry() bool {
+	if _, ok := viewer.WindowGeometryFor(a.be); ok {
+		r, valid := viewer.WindowRectangle(a.be)
+		if !valid {
+			return false
+		}
+		a.geomX, a.geomY, a.geomPositioned = r.X, r.Y, true
+		a.geomW, a.geomH = r.Width, r.Height
+		return true
+	}
+	w, h := a.be.Size()
+	if w <= 0 || h <= 0 {
+		return false
+	}
+	a.geomW, a.geomH = w, h
+	return true
 }

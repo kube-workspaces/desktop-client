@@ -199,6 +199,14 @@ type WindowOptions struct {
 	Title string
 	// Width and Height are the initial window size in pixels.
 	Width, Height int
+	// X and Y are the initial window position in screen pixels. Positioned
+	// says whether they are meaningful: without it, a legitimate top-left of
+	// 0,0 is indistinguishable from "no position", and the backend places the
+	// window itself (centred on the launch display). A position that no longer
+	// lands on any attached display is ignored and the window is centred, so a
+	// rearranged desktop never opens a window off-screen.
+	X, Y       int
+	Positioned bool
 	// Fullscreen starts the session fullscreen.
 	Fullscreen bool
 	// ScaleQuality selects the texture filter. The empty value means
@@ -206,6 +214,33 @@ type WindowOptions struct {
 	ScaleQuality ScaleQuality
 	// VSync asks the backend to synchronise presentation with the display.
 	VSync bool
+}
+
+// WindowRect is a window rectangle in window coordinates: the top-left in
+// screen pixels and the size in the units [WindowOptions] takes, independent
+// of display scaling. It is what [WindowGeometry] returns and what a caller
+// feeds back into [WindowOptions] to reopen a window where it was left.
+type WindowRect struct {
+	X, Y, Width, Height int
+}
+
+// WindowGeometry is an optional [Backend] capability: a real window the shell
+// can ask where it is and how big it is, to remember the arrangement for the
+// next launch. A backend without one — a test double, or a compositor that
+// will not say — is simply never remembered.
+//
+// Both values are in window coordinates, the same units [WindowOptions]
+// takes, not the drawable pixels [Backend.Size] reports: a saved rectangle
+// therefore round-trips on a scaled display instead of growing by the scale
+// factor on every launch.
+type WindowGeometry interface {
+	// Position returns the window's top-left in screen pixels. ok is false
+	// when the backend cannot say (never opened, no platform window).
+	Position() (x, y int, ok bool)
+	// WindowSize returns the window size in window coordinates. ok is false
+	// when the backend cannot say; a value that is not both positive is not a
+	// usable size and should be treated as absent.
+	WindowSize() (w, h int, ok bool)
 }
 
 // Backend is the windowing surface the viewer draws into.
