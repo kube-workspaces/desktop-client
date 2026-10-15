@@ -1017,13 +1017,28 @@ func (h *agentHandle) Open(ctx context.Context) (liveWindow, error) {
 	return &agentLiveWindow{handle: h, det: live.Detached}, nil
 }
 
+// agentDetached is the subset of [viewer.Tier1Detached] the premium window
+// drives: the detachable agent window plus its terminal result. Declared as an
+// interface so the console-handoff classification is testable without a live
+// transport.
+type agentDetached interface {
+	Step(now time.Time, events []viewer.Event) error
+	IdleWait(now time.Time) time.Duration
+	Closed() bool
+	Result() error
+	CloseDisposition() connection.CloseDisposition
+	Close()
+	Backend() viewer.Backend
+	ReleaseInput()
+}
+
 // agentLiveWindow is the live window of an [agentHandle]: a premium window
 // that swaps itself for a Tier 0 window on a recoverable failure. A refused
 // ticket, a rejected credential or a busy seat surfaces instead of being
 // routed around.
 type agentLiveWindow struct {
 	handle *agentHandle
-	det    *viewer.Tier1Detached
+	det    agentDetached
 	fb     liveWindow
 
 	closed      bool
@@ -1039,7 +1054,12 @@ func (w *agentLiveWindow) Step(ctx context.Context, now time.Time, events []view
 	if w.det == nil {
 		return nil
 	}
-	if err := w.det.Step(now, events); err != nil {
+	// A producer that ended surfaces through Step, but its terminal result
+	// must be classified before it is reported: ErrAgentConsoleRequired is a
+	// handoff, not a window failure. Mirrors [viewer.RunTier1], which reads
+	// Closed/Result before surfacing the reap. A step error while the window
+	// is still live is a real failure and is returned as-is.
+	if err := w.det.Step(now, events); err != nil && !w.det.Closed() {
 		return err
 	}
 	if !w.det.Closed() {
