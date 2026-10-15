@@ -25,6 +25,24 @@ import (
 // ErrAgentInputPending marks an unavailable or not-yet-attached input backend.
 var ErrAgentInputPending = errors.New("agent input injection unavailable")
 
+// ErrAgentConsoleRequired requests the existing authenticated console path
+// after admission. It never authorizes fallback around a refused/busy session.
+var ErrAgentConsoleRequired = errors.New("Windows protected UI requires console")
+
+func agentConsoleRequirement(payload map[string]any) error {
+	if suspended, _ := payload["captureSuspended"].(bool); suspended {
+		return fmt.Errorf("%w: desktop capture suspended", ErrAgentConsoleRequired)
+	}
+	session, _ := payload["session"].(map[string]any)
+	desktop, _ := session["desktop"].(map[string]any)
+	required, _ := desktop["requiresConsole"].(bool)
+	reason, _ := desktop["reason"].(string)
+	if required && (reason == "protected-desktop" || reason == "higher-integrity-window") {
+		return fmt.Errorf("%w: %s", ErrAgentConsoleRequired, reason)
+	}
+	return nil
+}
+
 // agentInput forwards window events to the held agent session. Resize is
 // capability-gated and paired; input is sent only when the guest advertises it.
 type agentInput struct {
@@ -347,6 +365,7 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 	}
 	var lastClipboard *string
 	runErr := session.Run(agent.Callbacks{
+		OnTelemetryResult: agentConsoleRequirement,
 		OnTelemetry: func(payload map[string]any) {
 			if logf != nil {
 				logf("agent telemetry: input=%v dropped=%v session=%v", payload["inputEvents"], payload["inputDropped"], payload["session"])

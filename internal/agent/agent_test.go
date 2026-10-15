@@ -130,6 +130,34 @@ func dialAgent(t *testing.T, url string) *wsio.Conn {
 	return wsio.New(ws)
 }
 
+func TestTelemetryCanRequestOrderlyConsoleHandoff(t *testing.T) {
+	body, err := json.Marshal(Envelope{Protocol: "kw-agent-v1", ProtocolVersion: 1,
+		SessionID: "sess-test", Generation: 1, Sequence: 2, SentAtNs: 2,
+		Channel: "control", Type: "telemetry", Payload: map[string]any{"captureSuspended": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := append([]byte{0}, uint32be(len(body))...)
+	frame = append(frame, body...)
+	server, _ := fakeAgent(t, false, frame)
+	defer server.Close()
+	session, err := Attach(dialAgent(t, server.URL), signedTestTicket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	want := errors.New("console-required")
+	err = session.Run(Callbacks{OnTelemetryResult: func(payload map[string]any) error {
+		if payload["captureSuspended"] != true {
+			t.Fatalf("unexpected telemetry: %v", payload)
+		}
+		return want
+	}}, time.Time{})
+	if !errors.Is(err, want) {
+		t.Fatalf("want typed handoff result, got %v", err)
+	}
+}
+
 func TestHelloDisplayModesParsed(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

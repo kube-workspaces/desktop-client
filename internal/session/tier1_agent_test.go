@@ -30,6 +30,31 @@ func TestMapAgentResultClasses(t *testing.T) {
 	}
 }
 
+func TestProtectedDesktopConsoleRequirementIsTypedAndPostAdmission(t *testing.T) {
+	for _, payload := range []map[string]any{
+		{"captureSuspended": true},
+		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "protected-desktop"}}},
+		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "higher-integrity-window"}}},
+	} {
+		err := agentConsoleRequirement(payload)
+		if !errors.Is(err, ErrAgentConsoleRequired) {
+			t.Fatalf("want console handoff, got %v", err)
+		}
+		if errors.Is(MapAgentResult(context.Background(), err), ErrNoFallback) {
+			t.Fatal("desktop boundary must permit authorized console")
+		}
+	}
+	for _, payload := range []map[string]any{
+		nil, {}, {"inputDropped": 10}, {"captureSuspended": "true"},
+		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": true, "reason": "ticket-refused"}}},
+		{"session": map[string]any{"desktop": map[string]any{"requiresConsole": false, "reason": "higher-integrity-window"}}},
+	} {
+		if err := agentConsoleRequirement(payload); err != nil {
+			t.Fatalf("must not infer console from untyped/unknown telemetry: %v", err)
+		}
+	}
+}
+
 func TestAgentFrameCropsPaddingWithoutApplyingStaleResizeDimensions(t *testing.T) {
 	frame := image.NewRGBA(image.Rect(0, 0, 1920, 1088))
 	cropped := cropAgentFrame(frame, 1920, 1080)

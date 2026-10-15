@@ -408,8 +408,9 @@ var english = map[string]string{
 	// Takeover and capability errors travel as error values through the
 	// viewer, which shows them verbatim: they keep their sentence case
 	// here rather than in Describe's fallback capitaliser.
-	"session.takeoverDeclined": "server declined the takeover",
-	"session.sharedDisabled":   "shared display sessions are not enabled on this platform",
+	"session.takeoverDeclined":        "server declined the takeover",
+	"session.protectedWindowsConsole": "Console — Windows protected UI",
+	"session.sharedDisabled":          "shared display sessions are not enabled on this platform",
 
 	// SSH console credential form.
 	"ssh.title":           "SSH console",

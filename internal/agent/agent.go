@@ -419,6 +419,9 @@ func (s *Session) Close() error {
 // limps along silently.
 type Callbacks struct {
 	OnTelemetry func(payload map[string]any)
+	// OnTelemetryResult can request an orderly end for a typed desktop boundary.
+	// The caller releases this session before acquiring any console attachment.
+	OnTelemetryResult func(payload map[string]any) error
 	// OnVideo gets one complete H.264 access unit per call.
 	OnVideo func(payload []byte) error
 	// OnAudio gets one Opus packet per call.
@@ -464,6 +467,11 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 			if message.Type == "telemetry" {
 				if callbacks.OnTelemetry != nil {
 					callbacks.OnTelemetry(message.Payload)
+				}
+				if callbacks.OnTelemetryResult != nil {
+					if err := callbacks.OnTelemetryResult(message.Payload); err != nil {
+						return err
+					}
 				}
 				continue
 			}

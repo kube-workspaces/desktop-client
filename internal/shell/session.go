@@ -282,6 +282,9 @@ func (w *terminalLiveWindow) ReleaseInput() { w.det.ReleaseInput() }
 
 // SessionOptions tunes the display sessions the shell opens.
 type SessionOptions struct {
+	// ProtectedConsole labels an admitted agent's handoff for Windows UAC/UIPI.
+	// Set internally; authentication and display ownership still use the API.
+	ProtectedConsole bool
 	// FixedQuality disables adaptive RFB tuning and keeps Quality/Compress
 	// unchanged throughout the session. The default is automatic quality.
 	FixedQuality bool
@@ -574,9 +577,13 @@ func dialExclusiveSession(ctx context.Context, client *kwclient.Client, ws kwcli
 // newView builds a fresh window for the session, wired to this handle. Every
 // Attach gets one: windows are cheap, transports are not.
 func (h *exclusiveHandle) newView(ctx context.Context) *viewer.Viewer {
+	title := h.ws.Key()
+	if h.opts.ProtectedConsole {
+		title += " — " + i18n.Get("session.protectedWindowsConsole")
+	}
 	cfg := viewer.Config{
 		AdaptiveQuality: !h.opts.FixedQuality,
-		Title:           h.ws.Key(),
+		Title:           title,
 		ScaleQuality:    h.opts.ScaleQuality,
 		Logf:            h.opts.Logf,
 	}
@@ -1049,7 +1056,9 @@ func (w *agentLiveWindow) Step(ctx context.Context, now time.Time, events []view
 	if w.handle.opts.Logf != nil {
 		w.handle.opts.Logf("agent premium to %s failed (%v); falling back to Tier 0", w.handle.ws.Key(), res)
 	}
-	fb, derr := dialExclusiveSession(ctx, w.handle.client, w.handle.ws, w.handle.opts)
+	opts := w.handle.opts
+	opts.ProtectedConsole = errors.Is(res, session.ErrAgentConsoleRequired)
+	fb, derr := dialExclusiveSession(ctx, w.handle.client, w.handle.ws, opts)
 	if derr != nil {
 		w.closed, w.result = true, derr
 		return nil
