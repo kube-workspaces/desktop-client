@@ -14,7 +14,13 @@ import (
 // is currently held.
 type SessionStatus struct {
 	// InUse reports that somebody else holds the session.
-	InUse bool `json:"inUse"`
+	InUse     bool   `json:"inUse"`
+	Transport string `json:"transport"`
+}
+
+// Tier1Status discovers whether the active seat offers encoded agent fan-out.
+func (c *Client) Tier1Status(ctx context.Context, namespace, name string) (*SessionStatus, error) {
+	return c.sessionStatus(ctx, namespace, name, "tier1")
 }
 
 // TakeoverResult is the outcome of stealing a single-seat session.

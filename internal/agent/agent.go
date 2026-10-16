@@ -157,6 +157,7 @@ type Session struct {
 	displayModes     [][2]int
 	clipboardPending map[string]bool
 	lastSentNs       uint64
+	observer         bool
 }
 
 // readFrame parses one agent frame from the message stream.
@@ -186,6 +187,9 @@ func readFrame(reader io.Reader) (tag byte, body []byte, err error) {
 // writeControl sends one JSON envelope as a single binary message.
 // Resize requests self-register for ACK pairing in Run.
 func (s *Session) writeControl(messageType string, payload map[string]any) error {
+	if s.observer && messageType != "attach" && messageType != "keyframeRequest" && messageType != "bye" {
+		return ErrInputUnavailable
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	s.sequence++
@@ -277,11 +281,23 @@ func AttachControlOnly(conn *wsio.Conn, signed string) (*Session, error) {
 }
 
 func attach(conn *wsio.Conn, signed string, controlOnly bool) (*Session, error) {
-	_, ticket, err := DecodeTicket(signed)
-	if err != nil {
-		return nil, err
+	return attachMode(conn, signed, controlOnly, false)
+}
+
+// AttachObserver negotiates view-only encoded fan-out at the proxy. Observers
+// neither obtain nor renew a guest ticket and cannot send guest mutations.
+func AttachObserver(conn *wsio.Conn) (*Session, error) { return attachMode(conn, "", false, true) }
+
+func attachMode(conn *wsio.Conn, signed string, controlOnly, observer bool) (*Session, error) {
+	var ticket Ticket
+	if !observer {
+		var err error
+		_, ticket, err = DecodeTicket(signed)
+		if err != nil {
+			return nil, err
+		}
 	}
-	session := &Session{conn: conn}
+	session := &Session{conn: conn, observer: observer}
 	hello, err := session.readControl()
 	if err != nil {
 		return nil, fmt.Errorf("agent: hello: %w", err)
@@ -294,6 +310,12 @@ func attach(conn *wsio.Conn, signed string, controlOnly bool) (*Session, error) 
 	session.telemetry, _ = hello.Payload["telemetryAvailable"].(bool)
 	session.input, _ = hello.Payload["inputAvailable"].(bool)
 	session.resize, _ = hello.Payload["resizeAvailable"].(bool)
+	if observer {
+		if hello.Payload["observer"] != true {
+			return nil, errors.New("agent: observer transport not acknowledged")
+		}
+		session.clipboard, session.telemetry, session.input, session.resize = false, false, false, false
+	}
 	if capture, ok := hello.Payload["capture"].(map[string]any); ok {
 		session.captureWidth, session.captureHeight = Dimensions(capture)
 	}
@@ -328,6 +350,9 @@ func attach(conn *wsio.Conn, signed string, controlOnly bool) (*Session, error) 
 			reason = ReasonTicketRefused
 		}
 		return nil, fmt.Errorf("agent: refused (%s): %w", reason, ErrRefused)
+	}
+	if observer && result.Payload["role"] != "observer" {
+		return nil, errors.New("agent: observer role not acknowledged")
 	}
 	if payload["controlOnly"] == true {
 		if result.Payload["controlOnly"] != true {
@@ -519,7 +544,7 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 			paired := s.pending[id]
 			delete(s.pending, id)
 			s.writeMu.Unlock()
-			if !paired {
+			if !paired && !s.observer {
 				continue
 			}
 			if callbacks.OnResizeResult != nil {

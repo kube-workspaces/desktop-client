@@ -80,6 +80,8 @@ type Tier1Config struct {
 	NoVSync bool
 	// NoResize keeps the guest resolution fixed while resizing the window.
 	NoResize bool
+	// Observer selects proxy-side agent fan-out without guest authority.
+	Observer bool
 	// Width and Height are the initial window size in pixels. Zero means
 	// 1280x800 until the first frame, when the window is fitted to the
 	// guest; agent premium windows additionally steer a resizable guest to

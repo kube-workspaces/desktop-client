@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/agent"
+	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/media"
@@ -290,15 +291,15 @@ func RunAgentPremium(ctx context.Context, client *kwclient.Client, ns, name, par
 		return err
 	}
 	input := &agentInput{}
-	runErr := viewer.RunTier1(ctx, be, input, agentProduce(client, ns, name, participant, input, cfg.Audio, cfg.logf), viewer.Tier1Config{
+	runErr := viewer.RunTier1(ctx, be, input, agentProduce(client, ns, name, participant, input, cfg.Audio, cfg.logf, cfg.Observer), viewer.Tier1Config{
 		Title:        cfg.Title,
 		Width:        cfg.Width,
 		Height:       cfg.Height,
 		Fullscreen:   cfg.Fullscreen,
 		ScaleQuality: cfg.ScaleQuality,
 		NoVSync:      cfg.NoVSync,
-		NoResize:     cfg.NoResize,
-		Transport:    "Agent",
+		NoResize:     cfg.NoResize || cfg.Observer,
+		Transport:    agentTransportLabel(cfg.Observer),
 		Audio:        cfg.Audio,
 		Logf:         cfg.logf,
 	})
@@ -322,17 +323,18 @@ func OpenAgentPremium(ctx context.Context, client *kwclient.Client, ns, name, pa
 		return nil, err
 	}
 	input := &agentInput{}
-	det, err := viewer.OpenTier1Detached(ctx, be, input, agentProduce(client, ns, name, participant, input, cfg.Audio, cfg.logf), viewer.Tier1Config{
+	produce := agentProduce(client, ns, name, participant, input, cfg.Audio, cfg.logf, cfg.Observer)
+	det, err := viewer.OpenTier1Detached(ctx, be, input, produce, viewer.Tier1Config{
 		Title:              cfg.Title,
 		Width:              cfg.Width,
 		Height:             cfg.Height,
 		Fullscreen:         cfg.Fullscreen,
 		ScaleQuality:       cfg.ScaleQuality,
 		NoVSync:            cfg.NoVSync,
-		NoResize:           cfg.NoResize,
-		Transport:          "Agent",
+		NoResize:           cfg.NoResize || cfg.Observer,
+		Transport:          agentTransportLabel(cfg.Observer),
 		Audio:              cfg.Audio,
-		CanSwitchTransport: cfg.CanSwitchTransport,
+		CanSwitchTransport: cfg.CanSwitchTransport && !cfg.Observer,
 		OnSwitchTransport:  cfg.OnSwitchTransport,
 		Logf:               cfg.logf,
 	})
@@ -345,10 +347,17 @@ func OpenAgentPremium(ctx context.Context, client *kwclient.Client, ns, name, pa
 // agentProduce holds one admitted session per generation: ticket, bridge,
 // decode, renew. Shared by the blocking and detached window paths so they
 // cannot disagree about what a premium session is.
-func agentProduce(client *kwclient.Client, ns, name, participant string, input *agentInput, wantAudio bool, logf func(string, ...any)) func(context.Context, *viewer.Tier1Sink) error {
+func agentProduce(client *kwclient.Client, ns, name, participant string, input *agentInput, wantAudio bool, logf func(string, ...any), observer bool) func(context.Context, *viewer.Tier1Sink) error {
 	return func(ctx context.Context, sink *viewer.Tier1Sink) error {
-		return produceAgent(ctx, client, ns, name, participant, input, sink, wantAudio, logf)
+		return produceAgentMode(ctx, client, ns, name, participant, input, sink, wantAudio, logf, observer)
 	}
+}
+
+func agentTransportLabel(observer bool) string {
+	if observer {
+		return "Agent · " + i18n.Get("toolbar.viewOnly")
+	}
+	return "Agent"
 }
 
 // MapAgentResult classifies a premium terminal result: nil/ctx-done ends,
@@ -366,22 +375,33 @@ func MapAgentResult(ctx context.Context, runErr error) error {
 	return runErr
 }
 
-// produceAgent holds one admitted session: ticket, bridge, decode, renew.
-func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, participant string, input *agentInput, sink *viewer.Tier1Sink, wantAudio bool, logf func(string, ...any)) error {
-	ticket, err := client.AgentAttach(ctx, ns, name, participant)
+// produceAgentMode holds a controller or view-only observer media generation.
+func produceAgentMode(ctx context.Context, client *kwclient.Client, ns, name, participant string, input *agentInput, sink *viewer.Tier1Sink, wantAudio bool, logf func(string, ...any), observer bool) error {
+	var ticket *kwclient.AgentTicket
+	var err error
+	purpose := "observe"
+	if !observer {
+		purpose = "display"
+		ticket, err = client.AgentAttach(ctx, ns, name, participant)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = client.AgentRelease(releaseCtx, ns, name, ticket.ID)
+		}()
+	}
+	conn, _, err := client.DialAgentWSPurpose(ctx, ns, name, purpose)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = client.AgentRelease(releaseCtx, ns, name, ticket.ID)
-	}()
-	conn, _, err := client.DialAgentWS(ctx, ns, name)
-	if err != nil {
-		return err
+	var session *agent.Session
+	if observer {
+		session, err = agent.AttachObserver(wsio.New(conn))
+	} else {
+		session, err = agent.Attach(wsio.New(conn), ticket.Ticket)
 	}
-	session, err := agent.Attach(wsio.New(conn), ticket.Ticket)
 	if err != nil {
 		_ = conn.Close()
 		return err
@@ -415,7 +435,9 @@ func produceAgent(ctx context.Context, client *kwclient.Client, ns, name, partic
 	}
 	renewCtx, stopRenew := context.WithCancel(context.Background())
 	defer stopRenew()
-	go renewAgent(renewCtx, client, ns, name, ticket, session)
+	if !observer {
+		go renewAgent(renewCtx, client, ns, name, ticket, session)
+	}
 	if err := session.Keyframe(); err != nil {
 		_ = session.Close()
 		return err

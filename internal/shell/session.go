@@ -390,6 +390,16 @@ func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observe
 		if !ws.IsVM() {
 			return nil, errors.New("only VM workspaces can be observed")
 		}
+		status, err := d.client.Tier1Status(ctx, ws.Namespace, ws.Name)
+		if err != nil {
+			return nil, err
+		}
+		if status.Transport == "agent" {
+			if err := d.preflightTier1(); err != nil {
+				return nil, err
+			}
+			return &premiumObserverHandle{client: d.client, ws: ws, opts: d.opts}, nil
+		}
 		return dialObserverSession(ctx, d.client, ws, d.opts)
 	case !ws.IsVM():
 		return &terminalHandle{

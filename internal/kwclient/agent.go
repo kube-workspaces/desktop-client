@@ -147,7 +147,7 @@ func (c *Client) DialAgentWS(ctx context.Context, namespace, name string) (*webs
 // DialAgentWSPurpose declares a versioned edge-enforced connection purpose.
 // Helpers coexist with an RFB seat but cannot send display mutations.
 func (c *Client) DialAgentWSPurpose(ctx context.Context, namespace, name, purpose string) (*websocket.Conn, *http.Response, error) {
-	if purpose != "display" && purpose != "telemetry" && purpose != "clipboard" {
+	if purpose != "display" && purpose != "telemetry" && purpose != "clipboard" && purpose != "observe" {
 		return nil, nil, fmt.Errorf("kwclient: unsupported agent purpose %q", purpose)
 	}
 	path, err := AgentPath(namespace, name)
