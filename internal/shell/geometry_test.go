@@ -94,6 +94,100 @@ func TestTransitionGeometryUsesCurrentRectThenFreshStore(t *testing.T) {
 	}
 }
 
+func TestSessionGeometrySurfacesPersistIndependently(t *testing.T) {
+	r := newRig(savedProfile(), "stored-token")
+	r.start()
+	vm := kwclient.Workspace{Namespace: "team", Name: "vm", Type: "vm"}
+	container := kwclient.Workspace{Namespace: "team", Name: "container", Type: "container"}
+	cases := []struct {
+		ws       kwclient.Workspace
+		seat     string
+		observer bool
+		wantKey  string
+	}{
+		{vm, "", false, "team/vm"},
+		{vm, "serial", false, "team/vm#serial"},
+		{vm, "ssh", false, "team/vm#ssh"},
+		{vm, "", true, "team/vm#observer"},
+		{container, "", false, "team/container#terminal"},
+	}
+	want := make(map[string]config.WindowRect)
+	for i, tc := range cases {
+		key := sessionKey(tc.ws, tc.seat)
+		rect := viewer.WindowRect{X: -1000 + i*100, Y: 40, Width: 800 + i*20, Height: 600 + i*30}
+		be := &geometryBackend{fakeBackend: r.be, rect: rect}
+		entry := &liveEntry{key: key, ws: tc.ws, observer: tc.observer, window: &geometryWindow{be: chrome.New(be)}}
+		r.app.live[key] = entry
+		r.app.parkLive(context.Background(), key)
+		want[tc.wantKey] = config.WindowRect{X: rect.X, Y: rect.Y, Width: rect.Width, Height: rect.Height}
+		// A maximized/fullscreen/minimized window must retain its last normal rectangle.
+		be.unavailable = true
+		be.rect.Width *= 2
+		r.app.rememberDisplayGeometry(entry)
+	}
+	r.app.saveSettings()
+	r.settle()
+	if len(r.store.settings.WindowGeometry) != len(want) {
+		t.Fatalf("stored surfaces = %+v, want %+v", r.store.settings.WindowGeometry, want)
+	}
+	for key, rect := range want {
+		if got := r.store.settings.WindowGeometry[key]; got != rect {
+			t.Errorf("%s rectangle = %+v, want %+v", key, got, rect)
+		}
+	}
+}
+
+func TestNativeTerminalGeometryRestoredOnReopen(t *testing.T) {
+	if os.Getenv("KW_NATIVE_MEDIA_TEST") != "1" {
+		t.Skip("set KW_NATIVE_MEDIA_TEST=1 for SDL dummy-window acceptance")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	t.Setenv("SDL_VIDEODRIVER", "dummy")
+	t.Setenv("SDL_AUDIODRIVER", "dummy")
+	want := viewer.WindowRect{Width: 900, Height: 700}
+	vm := kwclient.Workspace{Namespace: "team", Name: "vm", Type: "vm"}
+	container := kwclient.Workspace{Namespace: "team", Name: "container", Type: "container"}
+	for _, seat := range []string{"terminal", "serial", "ssh"} {
+		t.Run(seat, func(t *testing.T) {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			ws := vm
+			if seat == "terminal" {
+				ws = container
+			}
+			d := &sessionDialer{opts: SessionOptions{RestoreGeometry: func(key string) (viewer.WindowRect, bool) {
+				if key != sessionKey(ws, seat) {
+					t.Fatalf("restored key = %q, want %q", key, sessionKey(ws, seat))
+				}
+				return want, true
+			}}}
+			var handle SessionHandle
+			var err error
+			if seat == "terminal" {
+				handle, err = d.Dial(context.Background(), ws, false)
+			} else {
+				handle, err = d.DialTerminal(context.Background(), ws, TerminalDialOpts{Kind: seat, SSHUser: "test", SSHKeyPEM: []byte("unused")})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer handle.Close()
+			for i := 0; i < 3; i++ {
+				window, err := handle.Open(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, ok := viewer.WindowRectangle(window.WindowBackend())
+				window.Close()
+				if !ok || got != want {
+					t.Fatalf("reopen %d: got %+v (valid=%v), want %+v", i, got, ok, want)
+				}
+			}
+		})
+	}
+}
+
 func TestNativeGeometryRoundTripThroughChrome(t *testing.T) {
 	if os.Getenv("KW_NATIVE_MEDIA_TEST") != "1" {
 		t.Skip("set KW_NATIVE_MEDIA_TEST=1 for SDL dummy-window acceptance")

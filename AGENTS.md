@@ -158,13 +158,15 @@ Implemented and working:
 - **Window arrangement persistence.** The shell records its normal window
   position and size on resize (5 s rate limit) and exit; `shell --width/--height`
   default to 0, meaning "restore the last size", and an explicit flag wins.
-  VM display viewers remember a native rectangle per workspace on close/park,
-  including the toolbar, and preserve it through Agent/Console switches.
+  Session viewers remember native rectangles per workspace on close/park,
+  including the toolbar, and preserve the primary display through Agent/Console
+  switches. Terminal, serial, SSH and RFB/premium observer windows use independent
+  surface keys so they cannot overwrite the primary display's arrangement.
   Window-manager units avoid HiDPI growth on successive opens. Fullscreen,
   maximized and minimized rectangles do not replace the last normal rectangle.
   Missing monitors fall back to launch-display placement; restored windows are
-  bounded to a usable display. Compositors may override placement. Terminal,
-  observer and embedded-web child windows do not yet persist their rectangles.
+  bounded to a usable display. Compositors may override placement. Embedded-web
+  child windows do not yet persist their rectangles.
 - **Start at login.** Settings offers opt-in per-user graphical startup through
   `internal/autostart`: HKCU Run on Windows (respecting StartupApproved vetoes),
   XDG autostart on Linux (persistent outer path for AppImages; Background portal

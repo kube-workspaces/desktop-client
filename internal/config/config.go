@@ -81,9 +81,9 @@ type Settings struct {
 	WindowX          int  `json:"windowX,omitempty"`
 	WindowY          int  `json:"windowY,omitempty"`
 	WindowPositioned bool `json:"windowPositioned,omitempty"`
-	// WindowGeometry remembers each display window's last rectangle, keyed by
-	// the workspace key ("namespace/name"): the next session for a workspace
-	// reopens where the user left it, at the size they chose.
+	// WindowGeometry remembers native session rectangles by workspace key
+	// ("namespace/name") for primary VM displays, with #terminal, #serial,
+	// #ssh or #observer suffixes for independent session surfaces.
 	WindowGeometry map[string]WindowRect `json:"windowGeometry,omitempty"`
 }
 

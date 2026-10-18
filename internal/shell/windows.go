@@ -303,11 +303,14 @@ func (a *App) closeAllLiveWindows() {
 	a.syncSessions()
 }
 
-// Display rectangles are separate from serial/SSH seats and observers, which
-// must not overwrite the primary viewport's arrangement.
+// Each session surface remembers its own rectangle. Observer roles can change
+// while attached, but their window remains separate from the primary display.
 func (a *App) rememberDisplayGeometry(e *liveEntry) {
-	if e.observer || !e.ws.IsVM() || e.key != e.ws.Key() {
-		return
+	key := e.key
+	if e.observer {
+		key = sessionKey(e.ws, "observer")
+	} else if !e.ws.IsVM() && key == e.ws.Key() {
+		key = sessionKey(e.ws, "terminal")
 	}
 	r, ok := viewer.WindowRectangle(e.window.WindowBackend())
 	if !ok {
@@ -317,8 +320,8 @@ func (a *App) rememberDisplayGeometry(e *liveEntry) {
 		a.windowGeometry = make(map[string]config.WindowRect)
 	}
 	rect := config.WindowRect{X: r.X, Y: r.Y, Width: r.Width, Height: r.Height}
-	if a.windowGeometry[e.key] != rect {
-		a.windowGeometry[e.key] = rect
+	if a.windowGeometry[key] != rect {
+		a.windowGeometry[key] = rect
 		a.displayGeometryDirty = true
 	}
 }

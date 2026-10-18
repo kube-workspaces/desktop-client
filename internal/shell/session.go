@@ -281,9 +281,9 @@ func (w *terminalLiveWindow) Raise() error { return w.det.Backend().Raise() }
 // keys, so there is nothing to release.
 func (w *terminalLiveWindow) ReleaseInput() { w.det.ReleaseInput() }
 
-// SessionOptions tunes the display sessions the shell opens.
+// SessionOptions tunes the sessions the shell opens.
 type SessionOptions struct {
-	// RestoreGeometry supplies a saved native display-window rectangle.
+	// RestoreGeometry supplies a saved native session-window rectangle.
 	RestoreGeometry func(key string) (viewer.WindowRect, bool)
 	// ProtectedConsole labels an admitted agent's handoff for Windows UAC/UIPI.
 	// Set internally; authentication and display ownership still use the API.
@@ -405,8 +405,9 @@ func (d *sessionDialer) Dial(ctx context.Context, ws kwclient.Workspace, observe
 		return &terminalHandle{
 			client: d.client,
 			opts: TerminalOptions{
-				Scale: 1, // the 5x8 bitmap at 1x (6x11 px cells); scale 2 reads too large
-				Logf:  d.opts.Logf,
+				RestoreGeometry: d.opts.RestoreGeometry,
+				Scale:           1, // the 5x8 bitmap at 1x (6x11 px cells); scale 2 reads too large
+				Logf:            d.opts.Logf,
 			},
 			ws: ws,
 		}, nil
@@ -711,7 +712,7 @@ func (d *sessionDialer) DialTerminal(_ context.Context, ws kwclient.Workspace, o
 	switch opts.Kind {
 	case "serial":
 		return &terminalHandle{client: d.client, ws: ws, kind: "serial",
-			opts: TerminalOptions{Scale: 1, Logf: d.opts.Logf}}, nil
+			opts: TerminalOptions{Scale: 1, Logf: d.opts.Logf, RestoreGeometry: d.opts.RestoreGeometry}}, nil
 	case "ssh":
 		if opts.SSHUser == "" {
 			return nil, errors.New("ssh needs a username")
@@ -721,7 +722,7 @@ func (d *sessionDialer) DialTerminal(_ context.Context, ws kwclient.Workspace, o
 		}
 		return &terminalHandle{client: d.client, ws: ws, kind: "ssh",
 			sshUser: opts.SSHUser, sshKeyPEM: opts.SSHKeyPEM,
-			opts: TerminalOptions{Scale: 1, Logf: d.opts.Logf}}, nil
+			opts: TerminalOptions{Scale: 1, Logf: d.opts.Logf, RestoreGeometry: d.opts.RestoreGeometry}}, nil
 	default:
 		return nil, errors.New("unknown console seat")
 	}
@@ -735,6 +736,7 @@ func (h *terminalHandle) Open(ctx context.Context) (liveWindow, error) {
 		title += " — " + h.kind
 	}
 	det, err := terminal.OpenDetached(ctx, dial, terminal.Options{
+		Backend:   (SessionOptions{RestoreGeometry: h.opts.RestoreGeometry}).displayBackend(sessionKey(h.ws, h.Kind())),
 		Surface:   connection.Surface(h.kind),
 		Title:     title,
 		Theme:     h.opts.Theme,
@@ -1627,7 +1629,7 @@ func dialObserverSession(ctx context.Context, client API, ws kwclient.Workspace,
 // Open implements [SessionHandle]: it returns a fresh live read-only
 // window over the held membership.
 func (h *observerHandle) Open(ctx context.Context) (liveWindow, error) {
-	view := viewer.New(chrome.New(viewer.NewSDLBackend()), viewer.Config{
+	view := viewer.New(h.opts.displayBackend(sessionKey(h.ws, "observer")), viewer.Config{
 		AdaptiveQuality: !h.opts.FixedQuality,
 		Title:           h.ws.Key() + i18n.Get("workspaces.observer"),
 		ReadOnly:        true,
@@ -1838,6 +1840,8 @@ func (c *sharedControl) watch(ctx context.Context) {
 
 // TerminalOptions tunes the integrated terminal sessions the shell opens.
 type TerminalOptions struct {
+	// RestoreGeometry supplies a saved native terminal/console rectangle.
+	RestoreGeometry func(key string) (viewer.WindowRect, bool)
 	// Theme is the palette for the terminal window; nil means the terminal
 	// package's dark default.
 	Theme *ui.Theme

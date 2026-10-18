@@ -25,7 +25,7 @@ type premiumObserverHandle struct {
 func (*premiumObserverHandle) Kind() string { return "observer" }
 func (*premiumObserverHandle) Close()       {}
 func (h *premiumObserverHandle) Open(ctx context.Context) (liveWindow, error) {
-	live, err := session.OpenAgentPremium(ctx, h.client, h.ws.Namespace, h.ws.Name, "", h.opts.displayBackend(h.ws.Key()), session.Tier1Config{
+	live, err := session.OpenAgentPremium(ctx, h.client, h.ws.Namespace, h.ws.Name, "", h.opts.displayBackend(sessionKey(h.ws, "observer")), session.Tier1Config{
 		Title: h.ws.Key() + i18n.Get("workspaces.observer"), Audio: true, Observer: true,
 		ScaleQuality: h.opts.ScaleQuality, Logf: h.opts.Logf,
 	})
