@@ -407,7 +407,7 @@ var english = map[string]string{
 	"errors.inUse":           "Another client is using this workspace's display. There is no way to take it over; wait for it to be released.",
 	"errors.notVM":           "This workspace has no display. Open it in a browser instead.",
 	"errors.unavailable":     "The instance is unavailable. It may be in maintenance.",
-	"errors.badGateway":      "The instance could not reach the workspace.",
+	"errors.badGateway":      "The instance could not reach the workspace. If it was just started, wait for its services to finish booting and try again.",
 	"errors.cert":            "The server's TLS certificate was not accepted: %s%s",
 	"errors.certUnknown":     "it was not issued by a trusted authority.",
 	"errors.certHost":        "it is not valid for %s.",
