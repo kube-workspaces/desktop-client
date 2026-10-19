@@ -157,7 +157,11 @@ func TestWin32Toolbar(t *testing.T) {
 
 	originalProc := getWindowLong(t, host, gwlWndProc)
 	var actions []int
-	token := cgo.NewHandle(func(action int) { actions = append(actions, action) })
+	token := cgo.NewHandle(func(action int) {
+		if action != 8 { // Native geometry samples are not navigation actions.
+			actions = append(actions, action)
+		}
+	})
 	t.Cleanup(token.Delete)
 
 	// The label contract installToolbar sends: the identity, one line per

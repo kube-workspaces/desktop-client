@@ -17,7 +17,7 @@ typedef struct {
  gboolean full,pin,hover,drag;
  gdouble dragx;
  gint top,bw,offset,placed,want,w;
- gint64 until; guint timer;
+ gint64 until,geometryUntil; guint timer;
  char *details,*pinText,*unpinText,*fullscreenText,*windowedText;
 } KWToolbar;
 static void kw_reveal(KWToolbar *t) {
@@ -47,6 +47,7 @@ static void kw_layout(KWToolbar *t, gint w) {
 static void kw_action(GtkWidget *button,gpointer data) {
  KWToolbar *t=data;int a=GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button),"kw-action"));
  if(a==1){gboolean entering=!t->full;
+  goWebToolbarAction(t->token,8);g_object_set_data(G_OBJECT(t->window),"kw-geometry-transition",GINT_TO_POINTER(1));t->geometryUntil=g_get_monotonic_time()+1000000;
   if(entering)gtk_window_fullscreen(GTK_WINDOW(t->window));else gtk_window_unfullscreen(GTK_WINDOW(t->window));
   // The toggle reads the same either way, so say what pressing it again does.
   gtk_button_set_label(GTK_BUTTON(t->first),entering?t->windowedText:t->fullscreenText);}
@@ -61,14 +62,16 @@ static gboolean kw_enter(GtkWidget *w,GdkEventCrossing *e,gpointer p){(void)w;(v
 static gboolean kw_leave(GtkWidget *w,GdkEventCrossing *e,gpointer p){(void)w;(void)e;KWToolbar*t=p;t->hover=FALSE;t->until=g_get_monotonic_time()+3000000;return FALSE;}
 static gboolean kw_grip(GtkWidget *w,GdkEventButton *e,gpointer p){(void)w;KWToolbar*t=p;if(e->button==1&&t->full){t->drag=e->type==GDK_BUTTON_PRESS;t->dragx=e->x_root;return TRUE;}return FALSE;}
 static gboolean kw_motion(GtkWidget *w,GdkEventMotion *e,gpointer p){(void)w;KWToolbar*t=p;if(t->drag){t->offset+=(int)(e->x_root-t->dragx);t->dragx=e->x_root;kw_layout(t,t->w);kw_place(t);kw_reveal(t);return TRUE;}return FALSE;}
-static gboolean kw_state(GtkWidget *w,GdkEventWindowState *e,gpointer p){(void)w;KWToolbar*t=p;t->full=(e->new_window_state&GDK_WINDOW_STATE_FULLSCREEN)!=0;kw_layout(t,gtk_widget_get_allocated_width(t->overlay));kw_place(t);kw_reveal(t);return FALSE;}
+static gboolean kw_state(GtkWidget *w,GdkEventWindowState *e,gpointer p){(void)w;KWToolbar*t=p;t->full=(e->new_window_state&GDK_WINDOW_STATE_FULLSCREEN)!=0;if(e->changed_mask&(GDK_WINDOW_STATE_FULLSCREEN|GDK_WINDOW_STATE_MAXIMIZED|GDK_WINDOW_STATE_ICONIFIED)){g_object_set_data(G_OBJECT(t->window),"kw-geometry-transition",GINT_TO_POINTER(1));t->geometryUntil=g_get_monotonic_time()+250000;}kw_layout(t,gtk_widget_get_allocated_width(t->overlay));kw_place(t);kw_reveal(t);return FALSE;}
+static gboolean kw_geometry_configure(GtkWidget*w,GdkEventConfigure*e,gpointer p){(void)w;(void)e;((KWToolbar*)p)->geometryUntil=g_get_monotonic_time()+250000;return FALSE;}
 // "size-allocate" is emitted before the widget keeps the new allocation, so the
 // width has to come from the argument or fullscreen centres against the stale one.
 static void kw_size(GtkWidget*w,GtkAllocation*a,gpointer p){(void)w;KWToolbar*t=p;kw_layout(t,a->width);}
 // gtk_window_get_focus answers the toplevel itself when nothing inside it
 // holds focus, so the bar only counts as focused when a widget *inside* it
 // does — otherwise the strip would never hide in fullscreen.
-static gboolean kw_tick(gpointer p){KWToolbar*t=p;kw_place(t);GtkWidget*f=gtk_window_get_focus(GTK_WINDOW(t->window));gboolean focused=f&&f!=t->window&&gtk_widget_is_ancestor(f,t->bar);if(t->full&&!t->pin&&!t->hover&&!t->drag&&!focused&&g_get_monotonic_time()>t->until){gtk_widget_hide(t->bar);gtk_widget_show(t->handle);}return G_SOURCE_CONTINUE;}
+static gboolean kw_tick(gpointer p){KWToolbar*t=p;if(g_get_monotonic_time()>=t->geometryUntil){g_object_set_data(G_OBJECT(t->window),"kw-geometry-transition",NULL);goWebToolbarAction(t->token,8);}kw_place(t);GtkWidget*f=gtk_window_get_focus(GTK_WINDOW(t->window));gboolean focused=f&&f!=t->window&&gtk_widget_is_ancestor(f,t->bar);if(t->full&&!t->pin&&!t->hover&&!t->drag&&!focused&&g_get_monotonic_time()>t->until){gtk_widget_hide(t->bar);gtk_widget_show(t->handle);}return G_SOURCE_CONTINUE;}
+static gboolean kw_geometry_close(GtkWidget*w,GdkEvent*e,gpointer p){(void)w;(void)e;goWebToolbarAction(((KWToolbar*)p)->token,8);return FALSE;}
 static gboolean kw_key(GtkWidget*w,GdkEventKey*e,gpointer p){(void)w;KWToolbar*t=p;
  if(e->keyval==GDK_KEY_F11){kw_action(t->first,t);return TRUE;}
  if((e->state&(GDK_CONTROL_MASK|GDK_MOD1_MASK))==(GDK_CONTROL_MASK|GDK_MOD1_MASK)&&(e->keyval==GDK_KEY_q||e->keyval==GDK_KEY_Q)){goWebToolbarAction(t->token,6);return TRUE;}
@@ -94,7 +97,7 @@ static KWToolbar* kw_attach(void *window,uintptr_t token,const char*labels,const
  const char *tools=(parts[7]&&parts[7][0])?parts[7]:"Tools";
  t->browser=gtk_bin_get_child(GTK_BIN(window));if(!t->browser){g_strfreev(parts);g_free(t->details);g_free(t->pinText);g_free(t->unpinText);g_free(t->fullscreenText);g_free(t->windowedText);free(t);return NULL;}
  g_object_ref(t->window);g_object_ref(t->browser);gtk_container_remove(GTK_CONTAINER(window),t->browser);
- t->overlay=gtk_overlay_new();gtk_container_add(GTK_CONTAINER(t->overlay),t->browser);gtk_container_add(GTK_CONTAINER(window),t->overlay);
+ t->overlay=gtk_overlay_new();gtk_container_add(GTK_CONTAINER(t->overlay),t->browser);gtk_container_add(GTK_CONTAINER(window),t->overlay);g_object_ref(t->overlay);
  t->bar=gtk_event_box_new();gtk_widget_set_name(t->bar,"kw-toolbar");kw_style(t);
  GtkWidget*row=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,6);gtk_container_add(GTK_CONTAINER(t->bar),row);
  GtkWidget*grip=gtk_event_box_new();gtk_widget_set_size_request(grip,28,-1);gtk_container_add(GTK_CONTAINER(grip),gtk_label_new("::"));gtk_box_pack_start(GTK_BOX(row),grip,FALSE,FALSE,6);
@@ -112,11 +115,13 @@ static KWToolbar* kw_attach(void *window,uintptr_t token,const char*labels,const
  // A pointer with no hover to reveal from — a trackpad tap — still gets the
  // strip back by pressing the handle, as the other two platforms do.
  g_signal_connect(t->handle,"clicked",G_CALLBACK(kw_pressed),t);
+ g_signal_connect(t->window,"delete-event",G_CALLBACK(kw_geometry_close),t);
+ g_signal_connect(t->window,"configure-event",G_CALLBACK(kw_geometry_configure),t);
  g_signal_connect(t->window,"window-state-event",G_CALLBACK(kw_state),t);g_signal_connect(t->window,"key-press-event",G_CALLBACK(kw_key),t);g_signal_connect(t->overlay,"size-allocate",G_CALLBACK(kw_size),t);
  gtk_widget_show_all(t->overlay);gtk_widget_hide(t->handle);t->until=g_get_monotonic_time()+3000000;t->timer=g_timeout_add(100,kw_tick,t);
  return t;
 }
-static void kw_detach(KWToolbar*t){if(!t)return;g_source_remove(t->timer);g_signal_handlers_disconnect_by_data(t->window,t);g_signal_handlers_disconnect_by_data(t->overlay,t);g_object_unref(t->browser);g_object_unref(t->window);g_free(t->details);g_free(t->pinText);g_free(t->unpinText);g_free(t->fullscreenText);g_free(t->windowedText);free(t);}
+static void kw_detach(KWToolbar*t){if(!t)return;g_source_remove(t->timer);g_signal_handlers_disconnect_by_data(t->window,t);g_signal_handlers_disconnect_by_data(t->overlay,t);g_object_unref(t->overlay);g_object_unref(t->browser);g_object_unref(t->window);g_free(t->details);g_free(t->pinText);g_free(t->unpinText);g_free(t->fullscreenText);g_free(t->windowedText);free(t);}
 */
 import "C"
 

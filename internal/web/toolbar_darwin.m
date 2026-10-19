@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
 #include <stdint.h>
 extern void goWebToolbarAction(uintptr_t,int);
+static char KWGeometryTransition;
 
 @interface KWToolbarView : NSView
 @property(nonatomic,assign) id owner;
@@ -51,7 +53,7 @@ extern void goWebToolbarAction(uintptr_t,int);
 - (void)reveal {until=[NSDate timeIntervalSinceReferenceDate]+3;bar.hidden=NO;handle.hidden=YES;}
 - (void)action:(NSButton*)sender {
  int a=(int)sender.tag;
- if(a==1){BOOL entering=!(window.styleMask&NSWindowStyleMaskFullScreen);[window toggleFullScreen:self];
+ if(a==1){goWebToolbarAction(token,8);BOOL entering=!(window.styleMask&NSWindowStyleMaskFullScreen);[window toggleFullScreen:self];
   for(NSButton*b in buttons)if(b.tag==1)b.title=entering?windowed:fullscreen;
   [self reveal];}
  else if(a==4){NSAlert*d=[[[NSAlert alloc]init]autorelease];d.messageText=@"Connection";d.informativeText=details;[d runModal];}
@@ -61,6 +63,7 @@ extern void goWebToolbarAction(uintptr_t,int);
 }
 - (void)tick:(NSTimer*)sender {
  (void)sender;if(closed)return;
+ goWebToolbarAction(token,8);
  BOOL full=(window.styleMask&NSWindowStyleMaskFullScreen)!=0;
  NSPoint p=[root convertPoint:[window mouseLocationOutsideOfEventStream] fromView:nil];
  BOOL hover=NSPointInRect(p,bar.frame)||NSPointInRect(p,handle.frame);
@@ -69,7 +72,12 @@ extern void goWebToolbarAction(uintptr_t,int);
  if(full&&!pinned&&!dragging&&!focus&&[NSDate timeIntervalSinceReferenceDate]>until){bar.hidden=YES;handle.hidden=NO;}
 }
 - (void)changed:(NSNotification*)notification {
- if([notification.name isEqual:NSWindowWillCloseNotification]){closed=YES;return;}
+ if([notification.name isEqual:NSWindowWillEnterFullScreenNotification]||[notification.name isEqual:NSWindowWillExitFullScreenNotification]){
+  objc_setAssociatedObject(window,&KWGeometryTransition,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);return;
+ }
+ if([notification.name isEqual:NSWindowDidEnterFullScreenNotification]||[notification.name isEqual:NSWindowDidExitFullScreenNotification])
+  objc_setAssociatedObject(window,&KWGeometryTransition,@NO,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+ if([notification.name isEqual:NSWindowWillCloseNotification]){goWebToolbarAction(token,8);closed=YES;return;}
  [self layout];
  // A resize is not something the user asked the chrome for: only entering or
  // leaving fullscreen brings the strip back, the way kw_size lays out without
@@ -77,6 +85,16 @@ extern void goWebToolbarAction(uintptr_t,int);
  if([notification.name isEqual:NSWindowDidEnterFullScreenNotification]||[notification.name isEqual:NSWindowDidExitFullScreenNotification])[self reveal];
 }
 @end
+
+int kw_cocoa_geometry(void *win,double *r) {
+ NSWindow *w=(NSWindow*)win;
+ if(!w.visible||w.miniaturized||w.zoomed||(w.styleMask&NSWindowStyleMaskFullScreen)||[objc_getAssociatedObject(w,&KWGeometryTransition)boolValue])return 0;
+ NSRect b=w.frame;r[0]=b.origin.x;r[1]=b.origin.y;r[2]=b.size.width;r[3]=b.size.height;return 1;
+}
+int kw_cocoa_monitor_count(void){return (int)[NSScreen screens].count;}
+void kw_cocoa_monitor(int index,double *r){NSScreen *s=[[NSScreen screens]objectAtIndex:index];NSRect b=s.visibleFrame;r[0]=b.origin.x;r[1]=b.origin.y;r[2]=b.size.width;r[3]=b.size.height;}
+int kw_cocoa_current_monitor(void *win){NSUInteger i=[[NSScreen screens]indexOfObject:((NSWindow*)win).screen];return i==NSNotFound?0:(int)i;}
+void kw_cocoa_restore(void *win,double x,double y,double w,double h){[(NSWindow*)win setFrame:NSMakeRect(x,y,w,h) display:YES];}
 
 void *kw_cocoa_attach(void *win,uintptr_t token,const char *labels,const char *info){
  NSWindow*w=(NSWindow*)win;if(!w)return NULL;
@@ -97,7 +115,7 @@ void *kw_cocoa_attach(void *win,uintptr_t token,const char *labels,const char *i
  t->identity=[[NSTextField labelWithString:parts[0]]retain];t->identity.lineBreakMode=NSLineBreakByTruncatingTail;[t->bar addSubview:t->identity];t->buttons=[[NSMutableArray alloc]init];
  for(int a=1;a<=6;a++){if(a>=parts.count||[parts[a]length]==0)continue;NSButton*b=[NSButton buttonWithTitle:parts[a] target:t action:@selector(action:)];b.tag=a;b.bezelStyle=NSBezelStyleRounded;[t->bar addSubview:b];[t->buttons addObject:b];}
  t->handle=[[NSButton buttonWithTitle:toolsText target:t action:@selector(action:)]retain];t->handle.tag=7;[t->root addSubview:t->handle];
- for(NSString*n in @[NSWindowDidResizeNotification,NSWindowDidEnterFullScreenNotification,NSWindowDidExitFullScreenNotification,NSWindowWillCloseNotification])[[NSNotificationCenter defaultCenter]addObserver:t selector:@selector(changed:) name:n object:w];
+ for(NSString*n in @[NSWindowDidResizeNotification,NSWindowWillEnterFullScreenNotification,NSWindowWillExitFullScreenNotification,NSWindowDidEnterFullScreenNotification,NSWindowDidExitFullScreenNotification,NSWindowWillCloseNotification])[[NSNotificationCenter defaultCenter]addObserver:t selector:@selector(changed:) name:n object:w];
  t->keyMonitor=[[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent*(NSEvent*e){if(e.window!=w)return e;NSString*s=e.charactersIgnoringModifiers;NSUInteger mods=e.modifierFlags;
  if(e.keyCode==103){for(NSButton*b in t->buttons)if(b.tag==1){[t action:b];break;}return nil;}
  if((mods&(NSEventModifierFlagControl|NSEventModifierFlagOption))==(NSEventModifierFlagControl|NSEventModifierFlagOption)&&[s.lowercaseString isEqual:@"q"]){goWebToolbarAction(t->token,6);return nil;}

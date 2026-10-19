@@ -166,7 +166,13 @@ Implemented and working:
   maximized and minimized rectangles do not replace the last normal rectangle.
   Missing monitors fall back to launch-display placement; restored windows are
   bounded to a usable display. Compositors may override placement. Embedded-web
-  child windows do not yet persist their rectangles.
+  children also remember normal rectangles, in separate `web-geometry/` records
+  scoped to profile/server/workspace so child writes cannot overwrite shell
+  settings. GTK logical units, Cocoa points and Win32 window coordinates stay
+  native to each host. The child samples through native chrome callbacks, saves
+  changes at most every 5 s and flushes its last normal rectangle on orderly
+  close. Linux/Xvfb round trips cover normal/fullscreen/maximized closes;
+  physical mixed-DPI and Windows/macOS runtime acceptance remain pending.
 - **Start at login.** Settings offers opt-in per-user graphical startup through
   `internal/autostart`: HKCU Run on Windows (respecting StartupApproved vetoes),
   XDG autostart on Linux (persistent outer path for AppImages; Background portal

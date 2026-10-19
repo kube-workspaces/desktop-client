@@ -8,13 +8,49 @@ package web
 /*
 #cgo LDFLAGS: -luser32
 #include <windows.h>
+static HMONITOR kw_saved_monitor(int x,int y){POINT p={x,y};return MonitorFromPoint(p,MONITOR_DEFAULTTONULL);}
 */
 import "C"
 
 import (
 	"fmt"
 	"unsafe"
+
+	"github.com/kube-workspaces/desktop-client/internal/config"
 )
+
+func nativeGeometry(win unsafe.Pointer) (config.WindowRect, bool) {
+	hwnd := C.HWND(win)
+	// Fullscreen chrome removes the caption before changing the rectangle.
+	if C.IsWindow(hwnd) == 0 || C.IsIconic(hwnd) != 0 || C.IsZoomed(hwnd) != 0 ||
+		C.GetWindowLongPtrW(hwnd, C.GWL_STYLE)&C.WS_CAPTION == 0 {
+		return config.WindowRect{}, false
+	}
+	var b C.RECT
+	if C.GetWindowRect(hwnd, &b) == 0 {
+		return config.WindowRect{}, false
+	}
+	r := config.WindowRect{X: int(b.left), Y: int(b.top), Width: int(b.right - b.left), Height: int(b.bottom - b.top)}
+	return r, r.Valid()
+}
+
+func restoreNativeGeometry(win unsafe.Pointer, r config.WindowRect) {
+	hwnd := C.HWND(win)
+	monitor := C.kw_saved_monitor(C.int(r.X+r.Width/2), C.int(r.Y+r.Height/2))
+	if monitor == nil {
+		monitor = C.MonitorFromWindow(hwnd, C.MONITOR_DEFAULTTONEAREST)
+	}
+	var mi C.MONITORINFO
+	mi.cbSize = C.DWORD(unsafe.Sizeof(mi))
+	if C.GetMonitorInfoW(monitor, &mi) == 0 {
+		return
+	}
+	b := mi.rcWork
+	m := config.WindowRect{X: int(b.left), Y: int(b.top), Width: int(b.right - b.left), Height: int(b.bottom - b.top)}
+	if fitted, ok := fitGeometry(r, []config.WindowRect{m}, 0); ok {
+		C.SetWindowPos(hwnd, C.HWND(nil), C.int(fitted.X), C.int(fitted.Y), C.int(fitted.Width), C.int(fitted.Height), C.SWP_NOZORDER|C.SWP_NOACTIVATE)
+	}
+}
 
 // centerOnLaunchDisplay moves the freshly created webview window so its centre
 // lands in the middle of the launch display — the monitor the shell's own

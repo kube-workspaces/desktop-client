@@ -643,6 +643,14 @@ monitors fall back to the launch display. Fullscreen/maximized/minimized states
 do not overwrite the last normal rectangle. Window-manager placement rules still
 apply. Pure-console sessions started with `--no-agent-tier` have no agent toggle.
 
+Embedded-web windows remember their normal position and size independently for
+each profile, server and workspace. Child-owned records in the configuration
+directory's `web-geometry/` folder avoid competing with shell settings writes.
+Fullscreen, maximized and minimized windows retain their last normal rectangle;
+restoration fits it to a current monitor's usable bounds. Compositors may override
+placement. Linux automated desktop tests cover reopen and fullscreen/maximized
+close; physical mixed-DPI and Windows/macOS runtime acceptance remain pending.
+
 Tier 1 uses the pinned Selkies **2.0.0rc0** WebSocket protocol. Release
 packages bundle the required libraries (see
 [desktop-client install docs](https://github.com/kube-workspaces/deploy/blob/main/docs/desktop-client.md#tier-1-media-libraries-where-to-get-them));

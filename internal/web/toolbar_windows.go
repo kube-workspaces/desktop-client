@@ -36,7 +36,7 @@ static void kw_layout(KWToolbar *t){RECT r;GetClientRect(t->win,&r);
  MoveWindow(t->identity,kw_scale(t,24),kw_scale(t,13),kw_max(0,x-kw_scale(t,28)),kw_scale(t,24),TRUE);
 }
 static void kw_action(KWToolbar *t,int a){
- if(a==1){t->full=!t->full;
+ if(a==1){goWebToolbarAction(t->token,8);t->full=!t->full;
   if(t->full){t->style=GetWindowLongPtrW(t->win,GWL_STYLE);GetWindowRect(t->win,&t->saved);
    MONITORINFO mi={sizeof(mi)};GetMonitorInfoW(MonitorFromWindow(t->win,MONITOR_DEFAULTTONEAREST),&mi);
    SetWindowLongPtrW(t->win,GWL_STYLE,WS_POPUP|WS_VISIBLE);
@@ -65,6 +65,7 @@ static LRESULT CALLBACK kw_bar_proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){KWTo
  return DefWindowProcW(hwnd,msg,wp,lp);
 }
 static LRESULT CALLBACK kw_window_proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){KWToolbar *t=GetPropW(hwnd,L"KW_TOOLBAR");if(!t)return DefWindowProcW(hwnd,msg,wp,lp);
+ if(msg==WM_CLOSE||(msg==WM_TIMER&&wp==12304))goWebToolbarAction(t->token,8);
  if(msg==WM_COMMAND&&LOWORD(wp)==7){kw_action(t,7);return 0;}
  if(msg==WM_HOTKEY){if(wp==12305)kw_action(t,1);else if(wp==12307)kw_action(t,6);else{kw_reveal(t);SetFocus(t->buttons[1]);}return 0;}
  if(msg==WM_TIMER&&wp==12304){POINT p;GetCursorPos(&p);RECT r;GetWindowRect(t->bar,&r);

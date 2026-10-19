@@ -19,19 +19,27 @@ import (
 // Run opens a native window navigating url and blocks until the user closes
 // it. webview.Run must stay on the main OS thread (matches SDL's ownership
 // when it happened to be a viewer — here the whole process exists for this).
-func Run(title, url string) error {
+func Run(title, url string, options ...GeometryOptions) error {
 	runtime.LockOSThread()
 	w := webview.New(true)
 	defer w.Destroy()
 	w.SetTitle(title)
 	w.SetSize(1280, 800, webview.HintNone)
-	cleanup, err := installToolbar(w, title, url)
+	g := &geometryRecorder{}
+	if len(options) > 0 {
+		g.opts = options[0]
+	}
+	defer g.flush()
+	cleanup, err := installToolbar(w, title, url, g)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 	if b, ok := launchBoundsFromEnv(); ok {
 		centerOnLaunchDisplay(w.Window(), b)
+	}
+	if g.opts.Restore.Valid() {
+		restoreNativeGeometry(w.Window(), g.opts.Restore)
 	}
 	w.Navigate(url)
 	w.Run()

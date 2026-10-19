@@ -9,6 +9,6 @@ import "errors"
 // ships alongside the cgo-free shell; the shell's `web` subcommand is the
 // developer-copy fallback, so it too surfaces this error when it is the one
 // being run.
-func Run(title, url string) error {
+func Run(title, url string, _ ...GeometryOptions) error {
 	return errors.New("web subcommand unavailable: this build was compiled with CGO_ENABLED=0")
 }

@@ -16,12 +16,14 @@ package webcmd
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/kube-workspaces/desktop-client/internal/cmdutil"
+	"github.com/kube-workspaces/desktop-client/internal/config"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/web"
 )
@@ -78,5 +80,24 @@ func RunWeb(ctx context.Context, uaVersion string, args []string) error {
 		return fmt.Errorf("grant browser session: %w", err)
 	}
 
-	return web.Run(ns+"/"+name, grant.URL)
+	geometry := web.GeometryOptions{}
+	path, err := config.WebGeometryPath(profile.Name, profile.Server, ns+"/"+name)
+	if err == nil {
+		r, loadErr := config.LoadWebGeometry(path)
+		if loadErr == nil {
+			geometry.Restore = r
+		} else if !errors.Is(loadErr, os.ErrNotExist) {
+			fmt.Fprintln(os.Stderr, "web window geometry:", loadErr)
+		}
+		geometry.Save = func(r config.WindowRect) error {
+			err := config.SaveWebGeometry(path, r)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "save web window geometry:", err)
+			}
+			return err
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "web window geometry:", err)
+	}
+	return web.Run(ns+"/"+name, grant.URL, geometry)
 }

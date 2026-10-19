@@ -16,6 +16,7 @@ import (
 	"os"
 	"runtime/cgo"
 	"strings"
+	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
@@ -27,7 +28,7 @@ func goWebToolbarAction(handle C.uintptr_t, action C.int) {
 	cgo.Handle(handle).Value().(func(int))(int(action))
 }
 
-func installToolbar(w webview.WebView, title, rawURL string) (func(), error) {
+func installToolbar(w webview.WebView, title, rawURL string, geometry *geometryRecorder) (func(), error) {
 	endpoint, token := os.Getenv(connection.NavigationURLEnv), os.Getenv(connection.NavigationTokenEnv)
 	// Retain no browser-session grant query in native chrome or diagnostics.
 	origin := ""
@@ -62,7 +63,15 @@ func installToolbar(w webview.WebView, title, rawURL string) (func(), error) {
 				}
 			}()
 		case 6:
+			if r, ok := nativeGeometry(w.Window()); ok {
+				geometry.observe(r, time.Now())
+			}
 			w.Terminate()
+		case 8:
+			// Native host sampling only; never exposed as a page binding.
+			if r, ok := nativeGeometry(w.Window()); ok {
+				geometry.observe(r, time.Now())
+			}
 		}
 	})
 	cleanup, err := attachNativeToolbar(w.Window(), uintptr(handle), strings.Join(labels, "\n"), details)
