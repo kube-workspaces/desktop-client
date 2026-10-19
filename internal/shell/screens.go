@@ -328,8 +328,8 @@ func (a *App) drawWorkspacesScreen(bounds ui.Rect) intent {
 	toolbar, content := ui.CutTop(content, th.ControlHeight)
 	rest := toolbar
 	if len(a.m.Sessions) > 0 {
-		sessions := ui.Button{ID: idSessions, Text: i18n.Sprintf("sessions.title", len(a.m.Sessions)), Variant: ui.ButtonSecondary}
-		sessionsRect, remainder := ui.CutRight(rest, sessions.Width(ctx))
+		sessions := ui.SessionsButton{ID: idSessions, Count: len(a.m.Sessions)}
+		sessionsRect, remainder := ui.CutRight(rest, th.ControlHeight)
 		rest = ui.CutRightGap(remainder, th.Gap)
 		if sessions.Layout(ctx, sessionsRect) {
 			out = intent{kind: intentOpenSessions}
@@ -1501,55 +1501,56 @@ func (a *App) drawProfilesModal(bounds ui.Rect) intent {
 	return out
 }
 
-// drawSessionsModal lists the held sessions over a dimmed, frozen copy of
-// the list. Switch resumes one in a fresh window; Close disconnects it for
-// good. Esc and Close back out.
-func (a *App) drawSessionsModal(bounds ui.Rect) intent {
+// drawSessionsWindow draws the session manager full-bleed for its own window,
+// on its own focus ring and input — the shell behind it stays live. The list
+// scrolls under a fixed window when a large count (or interface scale) would
+// otherwise outgrow the display. Switch focuses or resumes a session; the icon
+// control disconnects it. Esc and the native window chrome dismiss the window
+// without touching the held transports.
+func (a *App) drawSessionsWindow(ctx *ui.Context, bounds ui.Rect, scroll *int) intent {
 	th := a.opts.Theme
-	ctx := a.ctx
 	var out intent
 
-	ctx.Canvas.Fill(bounds, modalScrim)
-
-	rows := len(a.m.Sessions)
-	listH := rows*(th.ControlHeight+th.Gap/2) + th.ControlHeight
-	if rows == 0 {
-		listH = ui.LineHeight(th.Body, th.Font) + th.Gap/2 + th.ControlHeight
-	}
-	parts := []int{
-		ui.TextHeight(th.Title, th.Font) + th.Gap/2, // title
-		listH,            // sessions
-		th.ControlHeight, // close row
-	}
-	content := 2 * th.Pad
-	for i, p := range parts {
-		if i > 0 {
-			content += th.Gap
-		}
-		content += p
-	}
-
-	width := min(bounds.W-2*th.Pad, infoCardWidth)
-	card := ui.CenterRect(bounds, width, min(content, bounds.H-2*th.Gap))
-	if card.W <= 0 || card.H <= 0 {
+	ctx.Canvas.Fill(bounds, th.Background)
+	if bounds.W <= 0 || bounds.H <= 0 {
 		return out
 	}
-	card.Y = max(card.Y, th.Gap)
 
-	ctx.Canvas.FillRounded(card, th.Radius, th.Surface)
-	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
-	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
-
-	ui.Label(ctx, body.Next(parts[0]), i18n.Sprintf("sessions.title", rows), ui.LabelStyle{Scale: th.Title})
-
-	listRect := body.Next(parts[1])
+	rowH := th.ControlHeight + th.Gap/2
+	rows := len(a.m.Sessions)
+	listH := rows * rowH
 	if rows == 0 {
-		ui.Label(ctx, ui.Rect{X: listRect.X, Y: listRect.Y, W: listRect.W, H: ui.LineHeight(th.Body, th.Font)}, i18n.Get("sessions.none"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+		listH = ui.LineHeight(th.Body, th.Font)
+	}
+	body := ui.NewStack(ui.Inset(bounds, th.Pad), th.Gap)
+	titleH := ui.TextHeight(th.Title, th.Font) + th.Gap/2
+	ui.Label(ctx, body.Next(titleH), i18n.Sprintf("sessions.title", rows), ui.LabelStyle{Scale: th.Title})
+
+	listRect := body.Next(listH)
+	listRect.H = max(0, bounds.H-th.Pad-listRect.Y)
+	if listRect.W <= 0 || listRect.H <= 0 {
+		return out
+	}
+	if ctx.Input.Hovering(listRect) {
+		*scroll -= ctx.Input.Wheel.Y * rowH
+	}
+	*scroll = max(0, min(*scroll, listH-listRect.H))
+	overflow := listH > listRect.H
+
+	if rows == 0 {
+		ui.Label(ctx, listRect, i18n.Get("sessions.none"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 	} else {
-		y := listRect.Y
-		for i, entry := range a.m.Sessions {
-			r := ui.Rect{X: listRect.X, Y: y, W: listRect.W, H: th.ControlHeight}
-			y += th.ControlHeight + th.Gap/2
+		// A scrollbar strip narrows the rows so the thumb never lands on
+		// a button.
+		rowsRect := listRect
+		if overflow {
+			rowsRect.W -= max(3, th.ControlHeight/4)
+		}
+		ctx.Canvas.PushClip(listRect)
+		y := listRect.Y - *scroll
+		for _, entry := range a.m.Sessions {
+			r := ui.Rect{X: rowsRect.X, Y: y, W: rowsRect.W, H: th.ControlHeight}
+			y += rowH
 			// An open session's window is already on screen: the button
 			// focuses it. A parked session's transport is held without a
 			// window: the button resumes it in a fresh window.
@@ -1557,15 +1558,21 @@ func (a *App) drawSessionsModal(bounds ui.Rect) intent {
 			if entry.Open {
 				switchText = i18n.Get("sessions.focus")
 			}
-			sw := ui.Button{ID: ui.FocusID(fmt.Sprintf("session-switch-%d", i)), Text: switchText, Variant: ui.ButtonSecondary}
-			cl := ui.Button{ID: ui.FocusID(fmt.Sprintf("session-close-%d", i)), Text: i18n.Get("sessions.close"), Variant: ui.ButtonSecondary}
+			sw := ui.Button{ID: ui.FocusID("session-switch-" + entry.Key), Text: switchText, Variant: ui.ButtonSecondary, Smooth: true, Icon: ui.ButtonIconFocus}
+			cl := ui.Button{ID: ui.FocusID("session-close-" + entry.Key), Variant: ui.ButtonDanger, Smooth: true, Icon: ui.ButtonIconClose}
 			swW, clW := sw.Width(ctx), cl.Width(ctx)
-			titleW := max(r.W-swW-clW-th.Gap, 0)
+			titleW := max(r.W-swW-clW-2*th.Gap, 0)
 			titleRect, ctrls := ui.CutLeft(r, titleW)
 			ui.Label(ctx, titleRect, entry.Title+"  ·  "+sessionKindLabel(entry.Kind), ui.LabelStyle{Middle: true})
+			_, ctrls = ui.CutLeft(ctrls, th.Gap)
 			swRect, rest := ui.CutLeft(ctrls, swW)
 			_, rest = ui.CutLeft(rest, th.Gap)
 			clRect, _ := ui.CutLeft(rest, clW)
+			// Rows (and their controls) entirely outside the viewport must
+			// not join the focus ring or answer clicks through the clip.
+			if r.Y+r.H <= listRect.Y || r.Y >= listRect.Y+listRect.H {
+				continue
+			}
 			if sw.Layout(ctx, swRect) {
 				out = intent{kind: intentSwitchSession, sessionKey: entry.Key}
 			}
@@ -1573,12 +1580,17 @@ func (a *App) drawSessionsModal(bounds ui.Rect) intent {
 				out = intent{kind: intentCloseSession, sessionKey: entry.Key}
 			}
 		}
+		ctx.Canvas.PopClip()
+		if overflow {
+			track := ui.Rect{X: listRect.X + listRect.W - 3, Y: listRect.Y, W: 3, H: listRect.H}
+			thumbH := max(th.ControlHeight/2, track.H*listRect.H/listH)
+			thumbY := track.Y + (track.H-thumbH)*(*scroll)/max(1, listH-listRect.H)
+			ctx.Canvas.Fill(track, th.Border)
+			ctx.Canvas.Fill(ui.Rect{X: track.X, Y: thumbY, W: track.W, H: thumbH}, th.TextMuted)
+		}
 	}
 
-	foot := body.Next(parts[2])
-	closeRow := ui.Button{ID: idSessionsClose, Text: i18n.Get("workspaces.close"), Variant: ui.ButtonPrimary}
-	closeRect, _ := ui.CutRight(foot, closeRow.Width(ctx))
-	if closeRow.Layout(ctx, closeRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+	if ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentSessionsClose}
 	}
 	return out

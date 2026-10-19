@@ -840,7 +840,8 @@ func newRig(profile *config.Profile, token string) *rig {
 		now:   time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC),
 	}
 	app, err := New(Options{
-		Backend: r.be,
+		Backend:  r.be,
+		PopupNew: func() viewer.Backend { return newFakeBackend(600, 400) },
 		NewClient: func(server string, insecure bool) (API, SessionDialer, error) {
 			r.api.set(func(f *fakeAPI) {
 				f.base = server

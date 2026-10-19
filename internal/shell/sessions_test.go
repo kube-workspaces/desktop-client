@@ -5,10 +5,12 @@ package shell
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/ui"
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
 func sessionsRig(t *testing.T) *rig {
@@ -74,9 +76,9 @@ func TestReopenResumesWithoutRedial(t *testing.T) {
 	}
 }
 
-// TestSessionsModalSwitchResumes: switching from the modal opens the held
+// TestSessionsWindowSwitchResumes: switching from the window opens the held
 // session's window without a new dial.
-func TestSessionsModalSwitchResumes(t *testing.T) {
+func TestSessionsWindowSwitchResumes(t *testing.T) {
 	r := sessionsRig(t)
 
 	openWorkspace(t, r, "team/vm-a")
@@ -86,7 +88,7 @@ func TestSessionsModalSwitchResumes(t *testing.T) {
 	r.clickFocused()
 	r.step()
 	if !r.app.m.SessionList {
-		t.Fatal("sessions modal did not open")
+		t.Fatal("sessions window did not open")
 	}
 
 	r.app.act(context.Background(), intent{kind: intentSwitchSession, sessionKey: "team/vm-a"})
@@ -104,9 +106,9 @@ func TestSessionsModalSwitchResumes(t *testing.T) {
 	}
 }
 
-// TestSessionsModalCloseDisconnects: closing from the modal releases the
+// TestSessionsWindowCloseDisconnects: closing from the window releases the
 // transport; the rest stay held.
-func TestSessionsModalCloseDisconnects(t *testing.T) {
+func TestSessionsWindowCloseDisconnects(t *testing.T) {
 	r := sessionsRig(t)
 
 	openWorkspace(t, r, "team/vm-a")
@@ -121,6 +123,93 @@ func TestSessionsModalCloseDisconnects(t *testing.T) {
 	if len(r.app.m.Sessions) != 1 || r.app.m.Sessions[0].Key != "team/vm-b" {
 		t.Fatalf("sessions = %v, want only vm-b held", r.app.m.Sessions)
 	}
+}
+
+func TestSessionsWindowIndependentLifecycle(t *testing.T) {
+	r := sessionsRig(t)
+	openWorkspace(t, r, "team/vm-a")
+	r.app.openSessionsWindow()
+	r.step()
+	p := r.app.popup
+	if p == nil || p.kind != popupSessions {
+		t.Fatal("sessions did not open a native utility window")
+	}
+	// The shell still draws its controls with its own focus context.
+	if !hasFocusID(r.app.ctx.Focus().Order(), idCreate) {
+		t.Fatal("the Sessions window blocked the workspace screen")
+	}
+	// The manager offers row actions only: dismissing it is the OS window
+	// chrome's job, so there is no footer Close button to tab into.
+	for _, id := range p.ctx.Focus().Order() {
+		if !strings.HasPrefix(string(id), "session-switch-") && !strings.HasPrefix(string(id), "session-close-") {
+			t.Fatalf("sessions window registered %q, want row actions only", id)
+		}
+	}
+	r.app.openSessionsWindow()
+	if r.app.popup != p || p.be.(*fakeBackend).raises == 0 {
+		t.Fatal("reopening Sessions did not raise the existing window")
+	}
+	p.events = append(p.events, viewer.EventWindowClose{})
+	r.step()
+	if r.app.popup != nil || r.app.m.SessionList {
+		t.Fatal("native window close did not dismiss Sessions")
+	}
+	if len(r.closed) != 0 || len(r.app.m.Sessions) != 1 {
+		t.Fatal("closing the manager disconnected a held session")
+	}
+}
+
+func TestSessionsButtonTogglesFocusedWindow(t *testing.T) {
+	r := sessionsRig(t)
+	openWorkspace(t, r, "team/vm-a")
+	r.focus(idSessions)
+	r.clickFocused()
+	p := r.app.popup
+	if p == nil {
+		t.Fatal("Sessions button did not open the manager")
+	}
+	be := p.be.(*fakeBackend)
+	be.send(viewer.EventFocus{Gained: true})
+	r.step()
+
+	// Native focus transfers on activation, before the button's click is
+	// completed. Keep the old focus decision through that separate frame.
+	be.send(viewer.EventFocus{Gained: false})
+	r.be.send(viewer.EventFocus{Gained: true})
+	r.step()
+	r.clickFocused()
+	if !be.isHidden() || r.app.popup != p {
+		t.Fatal("clicking Sessions did not hide the focused manager")
+	}
+	if len(r.closed) != 0 || len(r.app.m.Sessions) != 1 {
+		t.Fatal("hiding the manager disconnected a session")
+	}
+
+	raises := be.raises
+	r.clickFocused()
+	if be.isHidden() || be.raises != raises+1 || r.app.popup != p {
+		t.Fatal("clicking Sessions did not show and raise the hidden manager")
+	}
+
+	// An open manager that lost focus to another window is raised, not hidden.
+	be.send(viewer.EventFocus{Gained: true})
+	r.step()
+	be.send(viewer.EventFocus{Gained: false})
+	r.step()
+	raises = be.raises
+	r.clickFocused()
+	if be.isHidden() || be.raises != raises+1 {
+		t.Fatal("clicking Sessions did not raise the unfocused manager")
+	}
+}
+
+func hasFocusID(ids []ui.FocusID, want ui.FocusID) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestSignOutReleasesSessions: signing out hands every held slot back.

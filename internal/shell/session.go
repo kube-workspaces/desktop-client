@@ -82,6 +82,13 @@ func (a *App) syncSessions() {
 		entries = append(entries, sessionEntryFor(a.sessions[key], a.isLive(key)))
 	}
 	a.m.Sessions = entries
+	if a.popup != nil && a.popup.kind == popupSessions {
+		a.popup.dirty = true
+		if err := a.popup.be.SetTitle(i18n.Sprintf("sessions.title", len(entries))); err != nil {
+			a.logf("sessions window: retitle: %v", err)
+		}
+		a.fitPopup()
+	}
 }
 
 // closeSession releases one held session and forgets it. It is idempotent.
@@ -124,7 +131,7 @@ func (a *App) closeAllSessions() {
 // the pump and the shell stays on the list — so several sessions stay live
 // side by side. A clean window close parks the session (it stays connected
 // in the background); a mid-flight failure closes it and reports.
-// Explicit disconnects happen in the sessions modal or the window's quit chord.
+// Explicit disconnects happen in the sessions window or the window's quit chord.
 //
 // It runs on the loop's goroutine, which is the goroutine that owns every
 // window, which is what the viewer requires.

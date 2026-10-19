@@ -15,27 +15,28 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
-// This file is the shell's popup windows: the tray's About panel and
-// quick-pick chooser as windows of their own, so neither relies on the main
-// window being open (or visible — a minimized shell stays minimized while a
-// popup answers the click).
+// This file is the shell's utility windows: the session manager, the tray's
+// About panel and the quick-pick chooser, all as windows of their own, so
+// none of them relies on the main window being open (or visible — a minimized
+// shell stays minimized while a utility window answers the click).
 //
-// A popup is deliberately not a session and rides none of its machinery: no
-// transport, no parking, no switcher entry. It is one SDL window with its
-// own backend and immediate-mode context, stepped by the same pump beside
-// the shell and the sessions, and it closes itself the moment its job is
-// done. At most one popup is open at a time — a second request closes the
-// first — because tray clicks are sequential and a pile of choosers would
-// be a bug report, not a feature.
+// A utility window is deliberately not a session and rides none of its
+// machinery: no transport, no parking, no switcher entry. It is one SDL window
+// with its own backend and immediate-mode context, stepped by the same pump
+// beside the shell and the sessions, and it closes itself the moment its job
+// is done. At most one utility window is open at a time — a second request
+// closes the first — because tray clicks are sequential and a pile of
+// choosers would be a bug report, not a feature.
 
 type popupKind int
 
 const (
 	popupAbout popupKind = iota
 	popupPick
+	popupSessions
 )
 
-// popupWindow is one About/pick window. Everything in it belongs to the
+// popupWindow is one utility window. Everything in it belongs to the
 // loop's goroutine, like every other window the pump owns.
 type popupWindow struct {
 	kind popupKind
@@ -61,11 +62,55 @@ type popupWindow struct {
 	events     []viewer.Event
 	closed     bool
 	dirty      bool
+	focused    bool
+	// Keep the pre-click focus through the main window's activation: the
+	// OS transfers focus before delivering the button's click on release.
+	focusedBeforeShellClick bool
 
 	// lastTheme is the theme the window was sized for. A theme change
 	// (the Interface Size row while a popup is open) re-fits the window
 	// rather than clipping the content.
 	lastTheme *ui.Theme
+	scroll    int
+}
+
+// toggleSessionsWindow is the main window button's show/focus/hide action.
+func (a *App) toggleSessionsWindow() {
+	if p := a.popup; p != nil && p.kind == popupSessions && (p.focused || p.focusedBeforeShellClick) {
+		if err := p.be.Hide(); err != nil {
+			a.logf("sessions: hide window: %v", err)
+			return
+		}
+		p.focused = false
+		p.focusedBeforeShellClick = false
+		return
+	}
+	a.openSessionsWindow()
+}
+
+// openSessionsWindow raises the existing manager instead of opening duplicates.
+func (a *App) openSessionsWindow() {
+	if a.popup != nil && a.popup.kind == popupSessions {
+		_ = a.popup.be.Show()
+		_ = a.popup.be.Raise()
+		return
+	}
+	a.openPopup(popupSessions, kwclient.Workspace{})
+	if a.popup != nil {
+		a.m.ShowSessionList()
+	}
+}
+
+// sessionsWindowHeight is the natural height of [App.drawSessionsWindow]'s
+// content: pad, title, gap, one row per held session. A count that outgrows
+// the display is capped by [popupMaxHeight] at open and re-fit, and the list
+// scrolls inside it.
+func sessionsWindowHeight(th *ui.Theme, count int) int {
+	listH := count * (th.ControlHeight + th.Gap/2)
+	if count == 0 {
+		listH = ui.LineHeight(th.Body, th.Font)
+	}
+	return 2*th.Pad + ui.TextHeight(th.Title, th.Font) + th.Gap*3/2 + listH
 }
 
 // popupWidth is the popup window width for the theme: the card width the
@@ -96,6 +141,10 @@ func (a *App) openPopup(kind popupKind, ws kwclient.Workspace) {
 	if kind == popupPick {
 		title = ws.Key()
 		h = pickContentHeight(th, len(tray.ModesFor(trayKindOf(ws))), "")
+	}
+	if kind == popupSessions {
+		title = i18n.Sprintf("sessions.title", len(a.m.Sessions))
+		h = sessionsWindowHeight(th, len(a.m.Sessions))
 	}
 	w := popupWidth(th)
 	if maxH := popupMaxHeight(); maxH > 0 && h > maxH {
@@ -144,6 +193,9 @@ func (a *App) closePopup() {
 		return
 	}
 	a.popup.be.Close()
+	if a.popup.kind == popupSessions {
+		a.m.CloseSessionList()
+	}
 	a.popup = nil
 }
 
@@ -160,6 +212,9 @@ func (a *App) fitPopup() {
 	h := aboutContentHeight(th)
 	if p.kind == popupPick {
 		h = pickContentHeight(th, len(tray.ModesFor(trayKindOf(p.ws))), p.err)
+	}
+	if p.kind == popupSessions {
+		h = sessionsWindowHeight(th, len(a.m.Sessions))
 	}
 	if maxH := popupMaxHeight(); maxH > 0 && h > maxH {
 		h = maxH
@@ -200,6 +255,11 @@ func (a *App) stepPopups(ctx context.Context, now time.Time) {
 // intent applies inline like the shell's own draw-then-act.
 func (p *popupWindow) step(ctx context.Context, now time.Time, events []viewer.Event) error {
 	a := p.app
+	for _, event := range events {
+		if focus, ok := event.(viewer.EventFocus); ok {
+			p.focused = focus.Gained
+		}
+	}
 	p.in = p.in.Fold(now, events)
 	if p.in.Quit {
 		// The window's close button. Popups have no minimize-to-tray of
@@ -237,6 +297,8 @@ func (p *popupWindow) step(ctx context.Context, now time.Time, events []viewer.E
 		out = a.drawAboutModal(p.ctx, bounds)
 	case popupPick:
 		out = a.drawQuickPickModal(p.ctx, bounds, p.ws, p.err)
+	case popupSessions:
+		out = a.drawSessionsWindow(p.ctx, bounds, &p.scroll)
 	}
 	p.ctx.End()
 	if err := p.present(w, h); err != nil {
@@ -281,6 +343,8 @@ func (a *App) applyPopupIntent(ctx context.Context, p *popupWindow, in intent) {
 		a.closePopup()
 	case intentPickMode:
 		a.applyPopupPick(ctx, p, in.mode)
+	case intentSessionsClose, intentSwitchSession, intentCloseSession:
+		a.act(ctx, in)
 	}
 }
 

@@ -309,7 +309,6 @@ var english = map[string]string{
 	"sessions.none":         "No open sessions. Opening a workspace keeps it connected here.",
 	"sessions.switch":       "Switch",
 	"sessions.focus":        "Focus",
-	"sessions.close":        "Close",
 	"sessions.opened":       "%s opened in its own window.",
 	"sessions.parked":       "%s stays connected in the background.",
 	"sessions.closed":       "Closed %s.",

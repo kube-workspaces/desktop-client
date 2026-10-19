@@ -135,6 +135,8 @@ type Button struct {
 	Smooth bool
 	// Round uses a circular face when laid out in a square.
 	Round bool
+	// Icon places a small action glyph before the label, or centers it alone.
+	Icon ButtonIcon
 }
 
 // Width returns the button's intrinsic width: its label plus symmetric
@@ -143,7 +145,14 @@ type Button struct {
 // state name changes.
 func (b *Button) Width(ctx *Context) int {
 	scale := orInt(b.Scale, ctx.Theme.Body)
-	return TextWidth(b.Text, scale, ctx.Theme.Font) + 2*ctx.Theme.Pad
+	w := TextWidth(b.Text, scale, ctx.Theme.Font) + 2*ctx.Theme.Pad
+	if b.Icon != ButtonIconNone {
+		if b.Text == "" {
+			return ctx.Theme.ControlHeight
+		}
+		w += ctx.Theme.ControlHeight/2 + ctx.Theme.Gap
+	}
+	return w
 }
 
 // Layout draws the button in r and reports whether it was activated.
@@ -221,7 +230,18 @@ func (b *Button) Layout(ctx *Context, r Rect) bool {
 		ctx.Canvas.PopClip()
 	}
 
-	Label(ctx, InsetXY(face, th.Gap, 0), b.Text, LabelStyle{
+	labelRect := InsetXY(face, th.Gap, 0)
+	if b.Icon != ButtonIconNone {
+		size := th.ControlHeight / 2
+		width := size
+		if b.Text != "" {
+			width += th.Gap + TextWidth(b.Text, orInt(b.Scale, th.Body), th.Font)
+		}
+		x := face.X + (face.W-width)/2
+		drawButtonIcon(ctx.Canvas, Rect{X: x, Y: face.Y + (face.H-size)/2, W: size, H: size}, b.Icon, ink)
+		labelRect = Rect{X: x + size + th.Gap, Y: face.Y, W: max(0, width-size-th.Gap), H: face.H}
+	}
+	Label(ctx, labelRect, b.Text, LabelStyle{
 		Color:  ink,
 		Scale:  orInt(b.Scale, th.Body),
 		Align:  AlignCenter,

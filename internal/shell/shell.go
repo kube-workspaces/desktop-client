@@ -623,12 +623,28 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 	a.pollFresh()
 	events := a.events
 	a.events = events[:0]
+	if p := a.popup; p != nil && p.kind == popupSessions {
+		for _, event := range events {
+			if focus, ok := event.(viewer.EventFocus); ok {
+				p.focusedBeforeShellClick = focus.Gained && p.focused
+			}
+		}
+	}
 	closeRequested, globalQuit := scanQuit(events)
 	a.in = a.in.Fold(now, events)
 	for _, event := range events {
 		if focus, ok := event.(viewer.EventFocus); ok && !focus.Gained && a.workspaceMenu.key != "" {
 			a.closeWorkspaceMenu()
 		}
+	}
+	// Consume the activation snapshot after the first completed interaction,
+	// including clicks elsewhere in the main window.
+	if a.in.Released || len(a.in.Keys) > 0 {
+		defer func() {
+			if a.popup != nil {
+				a.popup.focusedBeforeShellClick = false
+			}
+		}()
 	}
 	if len(events) > 0 {
 		a.dirty = true
@@ -757,7 +773,7 @@ func (a *App) draw(ctx context.Context) error {
 	// A modal keeps the previous frame as a frozen, dimmed backdrop. The
 	// background is deliberately not cleared and the list is not drawn, so the
 	// buffer still holds the frame the user last saw and the modal dims it.
-	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SessionList || a.m.SSH != nil || a.m.Credentials != nil)
+	modal := a.m.State == StateWorkspaces && (a.m.Info != nil || a.m.Creating || a.m.Profiles || a.m.SSH != nil || a.m.Credentials != nil)
 	if a.m.State != StateWorkspaces || modal || a.m.CloseConfirm {
 		a.userMenuOpen = false
 		a.userMenuScroll = 0
@@ -775,8 +791,6 @@ func (a *App) draw(ctx context.Context) error {
 		intent = a.drawLoginScreen(a.canvas.Bounds())
 	case StateWorkspaces:
 		switch {
-		case a.m.SessionList:
-			intent = a.drawSessionsModal(a.canvas.Bounds())
 		case a.m.Profiles:
 			intent = a.drawProfilesModal(a.canvas.Bounds())
 		case a.m.Creating:
@@ -851,7 +865,7 @@ func (a *App) drainWebNavigation() {
 			_ = a.be.Show()
 			_ = a.be.Raise()
 			if action == connection.Sessions {
-				a.m.ShowSessionList()
+				a.openSessionsWindow()
 			}
 			a.dirty = true
 		default:

@@ -207,7 +207,7 @@ func (a *App) stepLive(ctx context.Context, now time.Time) error {
 				_ = a.be.Show()
 				_ = a.be.Raise()
 				if action == connection.Sessions {
-					a.m.ShowSessionList()
+					a.openSessionsWindow()
 				}
 				a.dirty = true
 			})

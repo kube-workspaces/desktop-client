@@ -161,7 +161,7 @@ type Model struct {
 	// overlays whatever screen is showing.
 	CloseConfirm bool
 
-	// SessionList reports whether the sessions modal is open.
+	// SessionList reports whether the separate sessions window is open.
 	SessionList bool
 
 	// Busy and BusyText describe work in flight. Busy suppresses the actions
@@ -427,12 +427,8 @@ func (m *Model) ShowProfiles() {
 // CloseProfiles dismisses the profile switcher modal.
 func (m *Model) CloseProfiles() { m.Profiles = false }
 
-// ShowSessionList opens the sessions modal.
+// ShowSessionList records that the sessions window is open.
 func (m *Model) ShowSessionList() {
-	m.Info = nil
-	m.Creating = false
-	m.Profiles = false
-	m.Err, m.Notice = "", ""
 	m.SessionList = true
 }
 
@@ -445,7 +441,7 @@ func (m *Model) ShowCloseConfirm() {
 // CloseCloseConfirm dismisses the main-window close question.
 func (m *Model) CloseCloseConfirm() { m.CloseConfirm = false }
 
-// CloseSessionList dismisses the sessions modal.
+// CloseSessionList records that the sessions window is closed.
 func (m *Model) CloseSessionList() { m.SessionList = false }
 
 // SessionParked returns from a cleanly closed window to the workspace list,

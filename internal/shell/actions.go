@@ -218,20 +218,18 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.m.CloseProfiles()
 		a.ctx.Focus().Set(idUserMenu)
 	case intentOpenSessions:
-		a.m.ShowSessionList()
+		a.toggleSessionsWindow()
 	case intentSessionsClose:
-		a.m.CloseSessionList()
+		a.closePopup()
 		a.ctx.Focus().Set(idSessions)
 	case intentSwitchSession:
 		if e, ok := a.live[in.sessionKey]; ok {
 			// The session has a live window: focus it instead of opening
 			// a second one on the same transport.
-			a.m.CloseSessionList()
 			_ = e.window.Raise()
 			a.ctx.Focus().Set(idSessions)
 		} else if rec, ok := a.sessions[in.sessionKey]; ok {
 			// Parked: resume the held transport in a fresh window.
-			a.m.CloseSessionList()
 			switch {
 			case rec.observer:
 				a.m.OpenAsObserver(rec.ws)
@@ -1596,8 +1594,7 @@ const (
 	idAccount       ui.FocusID = "account"
 	idProfilesClose ui.FocusID = "profiles-close"
 
-	idSessions      ui.FocusID = "sessions"
-	idSessionsClose ui.FocusID = "sessions-close"
+	idSessions ui.FocusID = "sessions"
 
 	idSettings         ui.FocusID = "settings"
 	idStyleBubbly      ui.FocusID = "style-bubbly"
