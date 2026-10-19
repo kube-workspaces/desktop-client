@@ -266,8 +266,8 @@ type Viewer struct {
 
 		// cursor is the guest pointer shape waiting to be installed on the
 		// window, and hasCursor whether one is waiting at all. A nil shape
-		// with hasCursor set restores the system cursor; a pixel-less shape
-		// hides it. Shapes arrive on the RFB read loop's goroutine and are
+		// with hasCursor set restores the system cursor, as does a pixel-less
+		// shape. Shapes arrive on the RFB read loop's goroutine and are
 		// installed by the render loop, which owns the backend.
 		cursor    *CursorShape
 		hasCursor bool
@@ -545,10 +545,9 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 		// A zero-sized Cursor pseudo-encoding rectangle is the RFB spec's
 		// "use the default local cursor" signal (rfbproto: "the cursor is
 		// now the default cursor provided by the client"), not a request to
-		// hide: mainstream clients restore the system cursor on it. Hiding
-		// is a Tier 1 agent action and arrives here as a pixel-less shape
-		// from a different path. Inbox contract: nil restores the system
-		// cursor; a pixel-less shape hides.
+		// hide: mainstream clients restore the system cursor on it.
+		// Guest hide requests on the Tier 1 path also restore the system
+		// cursor; the local pointer is never hidden.
 		if w == 0 || h == 0 || len(image) == 0 {
 			v.inbox.Lock()
 			v.inbox.cursor, v.inbox.hasCursor = nil, true

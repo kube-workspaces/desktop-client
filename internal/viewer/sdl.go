@@ -914,9 +914,9 @@ func (b *SDLBackend) StopTextInput() error {
 }
 
 // SetCursor installs the guest's pointer shape, decoded from the RFB Cursor
-// pseudo-encoding. A nil shape restores the system cursor; a pixel-less
-// shape hides it. The previous custom cursor is destroyed first, so an
-// animated guest cursor cannot leak one SDL cursor per frame.
+// pseudo-encoding. Nil and pixel-less shapes restore the system cursor.
+// The previous custom cursor is destroyed first, so an animated guest cursor
+// cannot leak one SDL cursor per frame.
 //
 // The pixels move by memcpy: PIXELFORMAT_RGBA32 is byte-order R,G,B,A on
 // every architecture this repo builds, which is exactly the layout the RFB
@@ -936,8 +936,8 @@ func (b *SDLBackend) SetCursor(shape *CursorShape) error {
 		// deliberately no hide: SDL cursor visibility is process-global,
 		// so a hidden cursor would vanish from the shell too, and a
 		// desktop application whose pointer disappears reads as broken.
-		// A guest that hides its own cursor (RFB zero-size rectangle,
-		// Tier 1 handle 0) falls back to the system cursor instead.
+		// An RFB zero-size restore or a Tier 1 guest hide (handle 0)
+		// falls back to the system cursor instead.
 		def, err := sdl.GetDefaultCursor()
 		if err != nil {
 			return fmt.Errorf("sdl default cursor: %w", err)

@@ -25,6 +25,9 @@ __pycache__/
 *.out
 coverage.html
 
+# Local PowerShell captures used during shell/session debugging.
+/shell-debug*.log
+
 # Desktop build artefacts
 *.app/
 *.dmg

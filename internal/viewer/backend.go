@@ -370,8 +370,8 @@ type Backend interface {
 	// SetCursor installs the guest's pointer shape, decoded from the RFB
 	// Cursor pseudo-encoding. A nil shape restores the system cursor
 	// (unknown shape, e.g. a fresh connection); a shape with no pixels
-	// hides the cursor (the guest hid its own). Pix is W*H*4 RGBA bytes
-	// and must not be retained after the call returns.
+	// also restores it, so a guest hide never hides the local pointer.
+	// Pix is W*H*4 RGBA bytes and must not be retained after the call returns.
 	SetCursor(shape *CursorShape) error
 
 	// SetKeyboardGrab routes nearly every keystroke to the window,
@@ -424,8 +424,8 @@ type Backend interface {
 // of what the RFB Cursor pseudo-encoding carries, so a backend never sees
 // the wire protocol.
 type CursorShape struct {
-	// Pix holds W*H*4 RGBA bytes, row-major. Empty means the guest hid its
-	// pointer and the cursor hides with it.
+	// Pix holds W*H*4 RGBA bytes, row-major. Empty marks a guest hide;
+	// the backend restores the system cursor instead of hiding locally.
 	Pix []byte
 	// W and H are the shape size in pixels.
 	W, H int
@@ -433,10 +433,9 @@ type CursorShape struct {
 	HotX, HotY int
 }
 
-// Hidden reports whether s hides the cursor rather than drawing one: a
-// non-nil shape with no pixels, which is what a guest that hid its own
-// pointer decodes to. A nil shape is the visible system cursor, not a
-// hidden one.
+// Hidden reports whether s is a guest-hide marker: a non-nil shape with no
+// pixels. The backend treats it as a system-cursor restore, just like nil;
+// it never hides the local pointer.
 func (s *CursorShape) Hidden() bool { return s != nil && len(s.Pix) == 0 }
 
 // AudioFormat describes PCM data as the guest produces it. It is the

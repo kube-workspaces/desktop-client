@@ -240,10 +240,9 @@ func (s *Tier1Sink) takeClipboard() (string, bool) {
 	return text, has
 }
 
-// GuestCursor queues a decoded server cursor shape (guest-to-host). A
-// pixel-less shape hides the cursor (the Tier 1 hide path); nil restores
-// the system cursor, matching [Backend.SetCursor]. The render loop drains
-// it on the window thread, the only thread allowed to touch the backend,
+// GuestCursor queues a decoded server cursor shape (guest-to-host). Nil and
+// pixel-less shapes restore the system cursor, matching [Backend.SetCursor].
+// The render loop drains it on the window thread, which owns the backend,
 // and installs it with [Backend.SetCursor] — the same path the RFB
 // viewer's Cursor pseudo-encoding takes.
 func (s *Tier1Sink) GuestCursor(shape *CursorShape) {
@@ -257,8 +256,8 @@ func (s *Tier1Sink) GuestCursor(shape *CursorShape) {
 }
 
 // takeCursor drains the latest guest cursor shape, or (nil, false) if there
-// is none. A drained nil shape with has=true restores the system cursor; a
-// pixel-less shape hides it; (nil, false) means no push arrived. It is
+// is none. A drained nil or pixel-less shape with has=true restores the
+// system cursor; (nil, false) means no push arrived. It is
 // called from the render loop only.
 func (s *Tier1Sink) takeCursor() (*CursorShape, bool) {
 	s.cursorMu.Lock()
@@ -1344,10 +1343,10 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 		if err := w.be.Upload(Rect{W: w.texW, H: w.texH}, frame.Pix, frame.Stride); err != nil {
 			return fmt.Errorf("viewer: upload tier-1 frame: %w", err)
 		}
-		w.haveFrame = true
-		if w.opts.Logf != nil {
+		if !w.haveFrame && w.opts.Logf != nil {
 			w.opts.Logf("tier1: first frame %dx%d uploaded", w.texW, w.texH)
 		}
+		w.haveFrame = true
 		draw = w.view.rectangle(w.texW, w.texH, w.winW, w.winH)
 	} else if !w.haveFrame {
 		var err error
@@ -1375,9 +1374,6 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 	// agent keeps streaming a higher-integrity foreground window it cannot
 	// inject into, so the keyboard is dead with no other sign of why.
 	if overlay.Empty() && w.haveFrame {
-		if w.opts.Logf != nil {
-			w.opts.Logf("tier1: presenting live frame, draw=%dx%d+%d+%d", draw.W, draw.H, draw.X, draw.Y)
-		}
 		var err error
 		if overlay, err = w.deskBanner(); err != nil {
 			return err

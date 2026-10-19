@@ -239,10 +239,9 @@ func (f *fakeBackend) SetTitle(title string) error {
 	return nil
 }
 
-// SetCursor records the guest pointer shape the viewer installed: nil for
-// the restored system cursor, a pixel-less shape for hidden, else a copy
-// of the shape (the viewer must not retain the wire buffer, and neither
-// does this fake).
+// SetCursor records the raw shape the viewer installed: nil and pixel-less
+// shapes both request a system-cursor restore. Non-nil shapes are copied
+// (the viewer must not retain the wire buffer, and neither does this fake).
 func (f *fakeBackend) SetCursor(shape *CursorShape) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

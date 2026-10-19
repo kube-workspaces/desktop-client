@@ -449,6 +449,25 @@ must stay on a release built with go1.26 or newer.
   black frame is often correct and the decoder is not at fault. That subresource
   renders server-side and settles the question immediately. `screenshot --wake`
   taps a modifier to wake the guest without typing into the session.
+- **Selkies on the Debian XFCE VM captures a fixed X display, not the active
+  console.** `selkies.service` uses `DISPLAY=:0`. Debian's `light-locker`
+  switches to a LightDM greeter on `:1`/another VT; the inactive `:0` then
+  returns black pixels even though the QEMU/RFB console shows the greeter.
+  Verified on `chris-selkies`: `:0`/VT7 was inactive and all-black, while
+  `:1`/VT8 was active with visible content. Selkies `kd,65505`/`ku,65505`
+  correctly changed X11's Shift state on `:0`, proving input delivery but
+  not reaching the greeter. Repeated client wake taps cannot fix this.
+  The image-catalog fix replaces `light-locker` with `xfce4-screensaver`
+  (password locking stays within `:0`) and disables virtual-monitor DPMS
+  through xfce4-power-manager. Applied live to that guest; a remote click
+  after connection brought up the lock dialog and the native Go Selkies
+  decoder received non-black 1280×800 frames without a VT switch. A blank
+  lock screen can remain until the user clicks. The Windows user confirmed
+  display recovery, then reported intermittent reconnect failures; proxy/API
+  logs showed 409 display contention and proxy 503s during those attempts.
+  Reconnect reliability remains a separate unresolved issue, not evidence
+  that the VT-switching black-screen fault has returned. Existing persistent
+  guests need migration; cloud-init default changes do not retrofit them.
 - **The bundled SDL library is mandatory, not a convenience.** The binding
   resolves every symbol it knows about at load time and **panics** (does not
   return an error) when one is missing, and it knows symbols that only exist in
