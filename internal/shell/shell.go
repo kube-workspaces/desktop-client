@@ -217,6 +217,7 @@ type App struct {
 	userMenuScroll  int
 	userMenuFocus   ui.FocusID
 	userMenuSwallow bool // consume the release of an outside-dismissal press
+	workspaceMenu   workspaceContextMenu
 	avatar          avatarState
 
 	// sessions are the held transports, keyed by workspace key. Everything
@@ -624,6 +625,11 @@ func (a *App) Step(ctx context.Context, now time.Time) error {
 	a.events = events[:0]
 	closeRequested, globalQuit := scanQuit(events)
 	a.in = a.in.Fold(now, events)
+	for _, event := range events {
+		if focus, ok := event.(viewer.EventFocus); ok && !focus.Gained && a.workspaceMenu.key != "" {
+			a.closeWorkspaceMenu()
+		}
+	}
 	if len(events) > 0 {
 		a.dirty = true
 	}
@@ -755,6 +761,7 @@ func (a *App) draw(ctx context.Context) error {
 	if a.m.State != StateWorkspaces || modal || a.m.CloseConfirm {
 		a.userMenuOpen = false
 		a.userMenuScroll = 0
+		a.workspaceMenu = workspaceContextMenu{}
 	}
 	if !modal {
 		a.canvas.Fill(a.canvas.Bounds(), a.opts.Theme.Background)
@@ -781,7 +788,7 @@ func (a *App) draw(ctx context.Context) error {
 		case modal:
 			intent = a.drawWorkspaceInfoModal(a.canvas.Bounds())
 		default:
-			intent = a.drawWorkspacesWithUserMenu(a.canvas.Bounds())
+			intent = a.drawWorkspacesWithContextMenu(a.canvas.Bounds())
 		}
 	case StateSettings:
 		intent = a.drawSettingsScreen(a.canvas.Bounds())

@@ -694,6 +694,14 @@ func (a *App) drawList(r ui.Rect, rows []kwclient.Workspace, out *intent) {
 		a.list.Selected = i
 	}
 	activated := a.list.Layout(ctx, inner, len(rows), func(ctx *ui.Context, row ui.Rect, state ui.RowState) {
+		if ctx.Input.RightPressed && ctx.Input.RightOrigin.In(ui.Intersect(row, inner)) && ctx.Input.RightOrigin.X < inner.X+inner.W-8 {
+			a.list.Selected = state.Index
+			a.m.Selected = rows[state.Index].Key()
+			a.workspaceMenu = workspaceContextMenu{key: a.m.Selected, anchor: ctx.Input.RightOrigin}
+			ctx.Focus().Set(idOpen)
+			ctx.Repaint()
+			state.Selected = true
+		}
 		a.drawWorkspaceRow(row, rows[state.Index], state)
 	})
 	if a.list.Selected >= 0 && a.list.Selected < len(rows) {
@@ -802,6 +810,39 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 		}
 	}
 
+	actions := workspaceActions(ws, has)
+	widths := make([]int, 0, len(actions)+1)
+	for i, action := range actions {
+		w := action.button.Width(ctx)
+		if i == 0 {
+			w = max(180, w)
+		}
+		widths = append(widths, w)
+	}
+	widths = append(widths, 0)
+	cols := ui.Row(r, th.Gap, widths...)
+	for i, action := range actions {
+		if action.button.Layout(ctx, cols[i]) {
+			*out = intent{kind: action.kind, workspace: ws}
+		}
+	}
+	ci := len(actions)
+	hint := i18n.Get("workspaces.hint")
+	if !a.m.LastRefresh.IsZero() {
+		hint = i18n.Sprintf("workspaces.updated", since(a.m.LastRefresh, a.ctx.Input.Now)) + "  ·  " + hint
+	}
+	ui.Label(ctx, ui.InsetXY(cols[ci], th.Gap, 0), hint, ui.LabelStyle{
+		Color: th.TextMuted, Scale: th.Small, Align: ui.AlignRight, Middle: true,
+	})
+}
+
+type workspaceAction struct {
+	button ui.Button
+	kind   intentKind
+}
+
+// workspaceActions is shared by the footer and the row context menu.
+func workspaceActions(ws kwclient.Workspace, has bool) []workspaceAction {
 	kind := intentActivate
 	var label string
 	// A running non-VM workspace gets the embedded webview as the primary
@@ -881,88 +922,26 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 	// Order: the open buttons first (primary open, then open-in-browser,
 	// then the shared-display observer, the Windows sign-in and the VM
 	// consoles), then stop, with Console second to last and Info last.
-	widths := []int{max(180, open.Width(ctx))}
+	actions := []workspaceAction{{open, kind}}
 	if browser {
-		widths = append(widths, browserBtn.Width(ctx))
+		actions = append(actions, workspaceAction{browserBtn, intentOpenInBrowser})
 	}
 	if observe {
-		widths = append(widths, observeBtn.Width(ctx))
+		actions = append(actions, workspaceAction{observeBtn, intentOpenObserver})
 	}
 	if signin {
-		widths = append(widths, signinBtn.Width(ctx))
+		actions = append(actions, workspaceAction{signinBtn, intentCredentials})
 	}
 	if consoles {
-		widths = append(widths, serialBtn.Width(ctx), sshBtn.Width(ctx))
+		actions = append(actions, workspaceAction{serialBtn, intentOpenSerial}, workspaceAction{sshBtn, intentOpenSSH})
 	}
 	if showStop {
-		widths = append(widths, stop.Width(ctx))
+		actions = append(actions, workspaceAction{stop, intentStopWorkspace})
 	}
 	if console {
-		widths = append(widths, consoleBtn.Width(ctx))
+		actions = append(actions, workspaceAction{consoleBtn, intentActivate})
 	}
-	widths = append(widths, info.Width(ctx), 0)
-	cols := ui.Row(r, th.Gap, widths...)
-
-	ci := 0
-	if open.Layout(ctx, cols[ci]) {
-		*out = intent{kind: kind, workspace: ws}
-	}
-	ci++
-	if browser {
-		if browserBtn.Layout(ctx, cols[ci]) {
-			*out = intent{kind: intentOpenInBrowser, workspace: ws}
-		}
-		ci++
-	}
-	if observe {
-		if observeBtn.Layout(ctx, cols[ci]) {
-			*out = intent{kind: intentOpenObserver, workspace: ws}
-		}
-		ci++
-	}
-	if signin {
-		if signinBtn.Layout(ctx, cols[ci]) {
-			*out = intent{kind: intentCredentials, workspace: ws}
-		}
-		ci++
-	}
-	if consoles {
-		if serialBtn.Layout(ctx, cols[ci]) {
-			*out = intent{kind: intentOpenSerial, workspace: ws}
-		}
-		ci++
-		if sshBtn.Layout(ctx, cols[ci]) {
-			*out = intent{kind: intentOpenSSH, workspace: ws}
-		}
-		ci++
-	}
-	if showStop {
-		if stop.Layout(ctx, cols[ci]) {
-			*out = intent{kind: intentStopWorkspace, workspace: ws}
-		}
-		ci++
-	}
-	if console {
-		if consoleBtn.Layout(ctx, cols[ci]) {
-			*out = intent{kind: intentActivate, workspace: ws}
-		}
-		ci++
-	}
-	if info.Layout(ctx, cols[ci]) {
-		*out = intent{kind: intentInfoWorkspace, workspace: ws}
-	}
-	ci++
-
-	hint := i18n.Get("workspaces.hint")
-	if !a.m.LastRefresh.IsZero() {
-		hint = i18n.Sprintf("workspaces.updated", since(a.m.LastRefresh, a.ctx.Input.Now)) + "  ·  " + hint
-	}
-	ui.Label(ctx, ui.InsetXY(cols[ci], th.Gap, 0), hint, ui.LabelStyle{
-		Color:  th.TextMuted,
-		Scale:  th.Small,
-		Align:  ui.AlignRight,
-		Middle: true,
-	})
+	return append(actions, workspaceAction{info, intentInfoWorkspace})
 }
 
 // drawWorkspaceInfoModal draws the details [Model.Info] names, centred over a

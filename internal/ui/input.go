@@ -43,6 +43,10 @@ type Input struct {
 	Released    bool
 	PressOrigin Point
 
+	// RightPressed records the secondary button's rising edge and its location.
+	RightPressed bool
+	RightOrigin  Point
+
 	// Wheel is the wheel movement in whole clicks, positive Y being away from
 	// the user.
 	Wheel Point
@@ -128,6 +132,7 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 	out := in
 	out.Now = now
 	out.Pressed, out.Released = false, false
+	out.RightPressed = false
 	out.Wheel = Point{}
 	out.Resized = false
 	out.ClipboardChanged = false
@@ -170,6 +175,10 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 		case EventPointer:
 			out.Mouse = Point{X: e.X, Y: e.Y}
 			out.HasMouse = true
+			if e.Buttons.Has(ButtonRight) && !out.Buttons.Has(ButtonRight) {
+				out.RightPressed = true
+				out.RightOrigin = out.Mouse
+			}
 			out.Buttons = e.Buttons
 			down := e.Buttons.Has(ButtonLeft)
 			switch {
@@ -223,7 +232,7 @@ func (in Input) Fold(now time.Time, events []Event) Input {
 // it at all, and a frame that skipped it would leave the field showing the
 // text from before.
 func (in Input) Idle() bool {
-	return !in.Pressed && !in.Released && !in.Resized && !in.Quit &&
+	return !in.Pressed && !in.Released && !in.RightPressed && !in.Resized && !in.Quit &&
 		in.Wheel == (Point{}) && len(in.Edits) == 0 && !in.SystemThemeChanged
 }
 
