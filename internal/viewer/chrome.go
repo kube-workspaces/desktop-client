@@ -87,6 +87,13 @@ type ChromePresenter interface {
 	PresentChrome(Rect, Overlay, Rect) error
 }
 
+// ContentClipper confines a cropped/zoomed framebuffer to the content area,
+// before status and toolbar layers are composited. An empty clip restores the
+// backend's full drawable surface.
+type ContentClipper interface {
+	SetContentClip(Rect)
+}
+
 // AgentCounters is the live guest-agent telemetry the debug card reports.
 // Plain values (not internal/agent types) so the session package can serve
 // them without an import cycle: the window owns the presenter, the session
@@ -143,6 +150,7 @@ func (v *Viewer) connectionSnapshot() connection.Snapshot {
 		State: ConnectionState(status), Role: connection.Exclusive, Transport: "RFB",
 		Tier: "Tier 0", Proto: "RFB over WebSocket",
 		Clipboard: !v.clipboardDisabled, ResizeGuest: !v.resizeDisabled, Muted: v.muted,
+		ScaleMode: v.view.modeName(), ZoomPercent: v.view.zoom,
 		FPS: v.lastFPS, Kbps: v.lastKbps, HasMetrics: true,
 		Capabilities: connection.Capabilities{SpecialKeys: true, TypeClipboard: true, ClipboardSync: true, SharedControl: v.controlAction() != nil, TransportToggle: v.cfg.CanSwitchTransport}}
 	if v.cfg.TransportSwitchBlocked != nil {
@@ -178,6 +186,15 @@ func (v *Viewer) connectionAction(a connection.Action) error {
 	if !v.connectionSnapshot().Availability(a).Enabled {
 		return nil
 	}
+	srcW, srcH := v.sourceSize()
+	if v.view.action(a, srcW, srcH, v.winW, v.winH) {
+		if selectsPresentation(a) {
+			v.resizeDisabled, v.resizePending = true, false
+		}
+		v.updatePresent()
+		v.markPresent()
+		return nil
+	}
 	switch a {
 	case connection.Fullscreen:
 		return v.toggleFullscreen()
@@ -201,13 +218,12 @@ func (v *Viewer) connectionAction(a connection.Action) error {
 	case connection.GuestResize:
 		v.resizeDisabled = !v.resizeDisabled
 		if !v.resizeDisabled {
+			v.view = presentation{}
+			v.updatePresent()
 			v.scheduleGuestResize(time.Now(), v.winW, v.winH)
 		} else {
 			v.resizePending = false
 		}
-	case connection.FitDesktop:
-		v.resizeDisabled, v.resizePending = true, false
-		v.updatePresent()
 	case connection.Audio:
 		v.muted = !v.muted
 		v.audioSink.CloseAudio()
@@ -313,6 +329,7 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 		State: state, Role: connection.Exclusive, Transport: transport,
 		Tier: "Tier 1", Proto: proto,
 		Clipboard: !w.clipboardDisabled && w.opts.ClipboardInterval >= 0, ResizeGuest: !w.opts.NoResize, Muted: w.muted.Load(),
+		ScaleMode: w.view.modeName(), ZoomPercent: w.view.zoom,
 		AudioLive:    w.audioLive(),
 		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: guestResize, Audio: w.audioPresent(), TransportToggle: w.opts.CanSwitchTransport}}
 	if transport == "Agent" {
@@ -338,6 +355,13 @@ func (w *tier1Window) connectionAction(a connection.Action) error {
 	if !w.connectionSnapshot().Availability(a).Enabled {
 		return nil
 	}
+	if w.view.action(a, w.texW, w.texH, w.winW, w.winH) {
+		if selectsPresentation(a) {
+			w.opts.NoResize, w.resizePending = true, false
+		}
+		w.present = w.view.rectangle(w.texW, w.texH, w.winW, w.winH)
+		return nil
+	}
 	switch a {
 	case connection.Fullscreen:
 		return w.runHotkey(EventKey{Key: w.opts.FullscreenKey})
@@ -355,12 +379,12 @@ func (w *tier1Window) connectionAction(a connection.Action) error {
 	case connection.GuestResize:
 		w.opts.NoResize = !w.opts.NoResize
 		if !w.opts.NoResize {
+			w.view = presentation{}
+			w.present = w.view.rectangle(w.texW, w.texH, w.winW, w.winH)
 			w.scheduleGuestResize(time.Now(), w.winW, w.winH)
 		} else {
 			w.resizePending = false
 		}
-	case connection.FitDesktop:
-		w.opts.NoResize, w.resizePending = true, false
 	case connection.Audio:
 		w.muted.Store(!w.muted.Load())
 		w.audioMu.Lock()

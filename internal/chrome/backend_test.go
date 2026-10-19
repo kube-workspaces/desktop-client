@@ -14,11 +14,13 @@ import (
 
 type surface struct {
 	viewer.Backend
-	w, h   int
-	full   bool
-	frame  viewer.Rect
-	status viewer.Overlay
-	chrome viewer.Rect
+	w, h        int
+	full        bool
+	frame       viewer.Rect
+	status      viewer.Overlay
+	chrome      viewer.Rect
+	contentClip viewer.Rect
+	seenClip    viewer.Rect
 }
 
 func (s *surface) Open(o viewer.WindowOptions) error {
@@ -33,9 +35,25 @@ func (s *surface) SetKeyboardGrab(bool) error                  { return nil }
 func (s *surface) SetCursor(*viewer.CursorShape) error         { return nil }
 func (s *surface) SetChromeSize(int, int) error                { return nil }
 func (s *surface) UploadChrome(viewer.Rect, []byte, int) error { return nil }
+func (s *surface) SetContentClip(r viewer.Rect)                { s.contentClip = r }
 func (s *surface) PresentChrome(r viewer.Rect, o viewer.Overlay, c viewer.Rect) error {
 	s.frame, s.status, s.chrome = r, o, c
+	s.seenClip = s.contentClip
 	return nil
+}
+
+func TestCroppedGuestIsClippedBelowToolbarAndClipIsReset(t *testing.T) {
+	b, s, _ := rig(t, false)
+	frame := viewer.Rect{X: -100, Y: -200, W: 1920, H: 1080}
+	if err := b.Present(frame, viewer.Overlay{}); err != nil {
+		t.Fatal(err)
+	}
+	if s.seenClip.Y != b.layout.Content.Y || s.seenClip.W != b.layout.Content.W || s.seenClip.H != b.layout.Content.H || !s.contentClip.Empty() {
+		t.Fatalf("guest crop leaked into chrome or retained clip: during=%v after=%v", s.seenClip, s.contentClip)
+	}
+	if s.frame.X != frame.X || s.frame.Y != frame.Y+b.layout.Content.Y || s.frame.W != frame.W || s.frame.H != frame.H {
+		t.Fatalf("chrome changed the guest presentation transform: %v", s.frame)
+	}
 }
 
 func rig(t *testing.T, full bool) (*Backend, *surface, time.Time) {

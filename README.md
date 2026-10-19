@@ -477,6 +477,23 @@ default 8, `-1` to omit), `--compress` (zlib level 0-9, default `-1` = omit),
 By default the guest's display is resized to match the window. `--no-resize`
 keeps the guest resolution fixed and scales it into the window instead.
 
+The desktop toolbar's **View** menu controls local presentation on RFB,
+Agent and Selkies windows, including view-only observers:
+
+- **Fit desktop** preserves aspect ratio and shows the entire desktop.
+- **Actual pixels (100%)** maps one guest pixel to one drawable pixel (on a
+  HiDPI monitor, drawable pixels differ from logical window coordinates).
+- **Zoom in/out** selects 25-percentage-point steps between 25% and 400%.
+- **Fill (crop)** preserves aspect ratio while filling the content area, cropping
+  overflow. **Pan** buttons move through overflow; **Centre view** recentres it.
+
+The current policy/percentage is shown in the toolbar/menu. Selecting fit,
+actual pixels, zoom or fill turns automatic guest resizing off and cancels a
+queued resize; it does not request a new guest mode. **Resize guest to window**
+remains a separate tool: switching it on restores local Fit and requests the
+guest's real resolution change. The existing **Tools → Fit desktop** shortcut
+does the same as **View → Fit desktop**. View choices are window-local.
+
 #### `probe`
 
 Connects, drives real framebuffer updates, and reports what the server actually

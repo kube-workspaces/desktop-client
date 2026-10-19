@@ -279,16 +279,42 @@ func TestSharedDisplaySetRoleMidDialNeverPublishesTheStaleRole(t *testing.T) {
 
 func TestSharedDisplayBusyControlLeasePollsSlowly(t *testing.T) {
 	d := newSharedDial(
+		sharedStep{link: newClosableLink()},
 		sharedStep{err: fmt.Errorf("dial shared display: %w", kwclient.ErrControllerPresent)},
 		sharedStep{link: newClosableLink()},
 	)
 	rec := &recorder{}
-	s := startShared(t, context.Background(), sharedTestOptions(d, rec))
+	opts := sharedTestOptions(d, rec)
+	opts.InUsePoll = 30 * time.Millisecond
+	var busyAt time.Time // only the supervisor's dial callback accesses this
+	retryGap := make(chan time.Duration, 1)
+	opts.Dial = func(ctx context.Context, cfg rfb.Config, role string, force bool) (Link, error) {
+		if !busyAt.IsZero() {
+			retryGap <- time.Since(busyAt)
+		}
+		link, err := d.dial(ctx, cfg, role, force)
+		if err != nil {
+			busyAt = time.Now()
+		}
+		return link, err
+	}
+	s := startShared(t, context.Background(), opts)
+	// Establish the initial observer before requesting control. Racing SetRole
+	// against the first dial can correctly discard that dial's stale error,
+	// which does not exercise a busy lease for the current controller intent.
+	if _, _, err := s.Attach(context.Background()); err != nil {
+		t.Fatalf("Attach observer: %v", err)
+	}
 	s.SetRole(kwclient.DisplayRoleController, true)
 
+	waitFor(t, "busy control lease", func() bool { return rec.has(StateDisplayInUse) })
 	waitSharedState(t, s, StateConnected)
-	if !rec.has(StateDisplayInUse) {
-		t.Fatalf("a held control lease never surfaced as display-in-use: %v", rec.seen())
+	if elapsed := <-retryGap; elapsed < opts.InUsePoll {
+		t.Fatalf("busy lease retried after %s, want at least %s", elapsed, opts.InUsePoll)
+	}
+	roles, forces := d.attempts()
+	if len(roles) != 3 || roles[1] != kwclient.DisplayRoleController || roles[2] != kwclient.DisplayRoleController || !forces[1] || !forces[2] {
+		t.Fatalf("busy controller retries lost their intent: roles=%v forces=%v", roles, forces)
 	}
 }
 

@@ -685,6 +685,7 @@ type tier1Window struct {
 	sentAny    bool
 
 	present    Rect // last presented rectangle, in surface pixels
+	view       presentation
 	texW, texH int
 	haveFrame  bool
 	winW, winH int
@@ -987,6 +988,7 @@ func (w *tier1Window) handleEvent(now time.Time, ev Event) error {
 			return nil
 		}
 		w.winW, w.winH = e.W, e.H
+		w.present = w.view.rectangle(w.texW, w.texH, w.winW, w.winH)
 		// The request is scheduled even while no transport is live: a window
 		// resized during connect must still reach the newly attached guest.
 		w.scheduleGuestResize(now, e.W, e.H)
@@ -1346,7 +1348,7 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 		if w.opts.Logf != nil {
 			w.opts.Logf("tier1: first frame %dx%d uploaded", w.texW, w.texH)
 		}
-		draw = FitLetterbox(w.texW, w.texH, w.winW, w.winH)
+		draw = w.view.rectangle(w.texW, w.texH, w.winW, w.winH)
 	} else if !w.haveFrame {
 		var err error
 		if overlay, err = w.connectingOverlay(); err != nil {
@@ -1354,7 +1356,7 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 		}
 		draw = Rect{} // no guest pixels to show yet
 	} else {
-		draw = FitLetterbox(w.texW, w.texH, w.winW, w.winH)
+		draw = w.view.rectangle(w.texW, w.texH, w.winW, w.winH)
 	}
 	w.present = draw
 	if w.sink.reconnecting.Load() {

@@ -73,6 +73,8 @@ type Snapshot struct {
 	Fullscreen       bool
 	Clipboard        bool
 	ResizeGuest      bool
+	ScaleMode        string // fit, zoom (including actual pixels), or fill
+	ZoomPercent      int
 	Muted            bool
 	AudioLive        bool // negotiated/open and unmuted
 	FPS, Kbps        float64
@@ -96,6 +98,15 @@ const (
 	SpecialKeys   Action = "special-keys"
 	ClipboardSync Action = "clipboard-sync"
 	FitDesktop    Action = "fit-desktop"
+	ActualPixels  Action = "actual-pixels"
+	FillDesktop   Action = "fill-desktop"
+	ZoomIn        Action = "zoom-in"
+	ZoomOut       Action = "zoom-out"
+	PanLeft       Action = "pan-left"
+	PanRight      Action = "pan-right"
+	PanUp         Action = "pan-up"
+	PanDown       Action = "pan-down"
+	CenterDesktop Action = "center-desktop"
 	GuestResize   Action = "guest-resize"
 	Audio         Action = "audio"
 	SharedControl Action = "shared-control"
@@ -135,7 +146,7 @@ func (s Snapshot) Availability(a Action) Availability {
 		supported = desktop
 	case Sessions, WorkspaceList:
 		supported = c.Shell
-	case FitDesktop, HostInput:
+	case FitDesktop, ActualPixels, FillDesktop, ZoomIn, ZoomOut, PanLeft, PanRight, PanUp, PanDown, CenterDesktop, HostInput:
 		supported = desktop
 	case SpecialKeys:
 		supported, needsLive, mutatesGuest = desktop && c.SpecialKeys, true, true
@@ -191,6 +202,7 @@ func (s Snapshot) Equal(o Snapshot) bool {
 		s.Proto != o.Proto || s.Capabilities != o.Capabilities ||
 		s.Fullscreen != o.Fullscreen || s.Clipboard != o.Clipboard ||
 		s.ResizeGuest != o.ResizeGuest || s.Muted != o.Muted ||
+		s.ScaleMode != o.ScaleMode || s.ZoomPercent != o.ZoomPercent ||
 		s.AudioLive != o.AudioLive || s.FPS != o.FPS || s.Kbps != o.Kbps ||
 		s.HasMetrics != o.HasMetrics || s.BytesIn != o.BytesIn ||
 		s.BytesOut != o.BytesOut || s.HasActivity != o.HasActivity ||

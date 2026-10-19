@@ -123,6 +123,7 @@ type SDLBackend struct {
 	windowID    sdl.WindowID
 	renderer    *sdl.Renderer
 	texture     *sdl.Texture
+	contentClip Rect
 
 	// overlay holds the status plate. It is a separate texture so that the
 	// frozen frame in the main texture is never overwritten to draw a state
@@ -638,6 +639,8 @@ func (b *SDLBackend) Present(frame Rect, ov Overlay) error {
 	return b.PresentChrome(frame, ov, Rect{})
 }
 
+func (b *SDLBackend) SetContentClip(r Rect) { b.contentClip = r }
+
 // PresentChrome composes content, status and client chrome before swapping.
 func (b *SDLBackend) PresentChrome(frame Rect, ov Overlay, chrome Rect) error {
 	if b.renderer == nil {
@@ -651,9 +654,8 @@ func (b *SDLBackend) PresentChrome(frame Rect, ov Overlay, chrome Rect) error {
 		return fmt.Errorf("sdl clear: %w", err)
 	}
 	if b.texture != nil && !frame.Empty() {
-		rect := sdl.FRect{X: float32(frame.X), Y: float32(frame.Y), W: float32(frame.W), H: float32(frame.H)}
-		if err := b.renderer.RenderTexture(b.texture, nil, &rect); err != nil {
-			return fmt.Errorf("sdl render texture: %w", err)
+		if err := b.drawFrame(frame); err != nil {
+			return err
 		}
 	}
 	if err := b.drawOverlay(ov); err != nil {
@@ -667,6 +669,22 @@ func (b *SDLBackend) PresentChrome(frame Rect, ov Overlay, chrome Rect) error {
 	}
 	if err := b.renderer.Present(); err != nil {
 		return fmt.Errorf("sdl present: %w", err)
+	}
+	return nil
+}
+
+func (b *SDLBackend) drawFrame(frame Rect) error {
+	if !b.contentClip.Empty() {
+		r := b.contentClip
+		clip := sdl.Rect{X: int32(r.X), Y: int32(r.Y), W: int32(r.W), H: int32(r.H)}
+		if err := b.renderer.SetClipRect(&clip); err != nil {
+			return fmt.Errorf("sdl clip content: %w", err)
+		}
+		defer func() { _ = b.renderer.SetClipRect(nil) }()
+	}
+	rect := sdl.FRect{X: float32(frame.X), Y: float32(frame.Y), W: float32(frame.W), H: float32(frame.H)}
+	if err := b.renderer.RenderTexture(b.texture, nil, &rect); err != nil {
+		return fmt.Errorf("sdl render texture: %w", err)
 	}
 	return nil
 }

@@ -304,6 +304,10 @@ func (b *Backend) SetCursor(s *viewer.CursorShape) error {
 }
 
 func (b *Backend) Present(frame viewer.Rect, ov viewer.Overlay) error {
+	if c, ok := b.Backend.(viewer.ContentClipper); ok {
+		c.SetContentClip(viewer.Rect{X: b.layout.Content.X, Y: b.layout.Content.Y, W: b.layout.Content.W, H: b.layout.Content.H})
+		defer c.SetContentClip(viewer.Rect{})
+	}
 	y := b.layout.Content.Y
 	if !frame.Empty() {
 		frame.Y += y

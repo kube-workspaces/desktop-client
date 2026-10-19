@@ -4,6 +4,7 @@
 package viewer
 
 import (
+	"os"
 	"runtime"
 	"testing"
 	"unsafe"
@@ -11,6 +12,70 @@ import (
 	"github.com/Zyko0/go-sdl3/sdl"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 )
+
+func TestSDLZoomedContentClip(t *testing.T) {
+	if os.Getenv("KW_NATIVE_MEDIA_TEST") != "1" {
+		t.Skip("set KW_NATIVE_MEDIA_TEST=1 for SDL dummy-driver pixel checks")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	t.Setenv("SDL_VIDEODRIVER", "dummy")
+	t.Setenv("SDL_RENDER_DRIVER", "software")
+	b := NewSDLBackend()
+	if err := b.Open(WindowOptions{Width: 320, Height: 240}); err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if err := b.SetTextureSize(2, 2); err != nil {
+		t.Fatal(err)
+	}
+	pix := []byte{255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255}
+	if err := b.Upload(Rect{W: 2, H: 2}, pix, 8); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.renderer.SetDrawColor(0, 0, 0, 255); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.renderer.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	b.SetContentClip(Rect{Y: 40, W: 320, H: 200})
+	if err := b.drawFrame(Rect{X: -160, Y: -120, W: 640, H: 480}); err != nil {
+		t.Fatal(err)
+	}
+	surface, err := b.renderer.ReadPixels(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer surface.Destroy()
+	for _, point := range []struct {
+		x, y int32
+		red  uint8
+	}{{10, 10, 0}, {10, 50, 255}, {310, 230, 255}} {
+		r, g, blue, _, err := surface.ReadPixel(point.x, point.y)
+		if err != nil || r != point.red || g != 0 || blue != 0 {
+			t.Fatalf("pixel %d,%d=%d,%d,%d err=%v", point.x, point.y, r, g, blue, err)
+		}
+	}
+	// Drawing the next layer outside the clip must work: content clipping
+	// must not cut off the toolbar/status texture that follows it.
+	if err := b.renderer.SetDrawColor(0, 255, 0, 255); err != nil {
+		t.Fatal(err)
+	}
+	r := sdl.FRect{W: 320, H: 40}
+	if err := b.renderer.RenderFillRect(&r); err != nil {
+		t.Fatal(err)
+	}
+	next, err := b.renderer.ReadPixels(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Destroy()
+	_, g, _, _, err := next.ReadPixel(10, 10)
+	if err != nil || g != 255 {
+		t.Fatalf("content clip leaked into toolbar: green=%d err=%v", g, err)
+	}
+}
 
 // These tests exercise the SDL backend's pure translation layer. They import
 // the SDL binding but never load the library: everything below is table

@@ -356,6 +356,7 @@ type Viewer struct {
 
 	buttons  Buttons
 	present  Rect // last presented rectangle, in surface pixels
+	view     presentation
 	texW     int
 	texH     int
 	winW     int
@@ -2014,7 +2015,7 @@ func (v *Viewer) sourceSize() (int, int) {
 // not be mapped through the previous frame's geometry.
 func (v *Viewer) updatePresent() {
 	w, h := v.sourceSize()
-	v.present = FitLetterbox(w, h, v.winW, v.winH)
+	v.present = v.view.rectangle(w, h, v.winW, v.winH)
 }
 
 func (v *Viewer) markPresent() {

@@ -43,6 +43,9 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	if toggleTransport {
 		wideItems = append(wideItems, toolbarItem{action: connection.ToggleTransport})
 	}
+	if s.Surface == connection.Desktop {
+		wideItems = append(wideItems, toolbarItem{menu: "scaling"})
+	}
 	wideItems = append(wideItems, toolbarItem{action: connection.Fullscreen}, toolbarItem{menu: "tools"}, toolbarItem{menu: "connection"})
 	if s.Availability(connection.Debug).Visible {
 		wideItems = append(wideItems, toolbarItem{menu: "debug"})
@@ -114,6 +117,15 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		Label(ctx, Rect{X: inner.X, Y: y, W: max(0, x-inner.X-th.Pad), H: rowH}, identity, LabelStyle{Scale: th.Small, Middle: true})
 	}
 	var requested connection.Action
+	input := ctx.Input
+	if t.Menu == "scaling" {
+		panel, _ := scalingPanelGeometry(ctx, bar, bounds)
+		if input.HasMouse && panel.Contains(input.Mouse.X, input.Mouse.Y) {
+			// An upward-floating panel owns its pixels even where it overlaps
+			// toolbar buttons. Never dispatch a covered disconnect/fullscreen.
+			ctx.Input = Input{}
+		}
+	}
 	for _, item := range items {
 		b := t.button(item, s, th.Small)
 		r := Rect{X: x, Y: y, W: b.Width(ctx), H: rowH}
@@ -126,11 +138,16 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		}
 		x += r.W + th.Gap
 	}
+	ctx.Input = input
 	if t.Menu == "" {
 		return out, requested
 	}
 	if t.Menu == "debug" {
 		out.Panel = drawDebugCard(ctx, &t.Menu, out.Content, s)
+		return out, requested
+	}
+	if t.Menu == "scaling" {
+		out.Panel, requested = t.scalingPanel(ctx, bar, bounds, s)
 		return out, requested
 	}
 
@@ -141,6 +158,9 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 				panelItems = append(panelItems, toolbarItem{action: connection.Sessions})
 			}
 			panelItems = append(panelItems, toolbarItem{menu: "connection"})
+			if s.Surface == connection.Desktop {
+				panelItems = append(panelItems, toolbarItem{menu: "scaling"})
+			}
 			if s.Fullscreen {
 				panelItems = append(panelItems, toolbarItem{menu: "pin"})
 			}
@@ -208,6 +228,9 @@ func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scal
 		key = string(item.action)
 	}
 	label := i18n.Get("toolbar." + key)
+	if item.menu == "scaling" {
+		label += ": " + toolbarScale(s)
+	}
 	switch item.action {
 	case connection.Fullscreen:
 		if s.Fullscreen {
@@ -245,6 +268,55 @@ func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scal
 		b.Variant = ButtonDanger
 	}
 	return b
+}
+
+func toolbarScale(s connection.Snapshot) string {
+	switch s.ScaleMode {
+	case "zoom":
+		return fmt.Sprintf("%d%%", s.ZoomPercent)
+	case "fill":
+		return i18n.Get("toolbar.scaleFill")
+	default:
+		return i18n.Get("toolbar.scaleFit")
+	}
+}
+
+// Scaling is its own compact two-column panel: view transforms stay separate
+// from the guest-resize switch and remain usable on short/narrow windows.
+func (t *ConnectionToolbar) scalingPanel(ctx *Context, bar, bounds Rect, s connection.Snapshot) (Rect, connection.Action) {
+	th := ctx.Theme
+	actions := []connection.Action{connection.FitDesktop, connection.ActualPixels, connection.ZoomOut, connection.ZoomIn, connection.FillDesktop, connection.CenterDesktop, connection.PanLeft, connection.PanRight, connection.PanUp, connection.PanDown}
+	lineH := LineHeight(th.Small, th.Font)
+	panel, rowH := scalingPanelGeometry(ctx, bar, bounds)
+	ctx.Canvas.FillRounded(panel, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(panel, th.Radius, th.BorderWidth, th.Border)
+	inner := Inset(panel, th.Pad)
+	Label(ctx, Rect{X: inner.X, Y: inner.Y, W: inner.W, H: lineH}, i18n.Get("toolbar.localScaleHint"), LabelStyle{Scale: th.Small})
+	inner.Y += lineH
+	buttonW := (inner.W - th.Gap) / 2
+	var requested connection.Action
+	for i, a := range actions {
+		b := t.button(toolbarItem{action: a}, s, th.Small)
+		if a == connection.FitDesktop && (s.ScaleMode == "" || s.ScaleMode == "fit") || a == connection.ActualPixels && s.ScaleMode == "zoom" && s.ZoomPercent == 100 || a == connection.FillDesktop && s.ScaleMode == "fill" {
+			b.Variant = ButtonPrimary
+		}
+		r := Rect{X: inner.X + (i%2)*(buttonW+th.Gap), Y: inner.Y + (i/2)*(rowH+th.Gap), W: buttonW, H: rowH}
+		if b.Layout(ctx, r) {
+			requested = a
+		}
+	}
+	Label(ctx, Rect{X: inner.X, Y: inner.Y + 5*(rowH+th.Gap), W: inner.W, H: lineH}, i18n.Get("toolbar.scaleCurrent")+": "+toolbarScale(s), LabelStyle{Scale: th.Small})
+	return panel, requested
+}
+
+func scalingPanelGeometry(ctx *Context, bar, bounds Rect) (Rect, int) {
+	th := ctx.Theme
+	w := min(bar.W, 14*th.ControlHeight)
+	lineH := LineHeight(th.Small, th.Font)
+	rowH := min(th.ControlHeight, max(lineH+2, (bounds.H-2*th.Pad-2*lineH)/5-th.Gap))
+	panelH := 5*(rowH+th.Gap) + 2*th.Pad + 2*lineH
+	y := max(bounds.Y, min(bar.Y+bar.H+th.Gap, bounds.Y+bounds.H-panelH))
+	return Rect{X: bar.X + bar.W - w, Y: y, W: w, H: panelH}, rowH
 }
 
 func toolbarOnOff(on bool) string {

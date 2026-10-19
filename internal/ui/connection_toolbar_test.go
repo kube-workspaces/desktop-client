@@ -36,6 +36,39 @@ func TestConnectionToolbarFullscreenDoesNotResizeContent(t *testing.T) {
 	}
 }
 
+func TestScalingPanelOffersLocalObserverControlsWithoutChangingContent(t *testing.T) {
+	for _, size := range [][2]int{{320, 240}, {640, 600}, {1280, 600}} {
+		width, height := size[0], size[1]
+		h := newHarness(width, height)
+		bar := &ConnectionToolbar{Menu: "scaling"}
+		s := connection.Snapshot{Surface: connection.Desktop, State: connection.Connected, Role: connection.Observer, ScaleMode: "zoom", ZoomPercent: 100}
+		var layout ToolbarLayout
+		var requested connection.Action
+		body := func(ctx *Context) { layout, requested = bar.Layout(ctx, Rect{W: width, H: height}, s) }
+		h.frame(nil, body)
+		if layout.Panel.X < 0 || layout.Panel.X+layout.Panel.W > width || layout.Panel.Y+layout.Panel.H > height || layout.Content.Y != layout.Bar.H {
+			t.Fatalf("scaling panel/content out of bounds: %+v", layout)
+		}
+		for _, a := range []connection.Action{connection.ActualPixels, connection.ZoomIn, connection.FillDesktop, connection.PanRight} {
+			h.ctx.Focus().Set(FocusID("toolbar-" + string(a)))
+			h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+			if requested != a || bar.Menu != "scaling" {
+				t.Fatalf("observer scaling action=%s want=%s menu=%s", requested, a, bar.Menu)
+			}
+			h.frame(nil, body)
+		}
+		panel, rowH := scalingPanelGeometry(h.ctx, layout.Bar, Rect{W: width, H: height})
+		inner := Inset(panel, h.ctx.Theme.Pad)
+		x := inner.X + (inner.W-h.ctx.Theme.Gap)/2 + h.ctx.Theme.Gap + 10
+		y := inner.Y + LineHeight(h.ctx.Theme.Small, h.ctx.Theme.Font) + rowH/2
+		h.frame([]Event{pointer(x, y, true)}, body)
+		h.frame([]Event{pointer(x, y, false)}, body)
+		if requested != connection.ActualPixels || bar.Menu != "scaling" {
+			t.Fatalf("scaling click reached covered toolbar: action=%s menu=%s", requested, bar.Menu)
+		}
+	}
+}
+
 func TestConnectionToolbarDoesNotDispatchDisabledTool(t *testing.T) {
 	h := newHarness(1280, 720)
 	bar := &ConnectionToolbar{Menu: "tools"}
