@@ -2121,9 +2121,9 @@ func (a *App) drawCloseConfirmModal(bounds ui.Rect) intent {
 	ctx.Canvas.Fill(bounds, modalScrim)
 
 	rows := []int{
-		ui.TextHeight(th.Title, th.Font),    // title
-		ui.LineHeight(th.Body, th.Font) * 3, // message
-		th.ControlHeight,                    // buttons
+		max(ui.TextHeight(th.Title, th.Font), th.ControlHeight), // title and close control
+		ui.LineHeight(th.Body, th.Font) * 3,                     // message
+		th.ControlHeight,                                        // buttons
 	}
 	content := 2 * th.Pad
 	for i, h := range rows {
@@ -2144,25 +2144,23 @@ func (a *App) drawCloseConfirmModal(bounds ui.Rect) intent {
 	ctx.Canvas.StrokeRounded(card, th.Radius, th.BorderWidth, th.Border)
 	body := ui.NewStack(ui.Inset(card, th.Pad), th.Gap)
 
-	ui.Label(ctx, body.Next(rows[0]), i18n.Get("close.title"), ui.LabelStyle{Scale: th.Title})
+	closeModal := a.drawPageHeader(body.Next(rows[0]), i18n.Get("close.title"), idCloseCancel)
 	ui.Label(ctx, body.Next(rows[1]), i18n.Get("close.message"), ui.LabelStyle{Color: th.TextMuted, Wrap: true})
 
 	foot := body.Next(rows[2])
-	quit := ui.Button{ID: idCloseQuit, Text: i18n.Get("close.quit"), Variant: ui.ButtonDanger}
-	minimize := ui.Button{ID: idCloseMinimize, Text: i18n.Get("close.minimize"), Variant: ui.ButtonPrimary}
-	cancel := ui.Button{ID: idCloseCancel, Text: i18n.Get("close.cancel"), Variant: ui.ButtonQuiet}
-	quitRect, rest := ui.CutLeft(foot, quit.Width(ctx))
+	quit := ui.Button{ID: idCloseQuit, Text: i18n.Get("close.quit"), Variant: ui.ButtonDanger, Smooth: true}
+	minimize := ui.Button{ID: idCloseMinimize, Text: i18n.Get("close.minimize"), Variant: ui.ButtonPrimary, Smooth: true}
+	foot, _ = ui.CutRight(foot, minimize.Width(ctx)+th.Gap+quit.Width(ctx))
+	minRect, rest := ui.CutLeft(foot, minimize.Width(ctx))
 	_, rest = ui.CutLeft(rest, th.Gap)
-	minRect, rest := ui.CutLeft(rest, minimize.Width(ctx))
-	_, rest = ui.CutLeft(rest, th.Gap)
-	cancelRect, _ := ui.CutLeft(rest, cancel.Width(ctx))
-	if quit.Layout(ctx, quitRect) {
-		out = intent{kind: intentCloseQuit}
-	}
+	quitRect, _ := ui.CutLeft(rest, quit.Width(ctx))
 	if minimize.Layout(ctx, minRect) {
 		out = intent{kind: intentCloseMinimize}
 	}
-	if cancel.Layout(ctx, cancelRect) || ctx.Input.KeyPressed(keysym.KeyEscape) {
+	if quit.Layout(ctx, quitRect) {
+		out = intent{kind: intentCloseQuit}
+	}
+	if closeModal || ctx.Input.KeyPressed(keysym.KeyEscape) {
 		out = intent{kind: intentCloseCancel}
 	}
 	return out
