@@ -341,6 +341,9 @@ func (s *Session) run(ctx context.Context) error {
 				return fmt.Errorf("%w: decoded dimensions disagree with wire header", ErrMalformed)
 			}
 			s.sink.video(frame)
+			if !haveDecodedVideo {
+				s.cfg.logf("selkies: first decoded frame %dx%d", frame.Rect.Dx(), frame.Rect.Dy())
+			}
 			haveDecodedVideo = true
 			if !s.cfg.DisableIdleCadence {
 				cadence.frame(frame, time.Now())

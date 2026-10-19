@@ -1343,6 +1343,9 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 			return fmt.Errorf("viewer: upload tier-1 frame: %w", err)
 		}
 		w.haveFrame = true
+		if w.opts.Logf != nil {
+			w.opts.Logf("tier1: first frame %dx%d uploaded", w.texW, w.texH)
+		}
 		draw = FitLetterbox(w.texW, w.texH, w.winW, w.winH)
 	} else if !w.haveFrame {
 		var err error
@@ -1370,6 +1373,9 @@ func (w *tier1Window) presentFrame(now time.Time) error {
 	// agent keeps streaming a higher-integrity foreground window it cannot
 	// inject into, so the keyboard is dead with no other sign of why.
 	if overlay.Empty() && w.haveFrame {
+		if w.opts.Logf != nil {
+			w.opts.Logf("tier1: presenting live frame, draw=%dx%d+%d+%d", draw.W, draw.H, draw.X, draw.Y)
+		}
 		var err error
 		if overlay, err = w.deskBanner(); err != nil {
 			return err
