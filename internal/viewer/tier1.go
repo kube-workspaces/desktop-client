@@ -240,11 +240,12 @@ func (s *Tier1Sink) takeClipboard() (string, bool) {
 	return text, has
 }
 
-// GuestCursor queues a decoded server cursor shape (guest-to-host). A nil
-// shape hides the cursor. The render loop drains it on the window thread,
-// the only thread allowed to touch the backend, and installs it with
-// [Backend.SetCursor] — the same path the RFB viewer's Cursor
-// pseudo-encoding takes.
+// GuestCursor queues a decoded server cursor shape (guest-to-host). A
+// pixel-less shape hides the cursor (the Tier 1 hide path); nil restores
+// the system cursor, matching [Backend.SetCursor]. The render loop drains
+// it on the window thread, the only thread allowed to touch the backend,
+// and installs it with [Backend.SetCursor] — the same path the RFB
+// viewer's Cursor pseudo-encoding takes.
 func (s *Tier1Sink) GuestCursor(shape *CursorShape) {
 	s.cursorMu.Lock()
 	if s.hasGuestCursor {
@@ -256,8 +257,9 @@ func (s *Tier1Sink) GuestCursor(shape *CursorShape) {
 }
 
 // takeCursor drains the latest guest cursor shape, or (nil, false) if there
-// is none. A drained nil shape with has=true hides the cursor; (nil, false)
-// means no push arrived. It is called from the render loop only.
+// is none. A drained nil shape with has=true restores the system cursor; a
+// pixel-less shape hides it; (nil, false) means no push arrived. It is
+// called from the render loop only.
 func (s *Tier1Sink) takeCursor() (*CursorShape, bool) {
 	s.cursorMu.Lock()
 	defer s.cursorMu.Unlock()

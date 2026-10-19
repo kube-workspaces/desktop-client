@@ -37,8 +37,10 @@ Implemented and working:
 - SDL3 session viewer: window, streaming texture upload, damage-tracked
   presentation, full keyboard/pointer/wheel input, bidirectional clipboard,
   guest resize, fullscreen, status overlays, local guest cursor (Cursor
-  pseudo-encoding shapes via `Backend.SetCursor`, hotspot intact, hidden
-  when the guest hides its own, system cursor restored on reconnect),
+  pseudo-encoding shapes via `Backend.SetCursor`, hotspot intact; a
+  zero-sized rectangle from the server restores the system cursor; hiding is
+  never done locally (a guest hide instead causes a restore of the system
+  cursor), system cursor restored on reconnect),
   in-window quality pill (fps·bitrate top-right while live, sharing the
   overlay texture with the status plate — the first resident of the future
   session tool palette), keyboard grab following fullscreen+focus
@@ -421,6 +423,13 @@ must stay on a release built with go1.26 or newer.
   `send_ext_key_event_ack` and `send_ext_audio_ack` report the **full client
   width and height**. The rectangle's size therefore tells you nothing; the
   encoding number alone decides how to handle it.
+- **A zero-sized Cursor pseudo-encoding rectangle means "use the default
+  local cursor", not "hide".** The rfbproto spec and every mainstream client
+  (TigerVNC, RealVNC, noVNC) restore the system cursor on it; the viewer
+  maps it to the nil-shape restore, and the local cursor is never hidden
+  (a guest hide falls back to the system cursor to avoid vanishing the
+  pointer). Hiding is a Tier 1 agent action that is also translated to
+  a restore at the viewer level.
 - **Pseudo-encodings must be an explicit allowlist, never "anything negative
   has no payload".** `QEMULEDState` arrives as a 1×1 rectangle followed by a
   **payload byte** that MUST be consumed. Skipping it leaves that byte in the

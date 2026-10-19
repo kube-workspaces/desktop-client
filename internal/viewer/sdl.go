@@ -168,6 +168,9 @@ type SDLBackend struct {
 	// not leak one SDL cursor per frame.
 	cursor *sdl.Cursor
 
+	// event sits between the cursor fields and the mutex, and its position
+	// is load-bearing: sdl.Event carries a uint64 and must stay 8-byte
+	// aligned, or the binding's unsafe event casts trip checkptr under -race.
 	event sdl.Event
 
 	// wakeMu guards wakeOK, which is the only state [SDLBackend.Wake] may
@@ -910,7 +913,13 @@ func (b *SDLBackend) SetCursor(shape *CursorShape) error {
 		b.cursor = nil
 	}
 	switch {
-	case shape == nil:
+	case shape == nil || shape.Hidden():
+		// A nil or pixel-less shape restores the system cursor. There is
+		// deliberately no hide: SDL cursor visibility is process-global,
+		// so a hidden cursor would vanish from the shell too, and a
+		// desktop application whose pointer disappears reads as broken.
+		// A guest that hides its own cursor (RFB zero-size rectangle,
+		// Tier 1 handle 0) falls back to the system cursor instead.
 		def, err := sdl.GetDefaultCursor()
 		if err != nil {
 			return fmt.Errorf("sdl default cursor: %w", err)
@@ -920,11 +929,6 @@ func (b *SDLBackend) SetCursor(shape *CursorShape) error {
 		}
 		if err := sdl.ShowCursor(); err != nil {
 			return fmt.Errorf("sdl show cursor: %w", err)
-		}
-		return nil
-	case shape.Hidden():
-		if err := sdl.HideCursor(); err != nil {
-			return fmt.Errorf("sdl hide cursor: %w", err)
 		}
 		return nil
 	}

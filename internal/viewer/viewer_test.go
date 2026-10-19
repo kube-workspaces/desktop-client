@@ -275,6 +275,14 @@ func (f *fakeBackend) lastCursor() *CursorShape {
 	return f.cursors[len(f.cursors)-1]
 }
 
+// cursorCount returns how many shapes were installed, so a test can tell a
+// recorded restore (nil entry) apart from nothing installed at all.
+func (f *fakeBackend) cursorCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.cursors)
+}
+
 func (f *fakeBackend) SetFullscreen(on bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1505,18 +1513,33 @@ func TestViewerInstallsGuestCursor(t *testing.T) {
 	}
 }
 
-// TestViewerHidesCursorWhenGuestHides: a zero-sized cursor shape means the
-// guest hid its pointer, and the local cursor hides with it.
-func TestViewerHidesCursorWhenGuestHides(t *testing.T) {
+// TestViewerRestoresCursorOnZeroSizeShape: a zero-sized Cursor
+// pseudo-encoding rectangle is the RFB spec's "use the default local
+// cursor" signal, not a hide request. The window must install a restore
+// (nil shape) rather than hide the process-global cursor, which would
+// also hide it in the shell.
+func TestViewerRestoresCursorOnZeroSizeShape(t *testing.T) {
 	h := newHarness(t, 800, 600, 800, 600, Config{})
 	defer h.v.stop()
 
+	// A real shape first, so the restore has something to undo.
+	h.cfg.OnCursor([]byte{0xff, 0x00, 0x00, 0xff}, 1, 1, 0, 0)
+	h.step(t)
+	if got := h.be.lastCursor(); got == nil || got.Hidden() {
+		t.Fatalf("cursor = %+v, want the installed shape", got)
+	}
+
+	// The zero-sized rectangle, exactly as readCursor reports it: no
+	// pixels, zero size, with the cursor position in the hotspot slots.
+	before := h.be.cursorCount()
 	h.cfg.OnCursor(nil, 0, 0, 5, 5)
 	h.step(t)
 
-	got := h.be.lastCursor()
-	if got == nil || !got.Hidden() {
-		t.Fatalf("cursor = %+v, want a hidden shape", got)
+	if got := h.be.cursorCount(); got != before+1 {
+		t.Fatalf("installed %d cursors after a zero-sized rectangle, want %d (one restore)", got, before+1)
+	}
+	if got := h.be.lastCursor(); got != nil {
+		t.Fatalf("cursor = %+v after a zero-sized rectangle, want nil (system cursor restored)", got)
 	}
 }
 

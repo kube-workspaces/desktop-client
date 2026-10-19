@@ -1091,7 +1091,9 @@ func (c *Conn) readExtendedDesktopSize(r Rect) error {
 
 // readCursor handles the Cursor pseudo-encoding: an image plus a 1-bit mask
 // describing the remote pointer, which the viewer draws locally so the cursor
-// does not lag by a round trip.
+// does not lag by a round trip. A zero-sized rectangle is the spec's "use the
+// default local cursor" signal (rfbproto), not a hide request: it is reported
+// with a nil image and no size so the viewer restores the system cursor.
 func (c *Conn) readCursor(r Rect) error {
 	c.noteAck(EncodingCursor)
 

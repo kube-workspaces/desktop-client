@@ -541,13 +541,25 @@ func (v *Viewer) RFBConfig(base rfb.Config) rfb.Config {
 		if prevCursor != nil {
 			prevCursor(image, w, h, hotX, hotY)
 		}
+		// A zero-sized Cursor pseudo-encoding rectangle is the RFB spec's
+		// "use the default local cursor" signal (rfbproto: "the cursor is
+		// now the default cursor provided by the client"), not a request to
+		// hide: mainstream clients restore the system cursor on it. Hiding
+		// is a Tier 1 agent action and arrives here as a pixel-less shape
+		// from a different path. Inbox contract: nil restores the system
+		// cursor; a pixel-less shape hides.
+		if w == 0 || h == 0 || len(image) == 0 {
+			v.inbox.Lock()
+			v.inbox.cursor, v.inbox.hasCursor = nil, true
+			v.inbox.Unlock()
+			v.wake()
+			return
+		}
 		// The connection hands the callback a fresh buffer per shape but
 		// asks the callback not to retain it, so the pixels are copied
 		// before they go in the inbox.
 		shape := &CursorShape{W: w, H: h, HotX: hotX, HotY: hotY}
-		if len(image) > 0 {
-			shape.Pix = append([]byte(nil), image...)
-		}
+		shape.Pix = append([]byte(nil), image...)
 		v.inbox.Lock()
 		v.inbox.cursor, v.inbox.hasCursor = shape, true
 		v.inbox.Unlock()

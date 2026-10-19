@@ -84,13 +84,14 @@ func TestDecodeCursorShape(t *testing.T) {
 		t.Fatalf("pixel 0 = %v, want opaque red", shape.Pix[:4])
 	}
 
-	// A hide (handle 0) decodes to a pixel-less shape, not an error.
+	// A hide (handle 0) decodes to nil, not an error: the local cursor is
+	// never hidden, so a guest hide restores the system cursor.
 	hidden, err := decodeCursorShape(selkies.CursorShape{})
 	if err != nil {
 		t.Fatalf("hide: %v", err)
 	}
-	if !hidden.Hidden() {
-		t.Fatalf("hide decoded to %+v, want hidden", hidden)
+	if hidden != nil {
+		t.Fatalf("hide decoded to %+v, want nil (system cursor restored)", hidden)
 	}
 
 	// Garbage is an error, never a half-installed cursor.

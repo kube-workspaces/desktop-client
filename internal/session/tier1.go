@@ -394,7 +394,13 @@ func runTier1Generations(ctx context.Context, conn *websocket.Conn, input *tier1
 							cfg.logf("Tier 1 cursor shape: %v", err)
 							return
 						}
-						cursorShapes++
+						// Only a real shape proves the window draws its
+						// own cursor; a hide (nil) must not flip the
+						// guest's cursor off, or nothing anywhere draws
+						// one.
+						if shape != nil {
+							cursorShapes++
+						}
 						sink.GuestCursor(shape)
 						syncCursorVisible()
 					}
@@ -448,13 +454,15 @@ func runTier1Generations(ctx context.Context, conn *websocket.Conn, input *tier1
 }
 
 // decodeCursorShape renders an agent cursor shape into window pixels. A
-// hidden shape (handle 0 or empty) decodes to a pixel-less shape, which the
-// window hides; anything the PNG decoder rejects is an error, never a
+// hidden shape (handle 0 or empty) decodes to nil, which restores the
+// system cursor: the local pointer is never hidden, because a desktop
+// application whose cursor vanishes reads as broken — the guest hiding
+// its own (idle auto-hide, typing) only means the window stops drawing a
+// guest shape. Anything the PNG decoder rejects is an error, never a
 // half-installed cursor.
 func decodeCursorShape(shape selkies.CursorShape) (*viewer.CursorShape, error) {
-	out := &viewer.CursorShape{HotX: shape.HotX, HotY: shape.HotY}
 	if !shape.Visible() {
-		return out, nil
+		return nil, nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(shape.Data)
 	if err != nil {
@@ -471,8 +479,7 @@ func decodeCursorShape(shape selkies.CursorShape) (*viewer.CursorShape, error) {
 	}
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 	draw.Draw(rgba, rgba.Bounds(), img, bounds.Min, draw.Src)
-	out.Pix, out.W, out.H = rgba.Pix, w, h
-	return out, nil
+	return &viewer.CursorShape{Pix: rgba.Pix, W: w, H: h, HotX: shape.HotX, HotY: shape.HotY}, nil
 }
 
 // noFallbackDial reports whether a dial failure must not be routed around by a
