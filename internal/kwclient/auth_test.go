@@ -216,9 +216,10 @@ func TestDefaultClientDoesNotFollowRedirects(t *testing.T) {
 }
 
 func TestMe(t *testing.T) {
-	var gotCookie, gotPath string
+	var gotAuth, gotCookie, gotPath string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
 		if ck, err := r.Cookie(SessionCookieName); err == nil {
 			gotCookie = ck.Value
 		}
@@ -243,9 +244,8 @@ func TestMe(t *testing.T) {
 	if gotPath != "/auth/me" {
 		t.Errorf("path = %q, want /auth/me", gotPath)
 	}
-	// The client sends both bearer and cookie; the cookie must be present.
-	if gotCookie != "tok.sig" {
-		t.Errorf("kw-session cookie = %q, want tok.sig", gotCookie)
+	if gotAuth != "Bearer tok.sig" || gotCookie != "" {
+		t.Errorf("native credentials: Authorization=%q Cookie=%q", gotAuth, gotCookie)
 	}
 	if !me.Authenticated || !me.AuthEnabled {
 		t.Errorf("Authenticated=%v AuthEnabled=%v", me.Authenticated, me.AuthEnabled)

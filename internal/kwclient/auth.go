@@ -142,7 +142,7 @@ func (c *Client) LoginLocal(ctx context.Context, email, password string) (token 
 // Me fetches GET /auth/me.
 //
 // The endpoint accepts Authorization: Bearer as well as the kw-session
-// cookie; the client always sends both.
+// cookie; the native client sends only the bearer header.
 func (c *Client) Me(ctx context.Context) (*Identity, error) {
 	var out Identity
 	if err := c.doJSON(ctx, requestSpec{

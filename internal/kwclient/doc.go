@@ -27,8 +27,8 @@
 //   - /auth/me and /auth/change-password accept Authorization: Bearer
 //     as well as the kw-session cookie.
 //
-// The client therefore always sends both the bearer header and the
-// kw-session cookie, which is accepted everywhere.
+// The client sends only the bearer header. Sending a session cookie would make
+// mutations and WebSocket upgrades subject to browser Origin checks.
 //
 // # Errors
 //

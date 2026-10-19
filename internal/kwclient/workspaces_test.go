@@ -497,6 +497,16 @@ func TestStartStopWorkspace(t *testing.T) {
 			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 				gotPath, gotVerb = r.URL.Path, r.Method
 				gotNS = r.URL.Query().Get("namespace")
+				// Match the API's browser-origin guard: a session cookie
+				// without Origin must not reach the lifecycle handler.
+				if cookie, err := r.Cookie(SessionCookieName); err == nil && cookie.Value != "" && r.Header.Get("Origin") == "" {
+					writeJSON(t, w, http.StatusForbidden, `{"error":"origin_forbidden","message":"untrusted or missing browser origin"}`)
+					return
+				}
+				if r.Header.Get("Authorization") != "Bearer tok.sig" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
 				writeJSON(t, w, http.StatusOK, `{"name":"dev","namespace":"demo","type":"container","ready_replicas":0,"stopped":`+boolStr(tc.state)+`}`)
 			})
 

@@ -70,6 +70,10 @@ func Describe(err error) string {
 	case errors.Is(err, kwclient.ErrUnauthorized):
 		return i18n.Get("errors.expired")
 	case errors.Is(err, kwclient.ErrForbidden):
+		var apiErr *kwclient.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == "origin_forbidden" {
+			return i18n.Get("errors.originForbidden")
+		}
 		return i18n.Get("errors.forbidden")
 	case errors.Is(err, kwclient.ErrNotFound):
 		return i18n.Get("errors.notFound")

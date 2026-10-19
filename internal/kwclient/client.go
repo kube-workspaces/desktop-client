@@ -347,17 +347,16 @@ func (c *Client) newRequest(ctx context.Context, spec requestSpec) (*http.Reques
 	return req, nil
 }
 
-// authenticate adds both credential forms to h.
+// authenticate adds the native bearer credential to h.
 //
-// /v1/*, /auth/me and /auth/change-password all accept the bearer token as
-// well as the cookie, so sending both keeps a single code path for all endpoints.
+// Do not also send a session cookie: the API treats cookie-bearing mutations
+// and WebSocket upgrades as browser requests and requires a trusted Origin.
 func (c *Client) authenticate(h http.Header) {
 	token := c.Token()
 	if token == "" {
 		return
 	}
 	h.Set("Authorization", "Bearer "+token)
-	h.Set("Cookie", SessionCookieName+"="+token)
 }
 
 // do performs the request and maps non-2xx responses to an [*APIError]. On a

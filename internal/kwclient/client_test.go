@@ -87,12 +87,8 @@ func TestDefaultUserAgentAndAuthHeaders(t *testing.T) {
 	if want := "Bearer tok.sig"; got.Header.Get("Authorization") != want {
 		t.Errorf("Authorization = %q, want %q", got.Header.Get("Authorization"), want)
 	}
-	ck, err := got.Cookie(SessionCookieName)
-	if err != nil {
-		t.Fatalf("cookie %s: %v", SessionCookieName, err)
-	}
-	if ck.Value != "tok.sig" {
-		t.Errorf("cookie value = %q, want %q", ck.Value, "tok.sig")
+	if cookie := got.Header.Get("Cookie"); cookie != "" {
+		t.Errorf("native request sent Cookie = %q", cookie)
 	}
 	if ua := got.Header.Get("User-Agent"); ua != defaultUserAgent() {
 		t.Errorf("User-Agent = %q, want %q", ua, defaultUserAgent())

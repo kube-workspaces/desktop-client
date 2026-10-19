@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -52,6 +54,27 @@ func TestDescribeNamesFailuresAUserCanActOn(t *testing.T) {
 				t.Fatalf("Describe = %q, want it to mention %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDescribeOriginRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"origin_forbidden","message":"untrusted or missing browser origin"}`))
+	}))
+	defer server.Close()
+	client, err := kwclient.New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.StartWorkspace(context.Background(), "demo", "dev")
+	if !errors.Is(err, kwclient.ErrForbidden) {
+		t.Fatalf("StartWorkspace error = %v, want forbidden", err)
+	}
+	got := Describe(err)
+	if !strings.Contains(got, "browser-origin") || strings.Contains(got, "role") {
+		t.Fatalf("Describe = %q, want origin policy guidance without role claim", got)
 	}
 }
 

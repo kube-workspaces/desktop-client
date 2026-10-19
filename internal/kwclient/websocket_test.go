@@ -22,8 +22,11 @@ func echoUpgrader(t *testing.T, subprotocols []string) (http.HandlerFunc, *http.
 	t.Helper()
 	seen := &http.Request{}
 	up := websocket.Upgrader{
-		// Mirrors the server: all three bridges accept any origin.
-		CheckOrigin:  func(*http.Request) bool { return true },
+		// Mirrors the API guard for headerless native requests.
+		CheckOrigin: func(r *http.Request) bool {
+			cookie, err := r.Cookie(SessionCookieName)
+			return err != nil || cookie.Value == ""
+		},
 		Subprotocols: subprotocols,
 	}
 	h := func(w http.ResponseWriter, r *http.Request) {
@@ -59,13 +62,12 @@ func TestDialVNC(t *testing.T) {
 	if got := seen.URL.Query().Get("namespace"); got != "demo" {
 		t.Errorf("namespace = %q, want demo", got)
 	}
-	// The bridges accept the bearer header even though the browser uses the
-	// cookie; the client sends both.
+	// Native bridges use bearer-only authentication, without browser cookies.
 	if got := seen.Header.Get("Authorization"); got != "Bearer tok.sig" {
 		t.Errorf("Authorization = %q, want Bearer tok.sig", got)
 	}
-	if ck, err := seen.Cookie(SessionCookieName); err != nil || ck.Value != "tok.sig" {
-		t.Errorf("kw-session cookie = %v (err %v), want tok.sig", ck, err)
+	if cookie := seen.Header.Get("Cookie"); cookie != "" {
+		t.Errorf("native handshake sent Cookie = %q", cookie)
 	}
 	if got := seen.Header.Get("User-Agent"); got != defaultUserAgent() {
 		t.Errorf("User-Agent = %q, want %q", got, defaultUserAgent())

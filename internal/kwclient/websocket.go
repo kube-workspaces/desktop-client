@@ -23,10 +23,8 @@ var vncSubprotocols = []string{"binary", "plain.kubevirt.io"}
 
 // DialWS opens a WebSocket to an API path.
 //
-// The base URL scheme is switched to ws/wss, and both credential forms are sent
-// (the auth middleware wraps the whole mux and accepts the bearer header when
-// the cookie is absent). No Origin header is set: all three upgraders run with
-// CheckOrigin returning true.
+// The base URL scheme is switched to ws/wss, and the bearer credential is sent.
+// Native bearer-only requests need neither a cookie nor a browser Origin.
 //
 // The returned *http.Response is the handshake response; it is non-nil on a
 // failed handshake and carries the (already buffered) error body.

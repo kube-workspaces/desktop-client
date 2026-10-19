@@ -375,14 +375,12 @@ must stay on a release built with go1.26 or newer.
 - **`Authorization: Bearer <kw-session token>` works everywhere**, on every
   `/v1` endpoint and on all three WebSocket bridges (`/exec`, `/vnc`, `/ssh`).
   The auth middleware wraps the whole mux and falls back to the Bearer header
-  when the `kw-session` cookie is absent. Every WS upgrader sets
-  `CheckOrigin: true`, so no `Origin` header is required. A native client needs
-  no cookie jar.
-- **`/auth/me` now accepts Bearer too.** It used to be cookie-only; the API was
-  changed and it no longer is. (`kwclient` still sends both the bearer header
-  and a `Cookie: kw-session=…` header on every request, which is harmless and
-  keeps one code path; the doc comment in `internal/kwclient/doc.go` and
-  `auth.go` still say cookie-only and are stale.)
+  when the `kw-session` cookie is absent. WS upgraders allow
+  native bearer-only access, so no `Origin` header is required. A native client
+  needs no cookie jar. Do not send session cookies: cookie-bearing mutations
+  and WebSocket upgrades require a trusted browser Origin.
+- **`/auth/me` accepts Bearer too.** It used to be cookie-only; native
+  `kwclient` requests now use only the bearer header on every endpoint.
 - **The session token is not a JWT.** It is
   `base64url(json) + "." + base64url(HMAC-SHA256)`. The claims (`exp`, `role`,
   `email`) can be decoded locally with `kwclient.ParseToken` without a round
