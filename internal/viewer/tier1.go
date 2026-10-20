@@ -415,12 +415,12 @@ func OpenTier1Detached(ctx context.Context, be Backend, inp Tier1Input,
 
 	prodCtx, cancel := context.WithCancel(ctx)
 	w.sink = &Tier1Sink{wake: be.Wake, play: w.playArrived}
-	done := make(chan error, 1)
-	go func() { done <- produce(prodCtx, w.sink) }()
 
 	// Audio: the Opus side always emits two-channel little-endian s16 48 kHz,
 	// so the device is opened once with that layout. A missing device merely
-	// silences the session.
+	// silences the session. Open before the producer starts: decoded PCM plays
+	// at arrival on the producer's goroutine, so a batch pushed before w.audio
+	// is set would be dropped as if the device were missing.
 	if opts.Audio {
 		if a, ok := be.(AudioSink); ok {
 			if err := a.OpenAudio(AudioFormat{Channels: 2, SampleRate: 48000, BytesPerSample: 2, LittleEndian: true}); err != nil {
@@ -432,6 +432,9 @@ func OpenTier1Detached(ctx context.Context, be Backend, inp Tier1Input,
 			}
 		}
 	}
+
+	done := make(chan error, 1)
+	go func() { done <- produce(prodCtx, w.sink) }()
 
 	now := time.Now()
 	w.clipDue = now.Add(opts.ClipboardInterval)
