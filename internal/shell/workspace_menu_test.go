@@ -106,3 +106,23 @@ func TestWorkspaceMenuMouseAction(t *testing.T) {
 		t.Fatal("clicking Info did not open the selected workspace's details")
 	}
 }
+
+// Every context-menu row carries a glyph and reads left-aligned; the footer,
+// built from the same actions, must keep its centred text-only faces.
+func TestWorkspaceMenuRowsHaveIconsAndFooterDoesNot(t *testing.T) {
+	r := newRig(savedProfile(), "token")
+	r.start()
+	ws := workspace("team", "vm", kwclient.WorkspaceTypeVM, true)
+	r.app.m.WorkspacesLoaded([]kwclient.Workspace{ws}, r.now)
+	for _, action := range workspaceActions(ws, true) {
+		b := action.menuButton()
+		if b.Icon == ui.ButtonIconNone || b.Align != ui.ButtonAlignLeft {
+			t.Fatalf("menu row %q = icon %d align %d, want a glyph and left alignment", b.Text, b.Icon, b.Align)
+		}
+	}
+	for _, action := range workspaceActions(ws, false) {
+		if action.button.Icon != ui.ButtonIconNone || action.button.Align != ui.ButtonAlignCenter {
+			t.Fatalf("footer button %q picked up menu icon/alignment", action.button.Text)
+		}
+	}
+}

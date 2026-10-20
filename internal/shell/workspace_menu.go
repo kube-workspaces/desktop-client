@@ -16,6 +16,16 @@ type workspaceContextMenu struct {
 	swallow bool
 }
 
+// menuButton is the row form of a workspace action: quiet, unraised, with the
+// glyph and label against the left edge. The footer keeps the centred,
+// text-only faces of the same actions.
+func (action workspaceAction) menuButton() ui.Button {
+	b := action.button
+	b.Variant, b.Raised = ui.ButtonQuiet, false
+	b.Icon, b.Align = action.icon, ui.ButtonAlignLeft
+	return b
+}
+
 func (a *App) closeWorkspaceMenu() {
 	a.workspaceMenu.key = ""
 	a.workspaceMenu.scroll = 0
@@ -73,7 +83,8 @@ func (a *App) drawWorkspaceMenu(bounds ui.Rect) intent {
 	outer := ui.Inset(bounds, th.Gap)
 	w := 0
 	for _, action := range actions {
-		w = max(w, action.button.Width(ctx)+2*th.Gap)
+		b := action.menuButton()
+		w = max(w, b.Width(ctx)+2*th.Gap)
 	}
 	w = min(w, outer.W)
 	contentH := len(actions) * th.ControlHeight
@@ -126,8 +137,7 @@ func (a *App) drawWorkspaceMenu(bounds ui.Rect) intent {
 	for i, action := range actions {
 		box := ui.Rect{X: view.X, Y: view.Y + i*th.ControlHeight - m.scroll, W: view.W, H: th.ControlHeight}
 		hit := ui.Intersect(box, view)
-		b := action.button
-		b.Variant, b.Raised = ui.ButtonQuiet, false
+		b := action.menuButton()
 		input := ctx.Input
 		if !ctx.Input.Mouse.In(hit) {
 			ctx.Input.Pressed, ctx.Input.Released, ctx.Input.Down = false, false, false

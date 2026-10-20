@@ -112,6 +112,17 @@ var (
 	buttonHighlight  = color.RGBA{R: 255, G: 255, B: 255, A: 44}
 )
 
+// ButtonAlign is the horizontal placement of a button's content within its
+// face. The zero value centres it, which is what a toolbar or footer button
+// wants; menu rows opt into ButtonAlignLeft so their icons and labels line up
+// in a column.
+type ButtonAlign int
+
+const (
+	ButtonAlignCenter ButtonAlign = iota
+	ButtonAlignLeft
+)
+
 // Button is a clickable command.
 //
 // It is a struct rather than a function call with eight arguments because the
@@ -137,6 +148,9 @@ type Button struct {
 	Round bool
 	// Icon places a small action glyph before the label, or centers it alone.
 	Icon ButtonIcon
+	// Align places the label (and its icon) against the left edge of the face
+	// instead of centering the group.
+	Align ButtonAlign
 }
 
 // Width returns the button's intrinsic width: its label plus symmetric
@@ -238,13 +252,21 @@ func (b *Button) Layout(ctx *Context, r Rect) bool {
 			width += th.Gap + TextWidth(b.Text, orInt(b.Scale, th.Body), th.Font)
 		}
 		x := face.X + (face.W-width)/2
+		if b.Align == ButtonAlignLeft {
+			x = face.X + th.Gap
+			width = face.W - 2*th.Gap
+		}
 		drawButtonIcon(ctx.Canvas, Rect{X: x, Y: face.Y + (face.H-size)/2, W: size, H: size}, b.Icon, ink)
 		labelRect = Rect{X: x + size + th.Gap, Y: face.Y, W: max(0, width-size-th.Gap), H: face.H}
+	}
+	align := AlignCenter
+	if b.Align == ButtonAlignLeft {
+		align = AlignLeft
 	}
 	Label(ctx, labelRect, b.Text, LabelStyle{
 		Color:  ink,
 		Scale:  orInt(b.Scale, th.Body),
-		Align:  AlignCenter,
+		Align:  align,
 		Middle: true,
 	})
 

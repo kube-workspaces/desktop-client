@@ -839,6 +839,9 @@ func (a *App) drawWorkspaceFooter(r ui.Rect, rows []kwclient.Workspace, out *int
 type workspaceAction struct {
 	button ui.Button
 	kind   intentKind
+	// icon is the glyph the context menu draws to the left of the label; the
+	// footer's button row stays text-only.
+	icon ui.ButtonIcon
 }
 
 // workspaceActions is shared by the footer and the row context menu.
@@ -849,6 +852,7 @@ func workspaceActions(ws kwclient.Workspace, has bool) []workspaceAction {
 	// hand-off (Track B), with the integrated terminal and the system
 	// browser as explicit secondary choices on the same row.
 	console, browser, observe := false, false, false
+	openIcon := ui.ButtonIconPlay
 	switch {
 	case !has:
 		label = i18n.Get("workspaces.open")
@@ -857,12 +861,15 @@ func workspaceActions(ws kwclient.Workspace, has bool) []workspaceAction {
 		label = i18n.Get("workspaces.start")
 	case !ws.Running():
 		label = i18n.Get("workspaces.notRunning")
+		openIcon = ui.ButtonIconClock
 	case ws.IsVM():
 		label = i18n.Get("workspaces.openDisplay")
+		openIcon = ui.ButtonIconMonitor
 		observe = true
 	case ws.Type == kwclient.WorkspaceTypeContainer, ws.Type == kwclient.WorkspaceTypeScratch:
 		kind = intentOpenWeb
 		label = i18n.Get("workspaces.openWeb")
+		openIcon = ui.ButtonIconWindow
 		console, browser = true, true
 	default:
 		browser = true
@@ -922,26 +929,28 @@ func workspaceActions(ws kwclient.Workspace, has bool) []workspaceAction {
 	// Order: the open buttons first (primary open, then open-in-browser,
 	// then the shared-display observer, the Windows sign-in and the VM
 	// consoles), then stop, with Console second to last and Info last.
-	actions := []workspaceAction{{open, kind}}
+	actions := []workspaceAction{{open, kind, openIcon}}
 	if browser {
-		actions = append(actions, workspaceAction{browserBtn, intentOpenInBrowser})
+		actions = append(actions, workspaceAction{browserBtn, intentOpenInBrowser, ui.ButtonIconGlobe})
 	}
 	if observe {
-		actions = append(actions, workspaceAction{observeBtn, intentOpenObserver})
+		actions = append(actions, workspaceAction{observeBtn, intentOpenObserver, ui.ButtonIconEye})
 	}
 	if signin {
-		actions = append(actions, workspaceAction{signinBtn, intentCredentials})
+		actions = append(actions, workspaceAction{signinBtn, intentCredentials, ui.ButtonIconUser})
 	}
 	if consoles {
-		actions = append(actions, workspaceAction{serialBtn, intentOpenSerial}, workspaceAction{sshBtn, intentOpenSSH})
+		actions = append(actions,
+			workspaceAction{serialBtn, intentOpenSerial, ui.ButtonIconTerminal},
+			workspaceAction{sshBtn, intentOpenSSH, ui.ButtonIconKey})
 	}
 	if showStop {
-		actions = append(actions, workspaceAction{stop, intentStopWorkspace})
+		actions = append(actions, workspaceAction{stop, intentStopWorkspace, ui.ButtonIconStop})
 	}
 	if console {
-		actions = append(actions, workspaceAction{consoleBtn, intentActivate})
+		actions = append(actions, workspaceAction{consoleBtn, intentActivate, ui.ButtonIconTerminal})
 	}
-	return append(actions, workspaceAction{info, intentInfoWorkspace})
+	return append(actions, workspaceAction{info, intentInfoWorkspace, ui.ButtonIconInfo})
 }
 
 // drawWorkspaceInfoModal draws the details [Model.Info] names, centred over a
