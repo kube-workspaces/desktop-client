@@ -366,7 +366,7 @@ func MapAgentResult(ctx context.Context, runErr error) error {
 	if runErr == nil || ctx.Err() != nil {
 		return nil
 	}
-	if errors.Is(runErr, agent.ErrRefused) ||
+	if kwclient.IsCredentialRevoked(runErr) || errors.Is(runErr, agent.ErrRefused) ||
 		errors.Is(runErr, kwclient.ErrSessionInUse) ||
 		errors.Is(runErr, kwclient.ErrUnauthorized) ||
 		errors.Is(runErr, kwclient.ErrForbidden) {

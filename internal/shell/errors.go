@@ -67,6 +67,8 @@ func Describe(err error) string {
 		return i18n.Get("errors.nativeCode")
 
 	// The session.
+	case kwclient.IsCredentialRevoked(err):
+		return i18n.Get("errors.revoked")
 	case errors.Is(err, kwclient.ErrUnauthorized):
 		return i18n.Get("errors.expired")
 	case errors.Is(err, kwclient.ErrForbidden):

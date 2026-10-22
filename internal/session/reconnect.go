@@ -603,6 +603,9 @@ func stateFor(err error) State {
 // reason text — which the API uses to say things like "taken over by another
 // user" — is the most informative thing available when there is one.
 func annotate(err error) error {
+	if kwclient.IsCredentialRevoked(err) {
+		return fmt.Errorf("session revoked; please sign in again: %w", err)
+	}
 	if _, text, ok := CloseReason(err); ok && text != "" {
 		return fmt.Errorf("server closed the session: %s: %w", text, err)
 	}

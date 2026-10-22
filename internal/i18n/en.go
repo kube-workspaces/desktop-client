@@ -415,6 +415,7 @@ var english = map[string]string{
 	"errors.nativeMissing":   "This instance is running an API build without browser sign-in.",
 	"errors.nativeCode":      "The browser sign-in finished but the platform would not accept the login code, even after several automatic attempts. Try again now; if it keeps happening, this usually means the platform's login-code store is not shared between its API servers — tell the administrator.",
 	"errors.expired":         "Your session has expired. Please sign in again.",
+	"errors.revoked":         "Your access was withdrawn, so this session was closed. Please sign in again.",
 	"errors.forbidden":       "You do not have access to that. Check your role and namespace access with an administrator.",
 	"errors.originForbidden": "The server rejected this request because of its browser-origin policy. Check for a desktop client update.",
 	"errors.notFound":        "That workspace no longer exists.",

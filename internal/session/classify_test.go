@@ -137,6 +137,11 @@ func TestClassify(t *testing.T) {
 
 		// --- transport ------------------------------------------------------
 		{
+			name: "revoked established credential",
+			err:  fmt.Errorf("read stream: %w", &websocket.CloseError{Code: kwclient.CloseCodeCredentialRevoked}),
+			want: RetryNever,
+		},
+		{
 			name: "connection refused",
 			err:  &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED},
 			want: RetryBackoff,

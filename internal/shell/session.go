@@ -1910,6 +1910,9 @@ func viewerStatus(state session.State, err error) (viewer.Status, string, bool) 
 }
 
 func reasonOrClosed(err error) string {
+	if kwclient.IsCredentialRevoked(err) {
+		return i18n.Get("errors.revoked")
+	}
 	if err == nil {
 		return "closed by the server"
 	}

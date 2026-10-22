@@ -86,6 +86,10 @@ func (r Retry) String() string {
 //     account-state sentinels — the token expired or access was revoked. No
 //     amount of retrying mints a new token, and a client that silently retries
 //     a 401 is a client that never prompts for re-login.
+//   - a close frame with code 4001 — the platform withdrew the credential
+//     behind an established stream (password replaced, account disabled,
+//     identity unlinked). Retrying would re-establish the stream the platform
+//     just refused, so the session ends and the user is asked to sign in again.
 //   - [kwclient.ErrNotVM] (400 on the bridge) — a permanent property of the
 //     workspace: container workspaces have no display at all.
 //   - [kwclient.ErrNotFound] (404) — retried, which is the one non-obvious
@@ -130,6 +134,9 @@ func Classify(err error) Retry {
 		errors.Is(err, kwclient.ErrAccountLocked),
 		errors.Is(err, kwclient.ErrInvalidCredentials),
 		errors.Is(err, kwclient.ErrLocalAuthDisabled):
+		return RetryNever
+
+	case kwclient.IsCredentialRevoked(err):
 		return RetryNever
 
 	case errors.Is(err, kwclient.ErrNotVM):

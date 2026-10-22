@@ -53,6 +53,12 @@ var (
 	// endpoints that create, e.g. POST /v1/workspaces). It is distinct from
 	// [ErrSessionInUse], which is the 409 of the single-session bridges.
 	ErrAlreadyExists = errors.New("already exists")
+	// ErrCredentialRevoked means the credential that authorised the session
+	// was revoked while it was open: the password was replaced, the account
+	// was disabled, or the identity binding was removed. The server closes
+	// such a stream with [CloseCodeCredentialRevoked] rather than with an
+	// HTTP status, because the stream was already established.
+	ErrCredentialRevoked = errors.New("credential revoked")
 )
 
 // Client-side sentinels, i.e. failures detected without (or after) a server

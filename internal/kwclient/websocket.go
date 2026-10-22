@@ -21,6 +21,29 @@ import (
 // browser client negotiates; "plain.kubevirt.io" is accepted by virt-api.
 var vncSubprotocols = []string{"binary", "plain.kubevirt.io"}
 
+// CloseCodeCredentialRevoked is the WebSocket close code the platform sends
+// when it ends an established stream because the credential behind it is no
+// longer usable.
+//
+// It is a 4xxx code, outside the range reserved by RFC 6455, and it is
+// deliberately distinct from a normal closure: the client has to tell "the
+// server went away" (retry) from "your access was withdrawn" (sign in
+// again), and a normal close frame cannot carry that distinction.
+const CloseCodeCredentialRevoked = 4001
+
+// IsCredentialRevoked reports whether err came from a stream the platform
+// closed because the credential was revoked.
+//
+// The check is on the close code rather than the text, because the text is
+// advisory: what matters is the code the platform committed to.
+func IsCredentialRevoked(err error) bool {
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		return closeErr.Code == CloseCodeCredentialRevoked
+	}
+	return errors.Is(err, ErrCredentialRevoked)
+}
+
 // DialWS opens a WebSocket to an API path.
 //
 // The base URL scheme is switched to ws/wss, and the bearer credential is sent.

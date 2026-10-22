@@ -486,7 +486,7 @@ func decodeCursorShape(shape selkies.CursorShape) (*viewer.CursorShape, error) {
 // Tier 0 attempt. Per the plan, a rejected credential or an ownership conflict
 // must not be evaded through an alternative transport.
 func noFallbackDial(err error) bool {
-	return errors.Is(err, kwclient.ErrUnauthorized) ||
+	return kwclient.IsCredentialRevoked(err) || errors.Is(err, kwclient.ErrUnauthorized) ||
 		errors.Is(err, kwclient.ErrForbidden) ||
 		errors.Is(err, kwclient.ErrSessionInUse)
 }

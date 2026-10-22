@@ -255,6 +255,13 @@ func (m *Model) Expired() {
 	m.Err = i18n.Get("workspaces.expired")
 }
 
+// Revoked is [Model.SignOut] for a session whose credential was withdrawn
+// while it was open. The user has to sign in again; retrying cannot help.
+func (m *Model) Revoked() {
+	m.SignOut("")
+	m.Err = i18n.Get("errors.revoked")
+}
+
 // Fail records an error against the current screen, routing an expired session
 // back to the login screen.
 //
@@ -269,6 +276,10 @@ func (m *Model) Fail(err error) {
 	m.Busy, m.BusyText = false, ""
 	if errors.Is(err, kwclient.ErrUnauthorized) && m.State != StateLogin && m.State != StateServer {
 		m.Expired()
+		return
+	}
+	if kwclient.IsCredentialRevoked(err) && m.State != StateLogin && m.State != StateServer {
+		m.Revoked()
 		return
 	}
 	m.Err = Describe(err)
