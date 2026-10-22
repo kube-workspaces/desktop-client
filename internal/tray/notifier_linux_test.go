@@ -101,6 +101,25 @@ func TestStatusNotifierClicksAndMenuOverDBus(t *testing.T) {
 			t.Fatal("left click did not queue a toggle")
 		}
 	}
+	for _, method := range []struct {
+		name string
+		args []any
+	}{
+		{"SecondaryActivate", []any{int32(0), int32(0)}},
+		{"XAyatanaSecondaryActivate", []any{uint32(123)}},
+	} {
+		if err := item.Call(notifierInterface+"."+method.name, 0, method.args...).Err; err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case action := <-actions:
+			if action.Kind != ActionToggle {
+				t.Fatalf("%s = %+v", method.name, action)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not queue a toggle", method.name)
+		}
+	}
 	if err := item.Call(notifierInterface+".ContextMenu", 0, int32(0), int32(0)).Err; err != nil {
 		t.Fatal(err)
 	}
@@ -115,11 +134,11 @@ func TestStatusNotifierClicksAndMenuOverDBus(t *testing.T) {
 	if err := menu.Call(menuInterface+".GetLayout", 0, int32(0), int32(-1), []string{}).Store(&revision, &layout); err != nil {
 		t.Fatal(err)
 	}
-	if len(layout.Children) != 4 {
+	if len(layout.Children) != 5 {
 		t.Fatalf("menu layout = %+v", layout)
 	}
 	var workspaces, workspace menuLayout
-	if err := dbus.Store([]any{layout.Children[1].Value()}, &workspaces); err != nil {
+	if err := dbus.Store([]any{layout.Children[2].Value()}, &workspaces); err != nil {
 		t.Fatal(err)
 	}
 	if err := dbus.Store([]any{workspaces.Children[0].Value()}, &workspace); err != nil {
@@ -134,6 +153,17 @@ func TestStatusNotifierClicksAndMenuOverDBus(t *testing.T) {
 	click(1)
 	if action := <-actions; action.Kind != ActionShow {
 		t.Fatalf("menu Open = %+v", action)
+	}
+	var toggle menuLayout
+	if err := dbus.Store([]any{layout.Children[1].Value()}, &toggle); err != nil {
+		t.Fatal(err)
+	}
+	if label := toggle.Properties["label"].Value(); label != "Show / hide Kube Workspaces" {
+		t.Fatalf("toggle label = %v", label)
+	}
+	click(toggle.ID)
+	if action := <-actions; action.Kind != ActionToggle {
+		t.Fatalf("menu toggle = %+v", action)
 	}
 	click(workspace.ID)
 	if action := <-actions; action.Kind != ActionOpen || action.Key != "team/vm" {

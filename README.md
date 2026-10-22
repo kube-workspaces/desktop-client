@@ -372,6 +372,12 @@ be delivered, an already-running dialog points you to the existing window or tra
 menu. Window managers may restrict focus requests. CLI commands and embedded web
 children still run independently; a crash automatically releases the GUI lock.
 
+With the system tray enabled and available, closing the main window asks whether
+to quit or minimize to the tray. Tray activation toggles the main window's
+visibility. On Ubuntu 22.04 with GNOME's AppIndicator extension, single-click
+opens the menu and double-click toggles the window; middle-click or the Linux
+tray menu's **Show / hide Kube Workspaces** action also toggles it.
+
 The shell walks through three screens — instance URL, sign-in, workspace list —
 and then opens a display session in its **own window**. The shell's window
 remains open and resumes control when the session ends.

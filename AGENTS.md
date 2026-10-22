@@ -90,8 +90,14 @@ Implemented and working:
   still apply. Locks release on exit/crash; stale metadata does not prevent
   startup. CLI commands and web children stay independent. Tray surfaces preserve
   straight alpha, including the transparent background and antialiased edges.
-  A single left tray-icon click toggles the main window (hide when visible,
+  Tray activation toggles the main window (hide when visible,
   show/restore and raise when hidden or minimized); right click opens the menu.
+  Hosts that forward single left clicks activate immediately. Ubuntu 22.04's
+  GNOME AppIndicator extension instead opens the menu on single-click and
+  activates on double-click; Linux also offers a Show / hide menu action and
+  middle-click toggle (standard SNI and Ayatana methods). SDL's automatic quit
+  on last-window close is disabled so the Linux D-Bus tray, which SDL cannot
+  count, gets the same quit-or-hide prompt as native SDL trays.
   Windows subclasses SDL's tray window, macOS routes the status-item button,
   and Linux exports StatusNotifierItem/DBusMenu directly because SDL's
   AppIndicator backend has no primary-click callback. Linux click/menu wire

@@ -128,7 +128,7 @@ func (t *StatusNotifier) register() error {
 
 func (t *StatusNotifier) Update(targets []Target) {
 	t.mu.Lock()
-	t.actions = map[int32]Action{1: {Kind: ActionShow}, 3: {Kind: ActionAbout}, 4: {Kind: ActionQuit}}
+	t.actions = map[int32]Action{1: {Kind: ActionShow}, 3: {Kind: ActionAbout}, 4: {Kind: ActionQuit}, 5: {Kind: ActionToggle}}
 	workspaceMenu := menuNode(2, "Workspaces")
 	workspaceMenu.Properties["children-display"] = dbus.MakeVariant("submenu")
 	for _, item := range MenuItems(targets) {
@@ -143,7 +143,9 @@ func (t *StatusNotifier) Update(targets []Target) {
 	}
 	t.root = menuNode(0, "")
 	t.root.Properties["children-display"] = dbus.MakeVariant("submenu")
-	for _, node := range []menuLayout{menuNode(1, "Open Kube Workspaces"), workspaceMenu, menuNode(3, "About"), menuNode(4, "Quit")} {
+	// Ubuntu 22.04's GNOME AppIndicator extension reserves single-click for
+	// the menu, even with ItemIsMenu=false. Keep hide/show reachable there.
+	for _, node := range []menuLayout{menuNode(1, "Open Kube Workspaces"), menuNode(5, "Show / hide Kube Workspaces"), workspaceMenu, menuNode(3, "About"), menuNode(4, "Quit")} {
 		t.root.Children = append(t.root.Children, dbus.MakeVariant(node))
 	}
 	t.revision++
@@ -182,9 +184,17 @@ func (n *notifierDBus) Activate(_, _ int32) *dbus.Error {
 }
 
 // Hosts render the menu named by the Menu property for context requests.
-func (*notifierDBus) ContextMenu(_, _ int32) *dbus.Error       { return nil }
-func (*notifierDBus) SecondaryActivate(_, _ int32) *dbus.Error { return nil }
-func (*notifierDBus) Scroll(_ int32, _ string) *dbus.Error     { return nil }
+func (*notifierDBus) ContextMenu(_, _ int32) *dbus.Error { return nil }
+
+// GNOME sends middle-click through the Ayatana method, falling back to the
+// standard SNI method on older items. Support both as visibility toggles.
+func (n *notifierDBus) SecondaryActivate(x, y int32) *dbus.Error {
+	return n.Activate(x, y)
+}
+func (n *notifierDBus) XAyatanaSecondaryActivate(_ uint32) *dbus.Error {
+	return n.Activate(0, 0)
+}
+func (*notifierDBus) Scroll(_ int32, _ string) *dbus.Error { return nil }
 
 type menuDBus struct{ tray *StatusNotifier }
 

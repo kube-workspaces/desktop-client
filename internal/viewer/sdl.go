@@ -81,6 +81,11 @@ func acquireSDL() error {
 		// the window and reaches the widgets. Not fatal: worst case the old
 		// two-click behaviour remains.
 		_ = sdl.SetHint(sdl.HINT_MOUSE_FOCUS_CLICKTHROUGH, "1")
+		// Window-close policy belongs to the shell/viewer, not SDL. In
+		// particular, our Linux D-Bus tray is invisible to SDL's active-tray
+		// count: its default last-window-close QUIT bypasses the shell's
+		// quit-or-hide prompt. Explicit OS/application quits still arrive.
+		_ = sdl.SetHint(sdl.HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0")
 		if err := sdl.Init(sdl.INIT_VIDEO); err != nil {
 			lib.Unload()
 			return fmt.Errorf("sdl init: %w", err)
