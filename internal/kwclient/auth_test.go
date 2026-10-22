@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"testing"
 )
 
@@ -21,12 +22,16 @@ func TestAuthConfig(t *testing.T) {
 			name: "enabled",
 			body: `{
 				"enabled": true,
+				"methods": ["local", "oidc"],
+				"nativeAuth": {"enabled": true, "methods": ["loopback-pkce"]},
 				"issuerURL": "https://dex.example.com",
 				"personalNamespaces": {"enabled": true, "template": "ws-{user}"},
 				"registration": {"autoProvision": true},
 				"localAuth": {"enabled": true}
 			}`,
 			want: AuthConfig{
+				Methods:            []string{"local", "oidc"},
+				NativeAuth:         &NativeAuthConfig{Enabled: true, Methods: []string{"loopback-pkce"}},
 				Enabled:            true,
 				IssuerURL:          "https://dex.example.com",
 				PersonalNamespaces: PersonalNamespacesConfig{Enabled: true, Template: "ws-{user}"},
@@ -57,7 +62,7 @@ func TestAuthConfig(t *testing.T) {
 			if gotPath != "/auth/config" {
 				t.Errorf("path = %q, want /auth/config", gotPath)
 			}
-			if *got != tc.want {
+			if !reflect.DeepEqual(*got, tc.want) {
 				t.Errorf("AuthConfig = %+v, want %+v", *got, tc.want)
 			}
 		})

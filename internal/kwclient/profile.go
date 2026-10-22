@@ -50,5 +50,20 @@ func (c *Client) DeleteSSHKey(ctx context.Context, namespace, name string) error
 
 // ChangePassword updates the signed-in user's local password.
 func (c *Client) ChangePassword(ctx context.Context, current, next string) error {
-	return c.doJSON(ctx, requestSpec{method: http.MethodPost, path: "/auth/change-password", body: map[string]string{"currentPassword": current, "newPassword": next}}, nil)
+	before := c.Token()
+	var response struct {
+		Token string `json:"token"`
+	}
+	if err := c.doJSON(ctx, requestSpec{method: http.MethodPost, path: "/auth/change-password", body: map[string]string{"currentPassword": current, "newPassword": next}}, &response); err != nil {
+		return err
+	}
+	if response.Token != "" {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.token != before {
+			return ErrUnauthorized
+		}
+		c.token = response.Token
+	}
+	return nil
 }

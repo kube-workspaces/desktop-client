@@ -6,6 +6,7 @@ package kwclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 )
@@ -75,5 +76,36 @@ func TestProfileRequests(t *testing.T) {
 	}
 	if len(calls) != 5 {
 		t.Fatalf("calls=%v", calls)
+	}
+}
+
+func TestPasswordChangeAdoptsReplacementBearerWithoutCookies(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "Bearer old-session" {
+			t.Error("password change did not use Bearer-only credentials")
+		}
+		writeJSON(t, w, http.StatusOK, `{"status":"password changed","token":"replacement-session"}`)
+	})
+	client.SetToken("old-session")
+	if err := client.ChangePassword(context.Background(), "old", "new-password-long"); err != nil {
+		t.Fatal(err)
+	}
+	if client.Token() != "replacement-session" {
+		t.Fatal("revoked session was retained after password change")
+	}
+}
+
+func TestLatePasswordChangeCannotResurrectSignedOutClient(t *testing.T) {
+	var client *Client
+	client = newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		client.SetToken("")
+		writeJSON(t, w, http.StatusOK, `{"token":"replacement-session"}`)
+	})
+	client.SetToken("old-session")
+	if err := client.ChangePassword(context.Background(), "old", "new-password-long"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("late replacement accepted: %v", err)
+	}
+	if client.Token() != "" {
+		t.Fatal("late password response restored a signed-out credential")
 	}
 }

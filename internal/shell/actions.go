@@ -124,6 +124,13 @@ type intent struct {
 
 // act performs the frame's intent.
 func (a *App) act(ctx context.Context, in intent) {
+	if a.m.Identity != nil && a.m.Identity.MustChangePassword {
+		switch in.kind {
+		case intentNone, intentOpenAccount, intentAccountPassword, intentAccountDone, intentSignOut:
+		default:
+			return
+		}
+	}
 	switch in.kind {
 	case intentNone:
 		return
@@ -205,6 +212,10 @@ func (a *App) act(ctx context.Context, in intent) {
 	case intentOpenAccount:
 		a.openAccount(ctx)
 	case intentAccountDone:
+		if a.m.Identity != nil && a.m.Identity.MustChangePassword {
+			a.signOut()
+			return
+		}
 		a.account = nil
 		a.m.State = StateWorkspaces
 		a.refreshWorkspaces(ctx, false)
@@ -343,7 +354,9 @@ func (a *App) connectToServer(ctx context.Context, server string, insecure bool)
 		if err == nil {
 			// An instance that predates the native flow simply has no
 			// nativeAuth object; that is not a failure of the probe.
-			if n, nerr := api.NativeAuth(opCtx); nerr == nil {
+			if cfg.NativeAuth != nil {
+				native = cfg.NativeAuth.Supported()
+			} else if n, nerr := api.NativeAuth(opCtx); nerr == nil {
 				native = n.Supported()
 			}
 		}
@@ -391,7 +404,9 @@ func (a *App) ensureAuthConfig(ctx context.Context) {
 		cfg, err := api.AuthConfig(opCtx)
 		native := false
 		if err == nil {
-			if n, nerr := api.NativeAuth(opCtx); nerr == nil {
+			if cfg.NativeAuth != nil {
+				native = cfg.NativeAuth.Supported()
+			} else if n, nerr := api.NativeAuth(opCtx); nerr == nil {
 				native = n.Supported()
 			}
 		}
@@ -454,7 +469,9 @@ func (a *App) verifySession(ctx context.Context) {
 				a.m.SignedIn(identity)
 				a.rememberTokenExpiry(api.Token())
 				if identity.MustChangePassword {
-					a.m.Notice = i18n.Get("workspaces.mustChange")
+					a.rememberProfile(a.m.Server, a.m.Insecure, identity.Email)
+					a.openAccount(ctx)
+					return
 				}
 				a.rememberProfile(a.m.Server, a.m.Insecure, identity.Email)
 				a.refreshWorkspaces(ctx, true)
@@ -652,7 +669,9 @@ func (a *App) saveLogin(ctx context.Context, token, email string, mustChange, de
 				a.m.Notice = i18n.Sprintf("workspaces.noSave", Describe(err))
 			}
 			if mustChange || identity.MustChangePassword {
-				a.m.Notice = i18n.Get("workspaces.mustChange")
+				identity.MustChangePassword = true
+				a.openAccount(ctx)
+				return
 			}
 			a.rememberTokenExpiry(token)
 			a.refreshWorkspaces(ctx, true)

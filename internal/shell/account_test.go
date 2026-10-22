@@ -30,6 +30,7 @@ type accountAPI struct {
 	deleted, revoked, password string
 	err                        error
 	gate                       chan struct{}
+	rotatePassword             bool
 }
 
 func (f *accountAPI) ListSSHKeys(context.Context) ([]kwclient.SSHKey, error) {
@@ -54,7 +55,77 @@ func (f *accountAPI) DeleteSSHKey(_ context.Context, namespace, name string) err
 func (f *accountAPI) RevokeDevice(_ context.Context, id string) error { f.revoked = id; return f.err }
 func (f *accountAPI) ChangePassword(_ context.Context, _, next string) error {
 	f.password = next
+	if f.err == nil && f.rotatePassword {
+		f.set(func(api *fakeAPI) {
+			identity := *api.identity
+			identity.MustChangePassword = false
+			api.identity = &identity
+			api.token = "replacement-session"
+		})
+	}
 	return f.err
+}
+
+func TestMandatoryPasswordChangeGatesRestoredAndFreshNativeSessions(t *testing.T) {
+	for _, restored := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fresh", true: "restored"}[restored], func(t *testing.T) {
+			token := ""
+			if restored {
+				token = "restricted-session"
+			}
+			r := newRig(savedProfile(), token)
+			r.api.set(func(f *fakeAPI) {
+				identity := *f.identity
+				identity.MustChangePassword = true
+				canChange := true
+				identity.CanChangePassword = &canChange
+				f.identity = &identity
+			})
+			r.start()
+			if !restored {
+				r.app.finishLogin(context.Background(), "restricted-session", "user@example.com", true)
+				r.settle()
+			}
+			if r.app.m.State != StateProfile || r.app.account == nil || !r.app.account.passwordOpen {
+				t.Fatal("required change did not open the native password form")
+			}
+			r.app.act(context.Background(), intent{kind: intentRefresh})
+			r.app.act(context.Background(), intent{kind: intentAccountAddKey})
+			r.settle()
+			r.api.set(func(f *fakeAPI) {
+				if f.listCalls != 0 || f.deviceCalls != 0 {
+					t.Fatalf("restricted native sign-in accessed workspaces/devices: %d/%d", f.listCalls, f.deviceCalls)
+				}
+			})
+			f := &accountAPI{fakeAPI: r.api, rotatePassword: true}
+			r.app.api = f
+			p := r.app.account
+			p.current.SetValue("temporary-password")
+			p.next.SetValue("replacement-password")
+			p.confirmPassword.SetValue("replacement-password")
+			r.app.act(context.Background(), intent{kind: intentAccountPassword})
+			r.settle()
+			if r.app.m.Identity.MustChangePassword || r.store.token != "replacement-session" || p.busy || p.current.Value() != "" {
+				t.Fatal("password replacement was not verified/persisted or restriction remained")
+			}
+			r.app.act(context.Background(), intent{kind: intentAccountDone})
+			r.settle()
+			if r.app.m.State != StateWorkspaces {
+				t.Fatal("verified password change did not release workspace access")
+			}
+		})
+	}
+}
+
+func TestCancelMandatoryPasswordChangeSignsOut(t *testing.T) {
+	r := newRig(savedProfile(), "restricted-session")
+	r.api.set(func(f *fakeAPI) { identity := *f.identity; identity.MustChangePassword = true; f.identity = &identity })
+	r.start()
+	r.app.act(context.Background(), intent{kind: intentAccountDone})
+	r.settle()
+	if r.app.m.State != StateLogin || r.app.api.Token() != "" || r.store.token != "" {
+		t.Fatal("closing required password change bypassed restriction")
+	}
 }
 
 func accountRig(t *testing.T) (*rig, *accountAPI) {

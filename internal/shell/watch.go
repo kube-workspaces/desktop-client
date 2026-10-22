@@ -27,7 +27,7 @@ func (a *App) stopWorkspaceWatch() {
 }
 
 func (a *App) reconcileWorkspaceWatch(ctx context.Context) {
-	if a.api == nil || a.opts.RefreshInterval < 0 || a.m.State == StateLogin || a.m.State == StateServer {
+	if a.api == nil || a.opts.RefreshInterval < 0 || a.m.State == StateLogin || a.m.State == StateServer || (a.m.Identity != nil && a.m.Identity.MustChangePassword) {
 		if a.watchCancel != nil {
 			a.stopWorkspaceWatch()
 		}
@@ -124,6 +124,9 @@ func (a *App) checkWatchIdentity(ctx context.Context, now time.Time) {
 				a.stopWorkspaceWatch()
 			} else if err == nil {
 				a.m.Identity = identity
+				if identity.MustChangePassword {
+					a.openAccount(ctx)
+				}
 			}
 		}
 	})

@@ -15,6 +15,8 @@ import (
 // When authentication is disabled the server sends only {"enabled":false}, so
 // every other field is zero in that case.
 type AuthConfig struct {
+	Methods    []string          `json:"methods,omitempty"`
+	NativeAuth *NativeAuthConfig `json:"nativeAuth,omitempty"`
 	// Enabled reports whether authentication is switched on at all.
 	Enabled bool `json:"enabled"`
 	// IssuerURL is the OIDC issuer to start a browser login against.
@@ -70,7 +72,12 @@ type Identity struct {
 	AvatarURL string `json:"avatarURL"`
 	// MustChangePassword reports that the local password is expired or was
 	// administratively reset.
-	MustChangePassword bool `json:"mustChangePassword"`
+	MustChangePassword   bool   `json:"mustChangePassword"`
+	AuthMethod           string `json:"authMethod"`
+	LocalPasswordEnabled bool   `json:"localPasswordEnabled"`
+	OIDCLinked           bool   `json:"oidcLinked"`
+	// nil supports older APIs; new APIs advertise per-account eligibility.
+	CanChangePassword *bool `json:"canChangePassword"`
 }
 
 // loginRequest is the POST /auth/login/local body.

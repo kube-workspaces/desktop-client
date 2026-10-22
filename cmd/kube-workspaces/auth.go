@@ -99,6 +99,9 @@ func runLogin(ctx context.Context, args []string) error {
 	if !identity.Authenticated && identity.AuthEnabled {
 		return errors.New("session token was rejected by the server")
 	}
+	if identity.MustChangePassword {
+		return errors.New("change your temporary password in the web UI or native Profile before signing in to the CLI")
+	}
 	if interactive && identity.AuthEnabled && !identity.MustChangePassword {
 		device, deviceErr := client.CreateDeviceToken(ctx, kwclient.DeviceName())
 		if deviceErr != nil {
@@ -202,9 +205,13 @@ func interactiveLogin(ctx context.Context, client *kwclient.Client, profile *con
 // opens on a different desktop (or not at all, over SSH) is common enough that
 // making the user hunt for the URL would be unkind.
 func browserLogin(ctx context.Context, client *kwclient.Client, profile *config.Profile, authCfg *kwclient.AuthConfig) (string, error) {
-	native, err := client.NativeAuth(ctx)
-	if err != nil {
-		return "", fmt.Errorf("query auth configuration: %w", err)
+	native := authCfg.NativeAuth
+	if native == nil {
+		var err error
+		native, err = client.NativeAuth(ctx)
+		if err != nil {
+			return "", fmt.Errorf("query auth configuration: %w", err)
+		}
 	}
 	if !native.Supported() {
 		// Be specific: the user's options differ depending on why it is

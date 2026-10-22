@@ -105,6 +105,20 @@ func TestLoginPersistsOnlyVerifiedDeviceCredential(t *testing.T) {
 	}
 }
 
+func TestSignInMethodsUseOneDiscoverySnapshot(t *testing.T) {
+	r := newRig(savedProfile(), "")
+	r.api.set(func(f *fakeAPI) {
+		f.authConfig.NativeAuth = &kwclient.NativeAuthConfig{Enabled: false}
+		// A second discovery request could observe a different configuration.
+		// The complete first snapshot must remain authoritative for this probe.
+		f.native = &kwclient.NativeAuthConfig{Enabled: true, Methods: []string{"loopback-pkce"}}
+	})
+	r.start()
+	if r.app.m.CanUseBrowserAuth() || !r.app.m.CanUseLocalAuth() {
+		t.Fatal("sign-in methods were combined from different discovery snapshots")
+	}
+}
+
 type streamingAPI struct {
 	*fakeAPI
 	snapshots chan []kwclient.Workspace

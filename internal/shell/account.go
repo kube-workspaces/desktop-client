@@ -44,6 +44,14 @@ func (a *App) openAccount(ctx context.Context) {
 	a.account = p
 	a.m.State = StateProfile
 	a.m.Err, a.m.Notice = "", ""
+	if a.m.Identity != nil && a.m.Identity.MustChangePassword {
+		a.stopWorkspaceWatch()
+		a.closeAllSessions()
+		a.m.Workspaces, a.m.Images = nil, nil
+		p.loading, p.passwordOpen = false, true
+		p.notice = i18n.Get("workspaces.mustChange")
+		return
+	}
 	api, token := a.api, a.api.Token()
 	a.background(func() func() {
 		opCtx, cancel := context.WithTimeout(ctx, listTimeout)
@@ -171,7 +179,7 @@ func (a *App) mutateAccount(ctx context.Context, in intent) {
 			a.checkAccountIdentity(ctx, p, api, token)
 		}
 	case intentAccountPassword:
-		if a.m.Auth == nil || !a.m.Auth.LocalAuth.Enabled {
+		if !a.canChangeAccountPassword() {
 			return
 		}
 		current, next := p.current.Value(), p.next.Value()
@@ -183,14 +191,38 @@ func (a *App) mutateAccount(ctx context.Context, in intent) {
 			p.err = i18n.Get("account.passwordMismatch")
 			return
 		}
-		operation = func(ctx context.Context) error { return api.ChangePassword(ctx, current, next) }
+		var passwordIdentity *kwclient.Identity
+		operation = func(ctx context.Context) error {
+			if err := api.ChangePassword(ctx, current, next); err != nil {
+				return err
+			}
+			var err error
+			passwordIdentity, err = api.Me(ctx)
+			if err != nil {
+				return err
+			}
+			if passwordIdentity == nil || (passwordIdentity.AuthEnabled && !passwordIdentity.Authenticated) {
+				return kwclient.ErrUnauthorized
+			}
+			return nil
+		}
 		success = func() {
+			wasRestricted := a.m.Identity != nil && a.m.Identity.MustChangePassword
 			p.current.SetValue("")
 			p.next.SetValue("")
 			p.confirmPassword.SetValue("")
 			p.passwordOpen = false
 			p.notice = i18n.Get("account.passwordChanged")
-			a.checkAccountIdentity(ctx, p, api, token)
+			a.m.Identity = passwordIdentity
+			a.rememberTokenExpiry(api.Token())
+			if err := a.opts.Store.Save(a.profile, api.Token()); err != nil {
+				p.err = err.Error()
+				p.notice = i18n.Sprintf("workspaces.noSave", Describe(err))
+			}
+			if wasRestricted && !passwordIdentity.MustChangePassword {
+				a.openAccount(ctx)
+				a.account.notice = p.notice
+			}
 		}
 	default:
 		return
@@ -200,8 +232,12 @@ func (a *App) mutateAccount(ctx context.Context, in intent) {
 		opCtx, cancel := context.WithTimeout(ctx, listTimeout)
 		defer cancel()
 		err := operation(opCtx)
+		resultToken := token
+		if in.kind == intentAccountPassword {
+			resultToken = api.Token()
+		}
 		return func() {
-			if !a.accountCurrent(p, api, token) {
+			if !a.accountCurrent(p, api, resultToken) {
 				return
 			}
 			p.busy = false
@@ -212,6 +248,16 @@ func (a *App) mutateAccount(ctx context.Context, in intent) {
 			success()
 		}
 	})
+}
+
+func (a *App) canChangeAccountPassword() bool {
+	if who := a.m.Identity; who != nil && who.CanChangePassword != nil {
+		return *who.CanChangePassword
+	}
+	if who := a.m.Identity; who != nil && who.MustChangePassword {
+		return true
+	}
+	return a.m.Auth != nil && a.m.Auth.LocalAuth.Enabled
 }
 
 func (a *App) checkAccountIdentity(ctx context.Context, p *accountView, api API, token string) {
@@ -330,11 +376,12 @@ func (a *App) drawAccountScreen(bounds ui.Rect) intent {
 		label(card("", textHeight(p.notice)), p.notice)
 	}
 	who := a.m.Identity
+	restricted := who != nil && who.MustChangePassword
 	if who == nil {
 		label(card("", small), i18n.Get("account.notSignedIn"))
 	} else {
 		identityH := 3*line + 2*th.Gap
-		local := a.m.Auth != nil && a.m.Auth.LocalAuth.Enabled
+		local := a.canChangeAccountPassword()
 		if local {
 			identityH += th.ControlHeight + th.Gap
 		}
@@ -360,8 +407,11 @@ func (a *App) drawAccountScreen(bounds ui.Rect) intent {
 		ui.Label(ctx, is.Next(line), name, ui.LabelStyle{})
 		ui.Label(ctx, is.Next(line), who.Email, ui.LabelStyle{Color: th.TextMuted})
 		role := who.Role
-		if a.m.Auth != nil && a.m.Auth.Enabled && a.m.Auth.IssuerURL != "" {
+		switch who.AuthMethod {
+		case "oidc":
 			role += " · " + i18n.Get("account.sso")
+		case "local":
+			role += " · " + i18n.Get("account.localPassword")
 		}
 		badge := is.Next(line)
 		badge.W = min(badge.W, ui.TextWidth(role, th.Small, th.Font)+2*th.Gap)
@@ -371,7 +421,7 @@ func (a *App) drawAccountScreen(bounds ui.Rect) intent {
 			roleInk = th.Danger
 		}
 		ui.Label(ctx, badge, role, ui.LabelStyle{Scale: th.Small, Color: roleInk, Align: ui.AlignCenter, Middle: true})
-		if local && button(s.Next(th.ControlHeight), "account-password-toggle", i18n.Get("account.changePassword"), p.loading || p.busy, intentNone, "") {
+		if local && button(s.Next(th.ControlHeight), "account-password-toggle", i18n.Get("account.changePassword"), p.loading || p.busy || restricted, intentNone, "") {
 			p.passwordOpen = !p.passwordOpen
 			p.current.SetValue("")
 			p.next.SetValue("")
@@ -384,120 +434,124 @@ func (a *App) drawAccountScreen(bounds ui.Rect) intent {
 			field(s, &p.confirmPassword, i18n.Get("account.confirmPassword"))
 			button(s.Next(th.ControlHeight), "account-password-save", i18n.Get("account.savePassword"), p.busy || p.current.Value() == "", intentAccountPassword, "")
 		}
-		namespaces := slices.Clone(who.Namespaces)
-		if who.PersonalNamespace != "" && !slices.Contains(namespaces, who.PersonalNamespace) {
-			namespaces = append([]string{who.PersonalNamespace}, namespaces...)
-		}
-		nsH := line + th.Gap + th.ControlHeight + th.Gap + textHeight(i18n.Get("account.accessibleNamespaces")) + th.Gap
-		if who.PersonalNamespace != "" {
-			nsH += textHeight(i18n.Sprintf("account.personalNamespace", who.PersonalNamespace)) + th.Gap
-		}
-		for _, ns := range namespaces {
-			nsH += max(th.ControlHeight, textHeight(ns)) + th.Gap
-		}
-		s = card(i18n.Get("account.namespaces"), nsH)
-		if who.PersonalNamespace != "" {
-			label(s, i18n.Sprintf("account.personalNamespace", who.PersonalNamespace))
-		}
-		label(s, i18n.Get("account.accessibleNamespaces"))
-		active := ""
-		if a.profile != nil {
-			active = a.profile.Namespace
-		}
-		nsButton := func(ns, title string) {
-			if active == ns {
-				title += " · " + i18n.Get("account.active")
+		if !restricted {
+			namespaces := slices.Clone(who.Namespaces)
+			if who.PersonalNamespace != "" && !slices.Contains(namespaces, who.PersonalNamespace) {
+				namespaces = append([]string{who.PersonalNamespace}, namespaces...)
 			}
-			button(s.Next(max(th.ControlHeight, textHeight(title))), ui.FocusID("account-namespace-"+ns), title, p.busy, intentAccountNamespace, ns)
+			nsH := line + th.Gap + th.ControlHeight + th.Gap + textHeight(i18n.Get("account.accessibleNamespaces")) + th.Gap
+			if who.PersonalNamespace != "" {
+				nsH += textHeight(i18n.Sprintf("account.personalNamespace", who.PersonalNamespace)) + th.Gap
+			}
+			for _, ns := range namespaces {
+				nsH += max(th.ControlHeight, textHeight(ns)) + th.Gap
+			}
+			s = card(i18n.Get("account.namespaces"), nsH)
+			if who.PersonalNamespace != "" {
+				label(s, i18n.Sprintf("account.personalNamespace", who.PersonalNamespace))
+			}
+			label(s, i18n.Get("account.accessibleNamespaces"))
+			active := ""
+			if a.profile != nil {
+				active = a.profile.Namespace
+			}
+			nsButton := func(ns, title string) {
+				if active == ns {
+					title += " · " + i18n.Get("account.active")
+				}
+				button(s.Next(max(th.ControlHeight, textHeight(title))), ui.FocusID("account-namespace-"+ns), title, p.busy, intentAccountNamespace, ns)
+			}
+			nsButton("", i18n.Get("account.allNamespaces"))
+			for _, ns := range namespaces {
+				nsButton(ns, ns)
+			}
 		}
-		nsButton("", i18n.Get("account.allNamespaces"))
-		for _, ns := range namespaces {
-			nsButton(ns, ns)
+	}
+	if !restricted {
+		keyDescription := i18n.Get("account.keysDescription")
+		keyH := line + th.Gap + textHeight(keyDescription) + th.Gap + textHeight(i18n.Get("account.name")) + textHeight(i18n.Get("account.publicKey")) + 3*th.ControlHeight + 5*th.Gap
+		if p.loading || len(p.keys) == 0 {
+			keyH += textHeight(i18n.Get("account.noKeys")) + th.Gap
 		}
-	}
-	keyDescription := i18n.Get("account.keysDescription")
-	keyH := line + th.Gap + textHeight(keyDescription) + th.Gap + textHeight(i18n.Get("account.name")) + textHeight(i18n.Get("account.publicKey")) + 3*th.ControlHeight + 5*th.Gap
-	if p.loading || len(p.keys) == 0 {
-		keyH += textHeight(i18n.Get("account.noKeys")) + th.Gap
-	}
-	if p.keyErr != "" {
-		keyH += textHeight(p.keyErr) + th.Gap
-	}
-	for _, k := range p.keys {
-		keyH += 2*(small+th.Gap) + textHeight(i18n.Sprintf("account.added", k.CreatedAt)) + th.ControlHeight + th.Gap
-	}
-	s := card(i18n.Get("account.keys"), keyH)
-	label(s, keyDescription)
-	if p.keyErr != "" {
-		label(s, p.keyErr)
-	}
-	if p.loading {
-		label(s, i18n.Get("account.loadingKeys"))
-	} else if len(p.keys) == 0 {
-		label(s, i18n.Get("account.noKeys"))
-	}
-	for _, k := range p.keys {
-		name := k.KeyName
-		if name == "" {
-			name = k.Name
+		if p.keyErr != "" {
+			keyH += textHeight(p.keyErr) + th.Gap
 		}
-		ui.Label(ctx, s.Next(small), name+" · "+k.Fingerprint, ui.LabelStyle{Scale: th.Small})
-		ui.Label(ctx, s.Next(small), k.PublicKey, ui.LabelStyle{Scale: th.Small, Color: th.TextMuted})
-		label(s, i18n.Sprintf("account.added", k.CreatedAt))
-		key := k.Namespace + "/" + k.Name
-		button(s.Next(th.ControlHeight), ui.FocusID("account-delete-"+key), i18n.Get("account.delete"), p.busy || p.loading, intentAccountDeleteKey, key)
-	}
-	field(s, &p.name, i18n.Get("account.name"))
-	field(s, &p.publicKey, i18n.Get("account.publicKey"))
-	button(s.Next(th.ControlHeight), "account-add-key", i18n.Get("account.addKey"), p.busy || p.loading || accountKeySlug(p.name.Value()) == "" || strings.TrimSpace(p.publicKey.Value()) == "", intentAccountAddKey, "")
-	if a.m.Auth != nil && a.m.Auth.Enabled {
-		description := i18n.Get("account.devicesDescription")
-		dh := line + th.Gap + textHeight(description) + th.Gap
-		if p.deviceErr != "" {
-			dh += textHeight(p.deviceErr) + th.Gap
+		for _, k := range p.keys {
+			keyH += 2*(small+th.Gap) + textHeight(i18n.Sprintf("account.added", k.CreatedAt)) + th.ControlHeight + th.Gap
 		}
-		if p.loading || len(p.devices) == 0 {
-			dh += textHeight(i18n.Get("account.noDevices")) + th.Gap
-		}
-		for _, d := range p.devices {
-			dh += textHeight(d.Name) + textHeight(i18n.Sprintf("account.created", time.Unix(d.CreatedAt, 0).Local().Format(time.DateTime))) + textHeight(i18n.Sprintf("account.expires", time.Unix(d.ExpiresAt, 0).Local().Format(time.DateTime))) + th.ControlHeight + 4*th.Gap
-		}
-		s = card(i18n.Get("account.devices"), dh)
-		label(s, description)
-		if p.deviceErr != "" {
-			label(s, p.deviceErr)
+		s := card(i18n.Get("account.keys"), keyH)
+		label(s, keyDescription)
+		if p.keyErr != "" {
+			label(s, p.keyErr)
 		}
 		if p.loading {
-			label(s, i18n.Get("account.loadingDevices"))
-		} else if len(p.devices) == 0 {
-			label(s, i18n.Get("account.noDevices"))
+			label(s, i18n.Get("account.loadingKeys"))
+		} else if len(p.keys) == 0 {
+			label(s, i18n.Get("account.noKeys"))
 		}
-		for _, d := range p.devices {
-			label(s, d.Name)
-			label(s, i18n.Sprintf("account.created", time.Unix(d.CreatedAt, 0).Local().Format(time.DateTime)))
-			label(s, i18n.Sprintf("account.expires", time.Unix(d.ExpiresAt, 0).Local().Format(time.DateTime)))
-			r := s.Next(th.ControlHeight)
-			if p.confirm == d.DeviceID {
-				left, right := ui.CutLeft(r, r.W/2)
-				button(left, ui.FocusID("account-confirm-"+d.DeviceID), i18n.Get("account.confirmRevoke"), p.busy, intentAccountRevoke, d.DeviceID)
-				if button(right, ui.FocusID("account-cancel-"+d.DeviceID), i18n.Get("account.cancel"), p.busy, intentNone, "") {
-					p.confirm = ""
-					ctx.Focus().Register(ui.FocusID("account-revoke-" + d.DeviceID))
-					ctx.Focus().Set(ui.FocusID("account-revoke-" + d.DeviceID))
+		for _, k := range p.keys {
+			name := k.KeyName
+			if name == "" {
+				name = k.Name
+			}
+			ui.Label(ctx, s.Next(small), name+" · "+k.Fingerprint, ui.LabelStyle{Scale: th.Small})
+			ui.Label(ctx, s.Next(small), k.PublicKey, ui.LabelStyle{Scale: th.Small, Color: th.TextMuted})
+			label(s, i18n.Sprintf("account.added", k.CreatedAt))
+			key := k.Namespace + "/" + k.Name
+			button(s.Next(th.ControlHeight), ui.FocusID("account-delete-"+key), i18n.Get("account.delete"), p.busy || p.loading, intentAccountDeleteKey, key)
+		}
+		field(s, &p.name, i18n.Get("account.name"))
+		field(s, &p.publicKey, i18n.Get("account.publicKey"))
+		button(s.Next(th.ControlHeight), "account-add-key", i18n.Get("account.addKey"), p.busy || p.loading || accountKeySlug(p.name.Value()) == "" || strings.TrimSpace(p.publicKey.Value()) == "", intentAccountAddKey, "")
+		if a.m.Auth != nil && a.m.Auth.Enabled {
+			description := i18n.Get("account.devicesDescription")
+			dh := line + th.Gap + textHeight(description) + th.Gap
+			if p.deviceErr != "" {
+				dh += textHeight(p.deviceErr) + th.Gap
+			}
+			if p.loading || len(p.devices) == 0 {
+				dh += textHeight(i18n.Get("account.noDevices")) + th.Gap
+			}
+			for _, d := range p.devices {
+				dh += textHeight(d.Name) + textHeight(i18n.Sprintf("account.created", time.Unix(d.CreatedAt, 0).Local().Format(time.DateTime))) + textHeight(i18n.Sprintf("account.expires", time.Unix(d.ExpiresAt, 0).Local().Format(time.DateTime))) + th.ControlHeight + 4*th.Gap
+			}
+			s = card(i18n.Get("account.devices"), dh)
+			label(s, description)
+			if p.deviceErr != "" {
+				label(s, p.deviceErr)
+			}
+			if p.loading {
+				label(s, i18n.Get("account.loadingDevices"))
+			} else if len(p.devices) == 0 {
+				label(s, i18n.Get("account.noDevices"))
+			}
+			for _, d := range p.devices {
+				label(s, d.Name)
+				label(s, i18n.Sprintf("account.created", time.Unix(d.CreatedAt, 0).Local().Format(time.DateTime)))
+				label(s, i18n.Sprintf("account.expires", time.Unix(d.ExpiresAt, 0).Local().Format(time.DateTime)))
+				r := s.Next(th.ControlHeight)
+				if p.confirm == d.DeviceID {
+					left, right := ui.CutLeft(r, r.W/2)
+					button(left, ui.FocusID("account-confirm-"+d.DeviceID), i18n.Get("account.confirmRevoke"), p.busy, intentAccountRevoke, d.DeviceID)
+					if button(right, ui.FocusID("account-cancel-"+d.DeviceID), i18n.Get("account.cancel"), p.busy, intentNone, "") {
+						p.confirm = ""
+						ctx.Focus().Register(ui.FocusID("account-revoke-" + d.DeviceID))
+						ctx.Focus().Set(ui.FocusID("account-revoke-" + d.DeviceID))
+						ctx.Repaint()
+					}
+				} else if button(r, ui.FocusID("account-revoke-"+d.DeviceID), i18n.Get("account.revoke"), p.busy, intentNone, "") {
+					p.confirm = d.DeviceID
+					ctx.Focus().Register(ui.FocusID("account-confirm-" + d.DeviceID))
+					ctx.Focus().Set(ui.FocusID("account-confirm-" + d.DeviceID))
 					ctx.Repaint()
 				}
-			} else if button(r, ui.FocusID("account-revoke-"+d.DeviceID), i18n.Get("account.revoke"), p.busy, intentNone, "") {
-				p.confirm = d.DeviceID
-				ctx.Focus().Register(ui.FocusID("account-confirm-" + d.DeviceID))
-				ctx.Focus().Set(ui.FocusID("account-confirm-" + d.DeviceID))
-				ctx.Repaint()
 			}
 		}
-	}
-	if who != nil && len(who.Groups) > 0 {
-		groups := strings.Join(who.Groups, " · ")
-		s = card(i18n.Get("account.groups"), line+th.Gap+textHeight(groups))
-		label(s, groups)
+		if who != nil && len(who.Groups) > 0 {
+			groups := strings.Join(who.Groups, " · ")
+			s = card(i18n.Get("account.groups"), line+th.Gap+textHeight(groups))
+			label(s, groups)
+		}
 	}
 	ctx.Canvas.PopClip()
 	ctx.Input = input
