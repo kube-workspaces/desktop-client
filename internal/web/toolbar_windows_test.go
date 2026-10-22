@@ -6,7 +6,7 @@
 // The Win32 native toolbar smoke test. [toolbar_windows.go] subclasses the
 // browser window, insets the WebView2 child under a strip in windowed mode,
 // floats and centres that strip over the page in fullscreen, drags it, hides it
-// after three idle seconds, and routes six buttons back into Go. None of that
+// after three idle seconds, and routes toolbar actions back into Go. None of that
 // runs in the cgo-free `go test ./...` the rest of the tree uses, and none of it
 // can be observed from outside the process on any other platform, so this test
 // builds the toolbar onto a synthetic window tree — a top-level host plus a
@@ -26,6 +26,7 @@ package web
 
 import (
 	"errors"
+	"image/color"
 	"os"
 	"runtime"
 	"runtime/cgo"
@@ -34,6 +35,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/kube-workspaces/desktop-client/internal/ui"
 	"golang.org/x/sys/windows"
 )
 
@@ -151,11 +153,14 @@ func TestWin32Toolbar(t *testing.T) {
 
 	host := createWindow(t, hostClass, "chrome host", wsOverlappedWindow|wsVisible, 120, 120, 1200, 760, 0, instance)
 	t.Cleanup(func() { destroyWindow(t, host) })
-	// The real child is WebView2's. kw_attach only needs a direct child with
-	// this class and places it itself, so an empty one is enough.
+	// Include a repainting renderer descendant rather than an empty host:
+	// WebView2 keeps drawing after native layout has raised the toolbar.
 	page := createWindow(t, webClass, "page", wsChild|wsVisible, 0, 0, 0, 0, host, instance)
+	createWindow(t, webClass, "renderer", wsChild|wsVisible, 0, 0, 4096, 4096, page, instance)
 
 	originalProc := getWindowLong(t, host, gwlWndProc)
+	originalHostStyle := getWindowLong(t, host, gwlStyle)
+	originalPageStyle := getWindowLong(t, page, gwlStyle)
 	var actions []int
 	token := cgo.NewHandle(func(action int) {
 		if action != 8 { // Native geometry samples are not navigation actions.
@@ -168,8 +173,9 @@ func TestWin32Toolbar(t *testing.T) {
 	// button, then the three strings the chrome cannot derive from a button
 	// title it replaced in place. The last three are deliberately not the English
 	// the toolbar used to hardcode, so a literal left in the C fails here.
-	labels := "code · Webview\nFullscreen\nSessions\nWorkspace list\nConnection\nPin\nDisconnect\nShow tools\nUnpin toolbar\nBack to window"
-	detach, err := attachNativeToolbar(hwndPtr(host), uintptr(token), labels, "code\nTransport: Webview")
+	labels := "code · Webview\nFullscreen\n\n\nConnection\nPin\nDisconnect\nShow tools\nUnpin toolbar\nBack to window"
+	painter := &toolbarPainter{theme: ui.ThemeFor(ui.StyleClean, ui.ModeDark), scale: 1}
+	detach, err := attachWindowsToolbar(hwndPtr(host), uintptr(token), labels, "code\nTransport: Webview", painter)
 	if err != nil {
 		t.Fatalf("attachNativeToolbar: %v", err)
 	}
@@ -181,17 +187,18 @@ func TestWin32Toolbar(t *testing.T) {
 	if got := windowText(t, findChild(t, bar, "STATIC")); got != "code · Webview" {
 		t.Errorf("identity text = %q, want the joined title and surface", got)
 	}
-	handle := findChild(t, host, "BUTTON")
+	const windowedText, unpinText = "Back to window", "Unpin toolbar"
+	handle := buttonWith(t, host, handleText)
+	compactExit := buttonWith(t, host, windowedText)
 	if got := windowText(t, handle); got != handleText {
 		t.Errorf("reveal handle text = %q, want %q", got, handleText)
 	}
-	wantLabels := []string{"Fullscreen", "Sessions", "Workspace list", "Connection", "Pin", "Disconnect"}
+	wantLabels := []string{"Fullscreen", "Connection", "Pin", "Disconnect"}
 	if got := buttonTexts(t, bar); !equal(got, wantLabels) {
 		t.Errorf("button labels = %q, want %q", got, wantLabels)
 	}
 	fullscreenButton := buttonWith(t, bar, "Fullscreen")
 	pinButton := buttonWith(t, bar, "Pin")
-	const windowedText, unpinText = "Back to window", "Unpin toolbar"
 
 	// Windowed: the strip spans the client area and the page is pushed down by
 	// exactly the strip, with the reveal handle out of the way.
@@ -203,16 +210,25 @@ func TestWin32Toolbar(t *testing.T) {
 	if r := clientRect(t, page, host); r.top != barR.bottom || r.right != cw || r.bottom != ch {
 		t.Errorf("windowed page = %+v, want it to fill under the strip %+v in %dx%d", r, barR, cw, ch)
 	}
-	if visible(t, handle) {
-		t.Error("reveal handle is visible in windowed mode")
+	if visible(t, handle) || visible(t, compactExit) {
+		t.Error("compact fullscreen dock is visible in windowed mode")
 	}
 	if !visible(t, bar) {
 		t.Error("the strip is not visible after attaching")
 	}
+	for _, mode := range []ui.Mode{ui.ModeDark, ui.ModeLight} {
+		painter.theme = ui.ThemeFor(ui.StyleClean, mode)
+		assertToolbarBackground(t, bar, painter.theme)
+	}
+	painter.theme = ui.ThemeFor(ui.StyleClean, ui.ModeDark)
 
 	// Fullscreen: the strip floats, centred and narrower than the page, and the
 	// page gets the whole client area back.
+	setFocus(t, fullscreenButton)
 	sendCommand(t, bar, 1)
+	if focus, _, _ := user32.NewProc("GetFocus").Call(); focus != page {
+		t.Error("entering fullscreen left focus on the toggle, preventing auto-collapse")
+	}
 	style := getWindowLong(t, host, gwlStyle)
 	if style&wsPopup == 0 || style&wsCaption != 0 {
 		t.Errorf("fullscreen style = %#x, want a borderless popup", style)
@@ -235,6 +251,8 @@ func TestWin32Toolbar(t *testing.T) {
 	if got := windowText(t, fullscreenButton); got != windowedText {
 		t.Errorf("fullscreen toggle now reads %q, want the windowed label %q", got, windowedText)
 	}
+	assertToolbarBackground(t, bar, painter.theme)
+	assertChromeAbovePage(t, host, page, bar, painter.theme.Surface)
 
 	// Drag: grabbing the strip 40px in and moving the pointer 100px right moves
 	// the strip 100px right, and no further than the client area.
@@ -266,6 +284,7 @@ func TestWin32Toolbar(t *testing.T) {
 	if !visible(t, bar) {
 		t.Error("the pinned strip auto-hid")
 	}
+	setFocus(t, pinButton)
 	sendCommand(t, bar, 5)
 	if got := windowText(t, pinButton); got != "Pin" {
 		t.Fatalf("unpin toggle now reads %q, want %q", got, "Pin")
@@ -273,14 +292,14 @@ func TestWin32Toolbar(t *testing.T) {
 
 	// Unpinned and idle, with the pointer off the strip and focus in the page,
 	// the strip trades itself for the small reveal handle.
-	setFocus(t, page)
 	idle(t, host)
 	if visible(t, bar) {
 		t.Error("the strip is still visible after the idle timeout")
 	}
-	if !visible(t, handle) {
-		t.Error("the reveal handle is not shown after the idle timeout")
+	if !visible(t, handle) || !visible(t, compactExit) {
+		t.Error("the compact dock must offer both Tools and Windowed after the idle timeout")
 	}
+	assertChromeAbovePage(t, host, page, compactExit, painter.theme.SurfaceAlt)
 
 	// The reveal hotkey brings the whole strip back.
 	sendMessage(t, host, wmHotkey, hotkeyReveal, 0)
@@ -311,7 +330,7 @@ func TestWin32Toolbar(t *testing.T) {
 	if visible(t, bar) {
 		t.Fatal("the strip did not auto-hide once focus moved back to the page")
 	}
-	sendMessage(t, host, wmCommand, 7, 0)
+	sendMessage(t, handle, 0x00f5, 0, 0) // BM_CLICK on the compact Tools button.
 	if !visible(t, bar) {
 		t.Error("pressing the reveal handle did not bring the strip back")
 	}
@@ -326,8 +345,21 @@ func TestWin32Toolbar(t *testing.T) {
 		t.Errorf("reported actions = %v, want a single disconnect (6)", actions)
 	}
 
-	// Back to windowed, the strip is a full-width band again.
-	sendCommand(t, bar, 1)
+	// A direct click on the collapsed Windowed button exits without a hotkey
+	// or first expanding the strip. Hovering must not move it out of the way.
+	setFocus(t, page)
+	idle(t, host)
+	if !visible(t, compactExit) {
+		t.Fatal("no direct Windowed button in the collapsed dock")
+	}
+	exitRect := clientRect(t, compactExit, host)
+	origin = clientOrigin(t, host)
+	setCursor(t, origin.x+(exitRect.left+exitRect.right)/2, origin.y+(exitRect.top+exitRect.bottom)/2)
+	sendMessage(t, host, wmTimer, timerIdle, 0)
+	if visible(t, bar) || !visible(t, compactExit) {
+		t.Error("hovering Windowed expanded the dock before the click could land")
+	}
+	sendMessage(t, compactExit, 0x00f5, 0, 0) // BM_CLICK
 	cw, ch = clientSize(t, host)
 	barR = clientRect(t, bar, host)
 	if barR.left != 0 || barR.right != cw {
@@ -336,8 +368,8 @@ func TestWin32Toolbar(t *testing.T) {
 	if r := clientRect(t, page, host); r.top != barR.bottom || r.bottom != ch || r.right != cw {
 		t.Errorf("restored page = %+v, want it to fill under the strip %+v in %dx%d", r, barR, cw, ch)
 	}
-	if visible(t, handle) {
-		t.Error("reveal handle is visible back in windowed mode")
+	if visible(t, handle) || visible(t, compactExit) {
+		t.Error("compact dock is visible back in windowed mode")
 	}
 
 	// Teardown restores the window procedure and takes the chrome with it.
@@ -345,12 +377,130 @@ func TestWin32Toolbar(t *testing.T) {
 	if got := getWindowLong(t, host, gwlWndProc); got != originalProc {
 		t.Errorf("window procedure = %#x after detach, want the original %#x", got, originalProc)
 	}
+	if got := getWindowLong(t, host, gwlStyle); got != originalHostStyle {
+		t.Errorf("host style = %#x after detach, want the original %#x", got, originalHostStyle)
+	}
+	if got := getWindowLong(t, page, gwlStyle); got != originalPageStyle {
+		t.Errorf("browser style = %#x after detach, want the original %#x", got, originalPageStyle)
+	}
 	if isWindow(t, bar) {
 		t.Error("the strip outlived the toolbar")
 	}
 	if isWindow(t, handle) {
 		t.Error("the reveal handle outlived the toolbar")
 	}
+	if isWindow(t, compactExit) {
+		t.Error("the compact Windowed button outlived the toolbar")
+	}
+}
+
+// Test what is actually on screen after the browser repaints, not only the
+// chrome's own bitmap or WS_VISIBLE flag. A WebView2 descendant can otherwise
+// cover perfectly positioned sibling controls in fullscreen.
+func assertChromeAbovePage(t *testing.T, host, page, chrome uintptr, want color.RGBA) {
+	t.Helper()
+	redraw := user32.NewProc("RedrawWindow")
+	redraw.Call(host, 0, 0, 0x0185) // invalidate, erase, update now, all children
+	redraw.Call(page, 0, 0, 0x0185)
+	origin := clientOrigin(t, chrome)
+	w, _ := clientSize(t, chrome)
+	x, y := origin.x+w/2, origin.y+3
+	dc, _, _ := user32.NewProc("GetDC").Call(0)
+	defer user32.NewProc("ReleaseDC").Call(0, dc)
+	if got, _, _ := gdi32.NewProc("GetPixel").Call(dc, uintptr(x), uintptr(y)); got != winColor(want) {
+		t.Errorf("chrome was covered after the browser repainted: screen pixel = %#x, want %#x", got, winColor(want))
+	}
+}
+
+// Render native paint messages into a bitmap and compare against the VM
+// palette, not Windows' system colours (which previously blessed white chrome).
+func assertToolbarBackground(t *testing.T, bar uintptr, th *ui.Theme) {
+	t.Helper()
+	screen, _, _ := user32.NewProc("GetDC").Call(bar)
+	if screen == 0 {
+		t.Fatal("GetDC failed")
+	}
+	defer user32.NewProc("ReleaseDC").Call(bar, screen)
+	dc, _, _ := gdi32.NewProc("CreateCompatibleDC").Call(screen)
+	if dc == 0 {
+		t.Fatal("CreateCompatibleDC failed")
+	}
+	defer gdi32.NewProc("DeleteDC").Call(dc)
+	w, h := clientSize(t, bar)
+	bitmap, _, _ := gdi32.NewProc("CreateCompatibleBitmap").Call(screen, uintptr(w), uintptr(h))
+	if bitmap == 0 {
+		t.Fatal("CreateCompatibleBitmap failed")
+	}
+	defer gdi32.NewProc("DeleteObject").Call(bitmap)
+	old, _, _ := gdi32.NewProc("SelectObject").Call(dc, bitmap)
+	defer gdi32.NewProc("SelectObject").Call(dc, old)
+	want := winColor(th.Surface)
+	for _, msg := range []uintptr{0x0014, 0x0318} { // WM_ERASEBKGND, WM_PRINTCLIENT
+		gdi32.NewProc("SetPixel").Call(dc, 4, 4, want^0xffffff)
+		procSendMessageW.Call(bar, msg, dc, 0)
+		if got, _, _ := gdi32.NewProc("GetPixel").Call(dc, 4, 4); got != want {
+			t.Errorf("toolbar background for message %#x = %#x, want VM surface %#x", msg, got, want)
+		}
+	}
+	controls := append([]uintptr{findChild(t, bar, "STATIC")}, findChildren(t, bar, "BUTTON")...)
+	for _, control := range controls {
+		id, _, _ := user32.NewProc("GetDlgCtrlID").Call(control)
+		for _, state := range []uint32{0, 0x0040, 0x0001, 0x0010, 0x0004} { // rest, hover, press, focus, disabled
+			cw, ch := clientSize(t, control)
+			item := nativeDrawItem{kind: 4, id: uint32(id), action: 1, state: state, window: control, dc: dc, bounds: rect{right: cw, bottom: ch}}
+			fill, ink := th.SurfaceAlt, th.Text
+			switch id {
+			case 0:
+				item.kind, fill = 5, th.Surface // ODT_STATIC identity
+			case 6:
+				fill, ink = th.Surface, th.Danger
+				if state&(0x0040|0x0001) != 0 {
+					fill = th.DangerSurface
+				}
+			}
+			if id != 0 && state&0x0004 != 0 {
+				fill, ink = th.Surface, th.TextDisabled
+			}
+			procSendMessageW.Call(bar, 0x002b, id, uintptr(unsafe.Pointer(&item))) // WM_DRAWITEM
+			if got, _, _ := gdi32.NewProc("GetPixel").Call(dc, uintptr(cw/2), 3); got != winColor(fill) {
+				t.Errorf("control %d state %#x background = %#x, want VM fill %#x", id, state, got, winColor(fill))
+			}
+			foundInk := false
+			for y := int32(4); y < ch-4 && !foundInk; y++ {
+				for x := int32(4); x < cw-4; x++ {
+					// The clean face is antialiased; a small glyph need not
+					// contain a pixel with exactly 100% ink coverage.
+					if got, _, _ := gdi32.NewProc("GetPixel").Call(dc, uintptr(x), uintptr(y)); nearWinColor(got, winColor(ink)) {
+						foundInk = true
+						break
+					}
+				}
+			}
+			if !foundInk {
+				t.Errorf("control %d state %#x has no VM text colour %#x", id, state, winColor(ink))
+			}
+		}
+	}
+}
+
+type nativeDrawItem struct {
+	kind, id, item, action, state uint32
+	window, dc                    uintptr
+	bounds                        rect
+	data                          uintptr
+}
+
+func winColor(c color.RGBA) uintptr {
+	return uintptr(c.R) | uintptr(c.G)<<8 | uintptr(c.B)<<16
+}
+
+func nearWinColor(a, b uintptr) bool {
+	for shift := uint(0); shift < 24; shift += 8 {
+		if abs(int((a>>shift)&255)-int((b>>shift)&255)) > 16 {
+			return false
+		}
+	}
+	return true
 }
 
 // registerClass registers a window class whose procedure forwards to

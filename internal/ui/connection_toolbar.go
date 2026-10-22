@@ -33,9 +33,6 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	rowH := th.ControlHeight
 	barH := rowH + 2*th.Pad
 	wideItems := []toolbarItem{}
-	if s.Availability(connection.Sessions).Visible {
-		wideItems = append(wideItems, toolbarItem{action: connection.Sessions})
-	}
 	// The Agent/Console switch is a first-class control, not a buried tool:
 	// it is what a user reaches for when an elevated or UAC window blocks
 	// input, so it sits on the bar itself.
@@ -154,9 +151,6 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	panelItems := []toolbarItem{}
 	if t.Menu == "tools" {
 		if narrow {
-			if s.Availability(connection.Sessions).Visible {
-				panelItems = append(panelItems, toolbarItem{action: connection.Sessions})
-			}
 			panelItems = append(panelItems, toolbarItem{menu: "connection"})
 			if s.Surface == connection.Desktop {
 				panelItems = append(panelItems, toolbarItem{menu: "scaling"})

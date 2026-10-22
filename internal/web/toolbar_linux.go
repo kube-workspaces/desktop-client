@@ -16,7 +16,7 @@ typedef struct {
  uintptr_t token;
  gboolean full,pin,hover,drag;
  gdouble dragx;
- gint top,bw,offset,placed,want,w;
+ gint top,bw,offset,placed,want,w,dockPlaced;
  gint64 until,geometryUntil; guint timer;
  char *details,*pinText,*unpinText,*fullscreenText,*windowedText;
 } KWToolbar;
@@ -29,9 +29,10 @@ static void kw_reveal(KWToolbar *t) {
 // spanning the window and is placed with a left margin inside it, which is
 // ordinary container behaviour and repaints from a real allocation.
 static void kw_place(KWToolbar *t) {
- if(t->want==t->placed)return;
- t->placed=t->want;
- gtk_widget_set_margin_start(t->bar,t->placed);
+ if(t->want!=t->placed){t->placed=t->want;gtk_widget_set_margin_start(t->bar,t->placed);}
+ gint dw=0;gtk_widget_get_preferred_width(gtk_bin_get_child(GTK_BIN(t->handle)),&dw,NULL);
+ gint x=MAX(0,MIN(t->want+(t->bw-dw)/2,t->w-dw));
+ if(x!=t->dockPlaced){t->dockPlaced=x;gtk_widget_set_margin_start(t->handle,x);}
 }
 static void kw_layout(KWToolbar *t, gint w) {
  gint height=0;
@@ -50,14 +51,13 @@ static void kw_action(GtkWidget *button,gpointer data) {
   goWebToolbarAction(t->token,8);g_object_set_data(G_OBJECT(t->window),"kw-geometry-transition",GINT_TO_POINTER(1));t->geometryUntil=g_get_monotonic_time()+1000000;
   if(entering)gtk_window_fullscreen(GTK_WINDOW(t->window));else gtk_window_unfullscreen(GTK_WINDOW(t->window));
   // The toggle reads the same either way, so say what pressing it again does.
-  gtk_button_set_label(GTK_BUTTON(t->first),entering?t->windowedText:t->fullscreenText);}
+   gtk_button_set_label(GTK_BUTTON(t->first),entering?t->windowedText:t->fullscreenText);gtk_widget_grab_focus(t->browser);}
   else if(a==4){GtkWidget *d=gtk_message_dialog_new(GTK_WINDOW(t->window),GTK_DIALOG_DESTROY_WITH_PARENT,GTK_MESSAGE_INFO,GTK_BUTTONS_CLOSE,"%s",t->details);gtk_dialog_run(GTK_DIALOG(d));gtk_widget_destroy(d);}
-  else if(a==5){t->pin=!t->pin;gtk_button_set_label(GTK_BUTTON(button),t->pin?t->unpinText:t->pinText);kw_reveal(t);}
+   else if(a==5){t->pin=!t->pin;gtk_button_set_label(GTK_BUTTON(button),t->pin?t->unpinText:t->pinText);kw_reveal(t);if(!t->pin)gtk_widget_grab_focus(t->browser);}
  else goWebToolbarAction(t->token,a);
 }
-// The reveal handle carries no action of its own: pressing it only has to put
-// the strip back.
-static void kw_pressed(GtkWidget *button,gpointer data){(void)button;kw_reveal((KWToolbar*)data);}
+// Tools expands the strip without leaving focus on a hidden dock button.
+static void kw_pressed(GtkWidget *button,gpointer data){(void)button;KWToolbar*t=data;kw_reveal(t);gtk_widget_grab_focus(t->browser);}
 static gboolean kw_enter(GtkWidget *w,GdkEventCrossing *e,gpointer p){(void)w;(void)e;KWToolbar*t=p;t->hover=TRUE;kw_reveal(t);return FALSE;}
 static gboolean kw_leave(GtkWidget *w,GdkEventCrossing *e,gpointer p){(void)w;(void)e;KWToolbar*t=p;t->hover=FALSE;t->until=g_get_monotonic_time()+3000000;return FALSE;}
 static gboolean kw_grip(GtkWidget *w,GdkEventButton *e,gpointer p){(void)w;KWToolbar*t=p;if(e->button==1&&t->full){t->drag=e->type==GDK_BUTTON_PRESS;t->dragx=e->x_root;return TRUE;}return FALSE;}
@@ -81,10 +81,10 @@ static gboolean kw_key(GtkWidget*w,GdkEventKey*e,gpointer p){(void)w;KWToolbar*t
 // The bar is a plain event box, which GTK draws nothing for: over a page that
 // means a transparent strip. Give it the window surface colour and a hairline
 // edge so the strip reads as chrome in both windowed and fullscreen layouts.
-static void kw_style(KWToolbar *t){
+static void kw_style(GtkWidget *widget){
  GtkCssProvider *css=gtk_css_provider_new();
  gtk_css_provider_load_from_data(css,"#kw-toolbar{background-color:@theme_bg_color;background-image:none;border-bottom:1px solid alpha(@theme_fg_color,0.25);}\n",-1,NULL);
- gtk_style_context_add_provider(gtk_widget_get_style_context(t->bar),GTK_STYLE_PROVIDER(css),GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+ gtk_style_context_add_provider(gtk_widget_get_style_context(widget),GTK_STYLE_PROVIDER(css),GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
  g_object_unref(css);
 }
 static KWToolbar* kw_attach(void *window,uintptr_t token,const char*labels,const char*details){
@@ -98,7 +98,7 @@ static KWToolbar* kw_attach(void *window,uintptr_t token,const char*labels,const
  t->browser=gtk_bin_get_child(GTK_BIN(window));if(!t->browser){g_strfreev(parts);g_free(t->details);g_free(t->pinText);g_free(t->unpinText);g_free(t->fullscreenText);g_free(t->windowedText);free(t);return NULL;}
  g_object_ref(t->window);g_object_ref(t->browser);gtk_container_remove(GTK_CONTAINER(window),t->browser);
  t->overlay=gtk_overlay_new();gtk_container_add(GTK_CONTAINER(t->overlay),t->browser);gtk_container_add(GTK_CONTAINER(window),t->overlay);g_object_ref(t->overlay);
- t->bar=gtk_event_box_new();gtk_widget_set_name(t->bar,"kw-toolbar");kw_style(t);
+ t->bar=gtk_event_box_new();gtk_widget_set_name(t->bar,"kw-toolbar");kw_style(t->bar);
  GtkWidget*row=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,6);gtk_container_add(GTK_CONTAINER(t->bar),row);
  GtkWidget*grip=gtk_event_box_new();gtk_widget_set_size_request(grip,28,-1);gtk_container_add(GTK_CONTAINER(grip),gtk_label_new("::"));gtk_box_pack_start(GTK_BOX(row),grip,FALSE,FALSE,6);
  gtk_widget_add_events(grip,GDK_BUTTON_PRESS_MASK|GDK_BUTTON_RELEASE_MASK|GDK_POINTER_MOTION_MASK);
@@ -109,12 +109,14 @@ static KWToolbar* kw_attach(void *window,uintptr_t token,const char*labels,const
  gtk_widget_set_halign(t->bar,GTK_ALIGN_START);gtk_widget_set_valign(t->bar,GTK_ALIGN_FILL);
  gtk_widget_set_valign(t->slot,GTK_ALIGN_START);gtk_widget_set_halign(t->slot,GTK_ALIGN_FILL);
  gtk_overlay_add_overlay(GTK_OVERLAY(t->overlay),t->slot);
- // Read the handle's label out of parts before the split goes away.
- t->handle=gtk_button_new_with_label(tools);g_strfreev(parts);gtk_widget_set_halign(t->handle,GTK_ALIGN_CENTER);gtk_widget_set_valign(t->handle,GTK_ALIGN_START);gtk_overlay_add_overlay(GTK_OVERLAY(t->overlay),t->handle);
- g_signal_connect(t->bar,"enter-notify-event",G_CALLBACK(kw_enter),t);g_signal_connect(t->bar,"leave-notify-event",G_CALLBACK(kw_leave),t);g_signal_connect(t->handle,"enter-notify-event",G_CALLBACK(kw_enter),t);
- // A pointer with no hover to reveal from — a trackpad tap — still gets the
- // strip back by pressing the handle, as the other two platforms do.
- g_signal_connect(t->handle,"clicked",G_CALLBACK(kw_pressed),t);
+ // A stable compact dock: entering it must not reveal/move the buttons
+ // before a click lands. Windowed exits directly; Tools expands the strip.
+ t->handle=gtk_event_box_new();gtk_widget_set_name(t->handle,"kw-toolbar");kw_style(t->handle);
+ GtkWidget*dock=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,0);gtk_container_add(GTK_CONTAINER(t->handle),dock);
+ GtkWidget*exit=gtk_button_new_with_label(t->windowedText);g_object_set_data(G_OBJECT(exit),"kw-action",GINT_TO_POINTER(1));g_signal_connect(exit,"clicked",G_CALLBACK(kw_action),t);gtk_box_pack_start(GTK_BOX(dock),exit,FALSE,FALSE,0);
+ GtkWidget*show=gtk_button_new_with_label(tools);g_signal_connect(show,"clicked",G_CALLBACK(kw_pressed),t);gtk_box_pack_start(GTK_BOX(dock),show,FALSE,FALSE,0);
+ g_strfreev(parts);gtk_widget_set_halign(t->handle,GTK_ALIGN_START);gtk_widget_set_valign(t->handle,GTK_ALIGN_START);gtk_overlay_add_overlay(GTK_OVERLAY(t->overlay),t->handle);
+ g_signal_connect(t->bar,"enter-notify-event",G_CALLBACK(kw_enter),t);g_signal_connect(t->bar,"leave-notify-event",G_CALLBACK(kw_leave),t);
  g_signal_connect(t->window,"delete-event",G_CALLBACK(kw_geometry_close),t);
  g_signal_connect(t->window,"configure-event",G_CALLBACK(kw_geometry_configure),t);
  g_signal_connect(t->window,"window-state-event",G_CALLBACK(kw_state),t);g_signal_connect(t->window,"key-press-event",G_CALLBACK(kw_key),t);g_signal_connect(t->overlay,"size-allocate",G_CALLBACK(kw_size),t);

@@ -15,7 +15,8 @@ static char KWGeometryTransition;
  NSWindow *window;
  NSView *browser,*root;
  KWToolbarView *bar;
- NSButton *handle;
+ KWToolbarView *handle;
+ NSButton *exit,*showTools;
  NSTextField *identity;
  NSMutableArray *buttons;
  NSTimer *timer;
@@ -45,7 +46,9 @@ static char KWGeometryTransition;
  browser.frame=NSMakeRect(0,0,w,full?h:MAX(1,h-bh));
  CGFloat bw=full?MIN(w,1040):w,left=full?MAX(0,MIN((w-bw)/2+offset,w-bw)):0;
  bar.frame=NSMakeRect(left,h-bh,bw,bh);
- handle.frame=NSMakeRect((w-100)/2,h-22,100,22);
+ CGFloat ew=MAX(100,exit.intrinsicContentSize.width+12),tw=MAX(90,showTools.intrinsicContentSize.width+12),dw=ew+tw;
+ handle.frame=NSMakeRect(MAX(0,MIN(left+(bw-dw)/2,w-dw)),h-30,dw,30);
+ exit.frame=NSMakeRect(0,0,ew,30);showTools.frame=NSMakeRect(ew,0,tw,30);
  CGFloat x=bw-8;
  for(NSButton*b in [buttons reverseObjectEnumerator]) {CGFloat width=MAX(65,b.intrinsicContentSize.width+12);x-=width;b.frame=NSMakeRect(x,8,width,28);x-=6;}
  identity.frame=NSMakeRect(24,10,MAX(0,x-28),24);
@@ -53,12 +56,13 @@ static char KWGeometryTransition;
 - (void)reveal {until=[NSDate timeIntervalSinceReferenceDate]+3;bar.hidden=NO;handle.hidden=YES;}
 - (void)action:(NSButton*)sender {
  int a=(int)sender.tag;
+ if(a==9){if(!(window.styleMask&NSWindowStyleMaskFullScreen))return;a=1;}
  if(a==1){goWebToolbarAction(token,8);BOOL entering=!(window.styleMask&NSWindowStyleMaskFullScreen);[window toggleFullScreen:self];
   for(NSButton*b in buttons)if(b.tag==1)b.title=entering?windowed:fullscreen;
-  [self reveal];}
+   [self reveal];[window makeFirstResponder:browser];}
  else if(a==4){NSAlert*d=[[[NSAlert alloc]init]autorelease];d.messageText=@"Connection";d.informativeText=details;[d runModal];}
- else if(a==5){pinned=!pinned;sender.title=pinned?unpin:pin;[self reveal];}
- else if(a==7){[self reveal];}
+  else if(a==5){pinned=!pinned;sender.title=pinned?unpin:pin;[self reveal];if(!pinned)[window makeFirstResponder:browser];}
+  else if(a==7){[self reveal];[window makeFirstResponder:browser];}
  else goWebToolbarAction(token,a);
 }
 - (void)tick:(NSTimer*)sender {
@@ -66,7 +70,7 @@ static char KWGeometryTransition;
  goWebToolbarAction(token,8);
  BOOL full=(window.styleMask&NSWindowStyleMaskFullScreen)!=0;
  NSPoint p=[root convertPoint:[window mouseLocationOutsideOfEventStream] fromView:nil];
- BOOL hover=NSPointInRect(p,bar.frame)||NSPointInRect(p,handle.frame);
+ BOOL hover=!bar.hidden&&NSPointInRect(p,bar.frame);
  NSResponder*f=window.firstResponder;BOOL focus=[f isKindOfClass:[NSView class]]&&[(NSView*)f isDescendantOf:bar];
  if(hover){[self reveal];return;}
  if(full&&!pinned&&!dragging&&!focus&&[NSDate timeIntervalSinceReferenceDate]>until){bar.hidden=YES;handle.hidden=NO;}
@@ -114,7 +118,9 @@ void *kw_cocoa_attach(void *win,uintptr_t token,const char *labels,const char *i
  t->pin=[pinText copy];t->unpin=[unpinText copy];t->fullscreen=[fullText copy];t->windowed=[windowedText copy];
  t->identity=[[NSTextField labelWithString:parts[0]]retain];t->identity.lineBreakMode=NSLineBreakByTruncatingTail;[t->bar addSubview:t->identity];t->buttons=[[NSMutableArray alloc]init];
  for(int a=1;a<=6;a++){if(a>=parts.count||[parts[a]length]==0)continue;NSButton*b=[NSButton buttonWithTitle:parts[a] target:t action:@selector(action:)];b.tag=a;b.bezelStyle=NSBezelStyleRounded;[t->bar addSubview:b];[t->buttons addObject:b];}
- t->handle=[[NSButton buttonWithTitle:toolsText target:t action:@selector(action:)]retain];t->handle.tag=7;[t->root addSubview:t->handle];
+ t->handle=[[KWToolbarView alloc]initWithFrame:NSZeroRect];t->handle.owner=t;t->handle.wantsLayer=YES;t->handle.layer.backgroundColor=NSColor.windowBackgroundColor.CGColor;
+ t->exit=[[NSButton buttonWithTitle:windowedText target:t action:@selector(action:)]retain];t->exit.tag=9;[t->handle addSubview:t->exit];
+ t->showTools=[[NSButton buttonWithTitle:toolsText target:t action:@selector(action:)]retain];t->showTools.tag=7;[t->handle addSubview:t->showTools];[t->root addSubview:t->handle];
  for(NSString*n in @[NSWindowDidResizeNotification,NSWindowWillEnterFullScreenNotification,NSWindowWillExitFullScreenNotification,NSWindowDidEnterFullScreenNotification,NSWindowDidExitFullScreenNotification,NSWindowWillCloseNotification])[[NSNotificationCenter defaultCenter]addObserver:t selector:@selector(changed:) name:n object:w];
  t->keyMonitor=[[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent*(NSEvent*e){if(e.window!=w)return e;NSString*s=e.charactersIgnoringModifiers;NSUInteger mods=e.modifierFlags;
  if(e.keyCode==103){for(NSButton*b in t->buttons)if(b.tag==1){[t action:b];break;}return nil;}
@@ -122,4 +128,4 @@ void *kw_cocoa_attach(void *win,uintptr_t token,const char *labels,const char *i
  if((mods&(NSEventModifierFlagControl|NSEventModifierFlagOption|NSEventModifierFlagShift))==(NSEventModifierFlagControl|NSEventModifierFlagOption|NSEventModifierFlagShift)&&[s.lowercaseString isEqual:@"t"]){[t reveal];[w makeFirstResponder:t->buttons.firstObject];return nil;}return e;}]retain];
  t->timer=[[NSTimer scheduledTimerWithTimeInterval:.1 target:t selector:@selector(tick:) userInfo:nil repeats:YES]retain];[t layout];[t reveal];return t;
 }
-void kw_cocoa_detach(void *ptr){KWWebToolbar*t=ptr;if(!t)return;[t->timer invalidate];[t->timer release];[NSEvent removeMonitor:t->keyMonitor];[t->keyMonitor release];[[NSNotificationCenter defaultCenter]removeObserver:t];[t->buttons release];[t->details release];[t->pin release];[t->unpin release];[t->fullscreen release];[t->windowed release];[t->handle release];[t->identity release];[t->bar release];[t->browser release];[t->root release];[t->window release];[t release];}
+void kw_cocoa_detach(void *ptr){KWWebToolbar*t=ptr;if(!t)return;[t->timer invalidate];[t->timer release];[NSEvent removeMonitor:t->keyMonitor];[t->keyMonitor release];[[NSNotificationCenter defaultCenter]removeObserver:t];[t->buttons release];[t->details release];[t->pin release];[t->unpin release];[t->fullscreen release];[t->windowed release];[t->exit release];[t->showTools release];[t->handle release];[t->identity release];[t->bar release];[t->browser release];[t->root release];[t->window release];[t release];}

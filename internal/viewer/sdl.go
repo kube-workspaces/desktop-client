@@ -32,8 +32,8 @@ import (
 var appIconPNG []byte
 
 // AppIcon returns the embedded application icon PNG (256×256 Kube
-// Workspaces cube), for surfaces outside the window chrome — the About
-// panel renders it from these bytes rather than carrying a second copy.
+// Workspaces cube), shared by the About panel and GTK web-child windows
+// rather than carrying additional copies of the artwork.
 func AppIcon() []byte { return appIconPNG }
 
 // ShowMessage displays a native informational dialog without opening a shell.

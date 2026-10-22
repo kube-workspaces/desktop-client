@@ -43,6 +43,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
 
 // pageBackground is the solid colour the stub instance's page fills the
@@ -358,6 +360,48 @@ func distinctColours(img image.Image, top, height int) int {
 	return len(seen)
 }
 
+// Check the icon actually published to the window manager, including its
+// straight-alpha ARGB pixels, rather than just the availability of an embed.
+func assertWebWindowIcon(t *testing.T, window string) {
+	t.Helper()
+	if _, err := exec.LookPath("xprop"); err != nil {
+		t.Skip("xprop is required to inspect the native window icon")
+	}
+	out, err := exec.Command("xprop", "-id", window, "-len", "1048576", "-notype", "-f", "_NET_WM_ICON", "32c", "_NET_WM_ICON").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read native window icon: %v\n%s", err, out)
+	}
+	_, data, ok := strings.Cut(string(out), "=")
+	if !ok {
+		t.Fatalf("window has no _NET_WM_ICON: %s", out)
+	}
+	values := strings.Split(strings.TrimSpace(data), ",")
+	img, err := png.Decode(bytes.NewReader(viewer.AppIcon()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := img.Bounds()
+	if len(values) != 2+b.Dx()*b.Dy() {
+		t.Fatalf("icon has %d values, want dimensions plus %d pixels", len(values), b.Dx()*b.Dy())
+	}
+	for i, value := range values {
+		got, err := strconv.ParseUint(strings.TrimSpace(value), 10, 32)
+		var want uint32
+		switch i {
+		case 0:
+			want = uint32(b.Dx())
+		case 1:
+			want = uint32(b.Dy())
+		default:
+			c := color.NRGBAModel.Convert(img.At(b.Min.X+(i-2)%b.Dx(), b.Min.Y+(i-2)/b.Dx())).(color.NRGBA)
+			want = uint32(c.A)<<24 | uint32(c.R)<<16 | uint32(c.G)<<8 | uint32(c.B)
+		}
+		if err != nil || uint32(got) != want {
+			t.Fatalf("icon value %d = %q (%v), want %#x", i, value, err, want)
+		}
+	}
+}
+
 // TestWebChromeNative runs the real child on a real display and checks the
 // windowed strip, the fullscreen auto-hide and reveal, and Disconnect.
 func TestWebChromeNative(t *testing.T) {
@@ -393,6 +437,7 @@ func TestWebChromeNative(t *testing.T) {
 	})
 
 	window := waitForWindow(t, 60*time.Second)
+	t.Run("window icon", func(t *testing.T) { assertWebWindowIcon(t, window) })
 	xrun(t, "windowfocus", "--sync", window)
 	xrun(t, "windowmove", window, "0", "0")
 
@@ -533,9 +578,34 @@ func TestWebChromeNative(t *testing.T) {
 		t.Errorf("the dragged strip left the window: x=%d..%d of %d", draggedStart, draggedStart+draggedWidth, full.W)
 	}
 
-	// F11 again restores the windowed full-width strip.
-	xrun(t, "mousemove", "0", "0")
-	xrun(t, "key", "--clearmodifiers", "F11")
+	// Pin keeps the full strip up even after focus returns to the page.
+	// The reveal shortcut focuses Fullscreen; two Tabs reach Pin.
+	xrun(t, "key", "--clearmodifiers", "ctrl+alt+shift+t", "Tab", "Tab", "space")
+	xrun(t, "mousemove", strconv.Itoa(full.W/2), strconv.Itoa(full.H/2))
+	xrun(t, "click", "1")
+	time.Sleep(4000 * time.Millisecond)
+	if _, pinnedWidth := run(screenshot(t, window), 6); pinnedWidth < 900 {
+		t.Error("Pin did not keep the full toolbar visible with focus in the page")
+	}
+	// Unpin must release the button's focus so auto-collapse resumes without
+	// another click in the page. The compact dock follows the dragged strip.
+	xrun(t, "key", "--clearmodifiers", "ctrl+alt+shift+t", "Tab", "Tab", "space")
+	collapsed := waitFor(t, window, 15*time.Second, "Unpin to restore auto-collapse", func(img image.Image) bool {
+		_, width := run(img, 6)
+		return width > 0 && width < 300
+	})
+	dockStart, dockWidth := run(collapsed, 6)
+	if abs(dockStart+dockWidth/2-(draggedStart+draggedWidth/2)) > 20 {
+		t.Errorf("compact dock did not follow the dragged toolbar: x=%d width=%d", dockStart, dockWidth)
+	}
+	// The left compact button is Windowed. Moving over it must not replace
+	// the dock before the click lands, even with a mouse that synthesizes hover.
+	xrun(t, "mousemove", strconv.Itoa(dockStart+dockWidth/4), "12")
+	time.Sleep(250 * time.Millisecond)
+	if _, width := run(screenshot(t, window), 6); width >= 300 {
+		t.Fatal("hovering the direct Windowed button expanded the dock before the click")
+	}
+	xrun(t, "click", "1")
 	back := waitFor(t, window, 30*time.Second, "the window to leave fullscreen", func(img image.Image) bool {
 		g := windowGeometry(t, window)
 		_, width := run(img, 6)

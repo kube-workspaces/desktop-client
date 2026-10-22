@@ -620,28 +620,31 @@ of a container or scratch workspace. It shows who you are connected to and
 whether the connection is healthy, and it carries the controls that only make
 sense for that surface:
 
-- **All surfaces** — fullscreen, the session list, the workspace list,
-  connection details, and Disconnect.
+- **All surfaces** — fullscreen, connection details, and Disconnect.
+- **Displays and terminals** — return to the workspace list through Tools.
 - **Displays** — fit-to-window, guest resize, clipboard sync on/off, audio
   mute, shared control (take/release), and the metrics the transport actually
   reports (FPS, bitrate). Tier 0 shows what QEMU gives us; Tier 1 shows
   the serving agent's own counters (Selkies or `kw-agent`).
 - **Terminals** — paste from the host clipboard.
-- **Browser windows** — the same common controls, drawn as native window
-  chrome outside the page rather than as HTML inside it.
+- **Browser windows** — fullscreen, connection details, Pin and Disconnect,
+  drawn as native window chrome outside the page rather than as HTML inside it.
 
 In fullscreen the strip floats over the content and hides itself after three
-seconds so nothing covers the workspace. Move the pointer back to the top edge
-— or press `Ctrl+Alt+Shift+T` — to bring it back, **Pin** to keep it up, or
+seconds so nothing covers the workspace. Press `Ctrl+Alt+Shift+T` to bring it
+back, **Pin** to keep it up, or
 drag it sideways to get it out of the way. Whatever is under the pointer is the
 window's own input: while the pointer or a held key is over the strip, nothing
 reaches the workspace. `Esc` returns input to the guest.
 
+Browser windows collapse to a compact **Windowed · Tools** dock at the top.
+**Windowed** exits fullscreen directly; **Tools** expands the full toolbar.
+The dock follows the toolbar's position when dragged. **Pin** keeps the full
+toolbar expanded in fullscreen; **Unpin** restores its three-second idle
+collapse. `F11` also toggles fullscreen.
+
 The browser window is a separate process so the browser engine never shares a
-thread with the shell. It can ask the shell for the session list or the
-workspace list over a loopback capability passed in its own environment; that
-capability accepts navigation only — never workspace operations, credentials or
-commands.
+thread with the shell.
 
 ## The display model — two tiers
 

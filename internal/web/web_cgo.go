@@ -24,6 +24,7 @@ func Run(title, url string, options ...GeometryOptions) error {
 	w := webview.New(true)
 	defer w.Destroy()
 	w.SetTitle(title)
+	setNativeWindowIcon(w.Window())
 	w.SetSize(1280, 800, webview.HintNone)
 	g := &geometryRecorder{}
 	if len(options) > 0 {

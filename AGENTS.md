@@ -200,10 +200,10 @@ Not implemented, and must not be described otherwise:
   pointer or keys are over it (fullscreen auto-hide after 3 s, reveal handle,
   pin, drag). RFB, Selkies/Tier 1, observers and integrated terminals supply
   their own snapshots and action handlers, and `internal/web`'s child window
-  draws native GTK, Cocoa or Win32 chrome around the browser through an
-  authenticated loopback capability (`KW_CONNECTION_NAV_URL` /
-  `KW_CONNECTION_NAV_TOKEN`) that accepts only Sessions/workspace-list
-  navigation. What is not yet done is running it against real guests and a
+  draws native GTK, Cocoa or Win32 chrome around the browser, with fullscreen,
+  connection details, pin and disconnect controls. Sessions is omitted from
+  connection toolbars; web chrome also omits Workspace list. What is not yet
+  done is running it against real guests and a
   real webview child process on each platform.
   - Linux/GTK is exercised end to end: `KW_WEB_CHROME_NATIVE=1 go test
     ./internal/webcmd -run WebChrome` drives the real child against a stub
@@ -211,6 +211,13 @@ Not implemented, and must not be described otherwise:
     reveal, drag and disconnect from the rendered pixels. It needs a window
     manager running (fullscreen is a request the WM honours) and asserts that
     focus inside the strip keeps it up across the idle delay.
+    The collapsed web dock offers Windowed (direct fullscreen exit) and Tools
+    (expand), follows the dragged strip, and stays stable under the pointer.
+    Native checks cover Pin keeping the strip expanded and Unpin restoring
+    collapse without an extra page click. Fullscreen/unpin/Tools actions
+    return focus to the browser; an explicit reveal shortcut still focuses
+    the strip for keyboard navigation. This avoids a clicked toggle holding
+    focus forever and accidentally disabling auto-collapse.
   - Windows/Win32 chrome is exercised by `internal/web/toolbar_windows_test.go`
     (`KW_WEB_CHROME_NATIVE=1 go test ./internal/web -run Win32Toolbar`): the
     toolbar is built onto a synthetic `webview_widget` tree and asked where
@@ -218,8 +225,10 @@ Not implemented, and must not be described otherwise:
     it up and that pressing the reveal handle brings it back. It is verified
     under Wine 8 on Linux from a mingw cross-build; the cross-build itself is
     verified through `make build-web-windows` (go-winres resources, VCS
-    stamping and the gdi32 link). WebView2 itself is not run under Wine, and
-    real WebView2 remains untested anywhere.
+    stamping and the gdi32 link). WebView2 itself is not run under Wine. A
+    Windows user confirmed the real child's icon, themed toolbar and
+    fullscreen strip/dock visibility after the sibling-clipping fix;
+    automated WebView2 acceptance remains pending.
   - macOS/Cocoa is compiled against the real AppKit SDK by the `macos-latest`
     jobs — `go build ./...` plus `go test ./...` with cgo in CI, and the
     darwin/amd64 and darwin/arm64 web children in the Build workflow — so the
@@ -234,6 +243,10 @@ Not implemented, and must not be described otherwise:
   button in place (the reveal handle, unpin and windowed). Those come from
   `internal/i18n`, so the native toolbars stay translatable; a new action means
   a new line, and each platform keeps its own fallbacks for a short list.
+  The removed Sessions/Workspace list action slots (2/3) stay empty so later
+  native action IDs and alternate-label positions do not shift.
+  The compact dock reuses the Windowed label; its Win32/Cocoa action 9 is a
+  local exit-fullscreen action, not a new label slot or a Go navigation action.
 
 - **Tier 0 audio.** `probe --audio` advertises the QEMU audio pseudo-encoding
   purely to detect whether the VM has a sound device. No Tier 0 decoder, no
@@ -545,6 +558,41 @@ must stay on a release built with go1.26 or newer.
   do not exist on the CI matrix). `make build-web-windows` and the CI
   `web-child` matrix's "Generate Windows resources" step do this; `winres-web`
   regenerates by hand.
+- **Web-child window icons need explicit assignment.** Explorer's PE icon does
+  not set a WebView2 HWND's icon. `internal/web/icon_windows.go` loads the
+  named `L"1"` icon group from the running module (both winres.json files use
+  `"1"`, not numeric `"#1"`) and sets both `WM_SETICON` sizes with shared,
+  module-owned handles. GTK uses the existing `viewer.AppIcon()` PNG through
+  `gtk_window_set_icon`; Cocoa retains the bundle's Dock icon. Linux's native
+  WebChrome test optionally uses `xprop` to compare `_NET_WM_ICON` pixels.
+  `KW_WEB_ICON_NATIVE=1` enables `TestWin32WindowIcon`; link the web child's
+  go-winres object into the test executable with
+  `-ldflags '-linkmode external -extldflags=/path/to/rsrc_windows_amd64.syso'`.
+  Linux/Xvfb and Windows/Wine 8 native-window checks pass, and a Windows user
+  confirmed the icon in the real web child. Wine 8 needs a test-only
+  `bcryptprimitives.dll`
+  forwarding `ProcessPrng` to `BCryptGenRandom` for Go 1.26 to start.
+- **Win32 web chrome uses the VM toolbar's renderer.** The strip, identity,
+  buttons and fullscreen reveal handle render through the shared `internal/ui`
+  theme, fonts and widgets in `toolbar_paint_windows.go`. Native owner-drawn
+  controls retain input/accessibility while their pixels use the client's
+  saved style/colour scheme (system mode reads Windows' AppsUseLightTheme).
+  Painting just the strip with `COLOR_BTNFACE` leaves the whole toolbar white
+  on Windows and does not match VM chrome. Child clipping protects buttons
+  during repaint. Native Win32Toolbar checks compare strip/button/text pixels
+  against VM palettes, including dark/light, hover, press, focus and disabled
+  states in windowed and fullscreen layouts.
+- **Win32 fullscreen web chrome requires browser sibling clipping.** The
+  upstream `webview_widget` starts without `WS_CLIPSIBLINGS`. Its renderer
+  descendants can paint over overlapping toolbar/dock siblings in fullscreen,
+  despite correct geometry, z-order and `WS_VISIBLE`. The native adapter adds
+  `WS_CLIPSIBLINGS`/`WS_CLIPCHILDREN` to the browser host, clips the top-level
+  host's children in both windowed/fullscreen styles, and restores the original
+  styles on detach. Do not rely on `HWND_TOP` alone. Win32Toolbar now creates a
+  repainting renderer descendant and reads actual screen pixels after forcing
+  browser repaint, checking both the expanded strip and collapsed Windowed
+  button. This reproduced the disappearance before the fix and passes after
+  it under Wine; unlike the older offscreen checks it detects covered chrome.
 - **No manifest is emitted, on purpose.** go-winres only writes
   `RT_MANIFEST` if `winres.json` says so; leaving it out means the process has
   no declared DPI awareness, so SDL keeps sole control of it and adding the
