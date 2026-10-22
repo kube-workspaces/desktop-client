@@ -336,6 +336,10 @@ type App struct {
 	nextRefresh    time.Time
 	repaintAt      time.Time
 
+	// operationGeneration fences authentication results after cancellation,
+	// including a completed response still waiting in the UI queue.
+	operationGeneration uint64
+
 	watchCancel          context.CancelFunc
 	watchGeneration      uint64
 	watchSnapshotVersion uint64
@@ -444,6 +448,8 @@ func (a *App) Run(ctx context.Context) error {
 	defer a.stopUpdates()
 	defer a.stopWorkspaceWatch()
 	defer a.stopAvatar()
+	defer a.passwordField.Clear()
+	defer a.cancelInFlight()
 	ctx, cancelUpdates := context.WithCancel(ctx)
 	defer cancelUpdates()
 
@@ -953,14 +959,16 @@ func (a *App) useServer(server string, insecure bool) error {
 		return err
 	}
 	a.api, a.dialer = api, dialer
+	a.m.Auth, a.m.Native = nil, false
+	a.m.Identity = nil
 	a.m.Server, a.m.Insecure = server, insecure
 	return nil
 }
 
-// cancelInFlight cancels whatever long-running operation is outstanding. Only
-// one can be, because every screen that starts one disables the controls that
-// could start another.
+// cancelInFlight cancels the outstanding foreground operation and invalidates
+// queued authentication results before another operation can start.
 func (a *App) cancelInFlight() {
+	a.operationGeneration++
 	if a.cancelPending != nil {
 		a.cancelPending()
 		a.cancelPending = nil

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 )
 
 // AuthConfig is the deployment's authentication configuration as served by
@@ -48,6 +49,25 @@ type RegistrationConfig struct {
 type LocalAuthConfig struct {
 	// Enabled reports whether [Client.LoginLocal] can be used.
 	Enabled bool `json:"enabled"`
+}
+
+// SupportsMethod prefers the advertised method list, including an explicitly
+// empty list. Only older endpoints without that field use the legacy flags.
+func (c *AuthConfig) SupportsMethod(method string) bool {
+	if c == nil || !c.Enabled {
+		return false
+	}
+	if c.Methods != nil {
+		return slices.Contains(c.Methods, method)
+	}
+	switch method {
+	case "local":
+		return c.LocalAuth.Enabled
+	case "oidc":
+		return c.IssuerURL != ""
+	default:
+		return false
+	}
 }
 
 // Identity is the response of GET /auth/me: who the server thinks we are.

@@ -31,7 +31,7 @@ func TestDescribeNamesFailuresAUserCanActOn(t *testing.T) {
 		{"locked", fmt.Errorf("x: %w", kwclient.ErrAccountLocked), "locked"},
 		{"disabled", fmt.Errorf("x: %w", kwclient.ErrAccountDisabled), "disabled"},
 		{"rate limited", fmt.Errorf("x: %w", kwclient.ErrRateLimited), "Too many attempts"},
-		{"local auth off", fmt.Errorf("x: %w", kwclient.ErrLocalAuthDisabled), "Sign in with browser"},
+		{"local auth off", fmt.Errorf("x: %w", kwclient.ErrLocalAuthDisabled), "Local sign-in is disabled"},
 		{"expired", fmt.Errorf("x: %w", kwclient.ErrUnauthorized), "expired"},
 		{"forbidden", fmt.Errorf("x: %w", kwclient.ErrForbidden), "access"},
 		{"display in use", fmt.Errorf("x: %w", kwclient.ErrSessionInUse), "take it over"},

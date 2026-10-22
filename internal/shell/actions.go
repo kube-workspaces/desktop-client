@@ -49,6 +49,7 @@ const (
 	intentConnectServer
 	intentSignInLocal
 	intentSignInBrowser
+	intentRetryAuth
 	intentCancel
 	intentRefresh
 	intentActivate
@@ -140,8 +141,19 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.signInLocal(ctx, a.emailField.Value(), a.passwordField.Value())
 	case intentSignInBrowser:
 		a.signInBrowser(ctx)
+	case intentRetryAuth:
+		if a.m.State == StateLogin && !a.m.Busy {
+			a.m.Auth = nil
+			a.m.Err = ""
+			a.ensureAuthConfig(ctx)
+		}
 	case intentCancel:
 		a.cancelInFlight()
+		if a.m.State == StateLogin && a.api != nil {
+			a.api.SetToken("")
+		}
+		a.passwordField.Clear()
+		a.authorizeURL = ""
 		a.m.Done()
 		a.m.Notice = i18n.Get("workspaces.cancelled")
 	case intentRefresh:
@@ -270,6 +282,8 @@ func (a *App) act(ctx context.Context, in intent) {
 		a.signOut()
 	case intentChangeServer:
 		a.cancelInFlight()
+		a.passwordField.Clear()
+		a.authorizeURL = ""
 		a.closeAllSessions()
 		a.loadProfiles()
 		a.m.NeedServer("")
@@ -346,6 +360,7 @@ func (a *App) connectToServer(ctx context.Context, server string, insecure bool)
 	opCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	a.cancelInFlight()
 	a.cancelPending = cancel
+	generation := a.operationGeneration
 
 	a.background(func() func() {
 		defer cancel()
@@ -361,6 +376,9 @@ func (a *App) connectToServer(ctx context.Context, server string, insecure bool)
 			}
 		}
 		return func() {
+			if generation != a.operationGeneration || a.api != api {
+				return
+			}
 			a.cancelPending = nil
 			if err != nil {
 				a.m.Done()
@@ -398,6 +416,7 @@ func (a *App) ensureAuthConfig(ctx context.Context) {
 	opCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	a.cancelInFlight()
 	a.cancelPending = cancel
+	generation := a.operationGeneration
 
 	a.background(func() func() {
 		defer cancel()
@@ -411,7 +430,7 @@ func (a *App) ensureAuthConfig(ctx context.Context) {
 			}
 		}
 		return func() {
-			if a.api != api || a.m.State != StateLogin || a.m.Server != server {
+			if generation != a.operationGeneration || a.api != api || a.m.State != StateLogin || a.m.Server != server {
 				return
 			}
 			a.cancelPending = nil
@@ -424,6 +443,9 @@ func (a *App) ensureAuthConfig(ctx context.Context) {
 			a.m.Notice = notice
 			if was != "" {
 				a.m.Err = was
+			}
+			if a.m.AuthDisabled() {
+				a.verifySession(ctx)
 			}
 		}
 	})
@@ -445,11 +467,15 @@ func (a *App) verifySession(ctx context.Context) {
 	opCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	a.cancelInFlight()
 	a.cancelPending = cancel
+	generation := a.operationGeneration
 
 	a.background(func() func() {
 		defer cancel()
 		identity, err := api.Me(opCtx)
 		return func() {
+			if generation != a.operationGeneration || a.api != api {
+				return
+			}
 			a.cancelPending = nil
 			a.m.Done()
 			switch {
@@ -483,6 +509,16 @@ func (a *App) verifySession(ctx context.Context) {
 
 // signInLocal exchanges an email and password for a session token.
 func (a *App) signInLocal(ctx context.Context, email, password string) {
+	if a.m.Busy {
+		return
+	}
+	if a.m.AuthDisabled() {
+		a.verifySession(ctx)
+		return
+	}
+	if !a.m.CanUseLocalAuth() {
+		return
+	}
 	switch {
 	case a.api == nil:
 		a.m.NeedServer("")
@@ -500,11 +536,15 @@ func (a *App) signInLocal(ctx context.Context, email, password string) {
 	opCtx, cancel := context.WithTimeout(ctx, loginTimeout)
 	a.cancelInFlight()
 	a.cancelPending = cancel
+	generation := a.operationGeneration
 
 	a.background(func() func() {
 		defer cancel()
 		token, mustChange, err := api.LoginLocal(opCtx, email, password)
 		return func() {
+			if generation != a.operationGeneration || a.api != api || a.m.State != StateLogin {
+				return
+			}
 			a.cancelPending = nil
 			if err != nil {
 				a.m.Done()
@@ -513,6 +553,10 @@ func (a *App) signInLocal(ctx context.Context, email, password string) {
 				// it should not be sitting in the field for the next attempt.
 				a.passwordField.Clear()
 				a.ctx.Focus().Set(idPassword)
+				if errors.Is(err, kwclient.ErrLocalAuthDisabled) {
+					a.m.Auth = nil
+					a.ensureAuthConfig(ctx)
+				}
 				return
 			}
 			a.passwordField.Clear()
@@ -527,10 +571,10 @@ func (a *App) signInLocal(ctx context.Context, email, password string) {
 // the native-app flow is that this process never sees the user's credentials
 // for a third-party identity provider. See internal/kwclient/native_auth.go.
 func (a *App) signInBrowser(ctx context.Context) {
-	if a.api == nil {
-		a.m.NeedServer("")
+	if a.api == nil || a.m.Busy || !a.m.CanUseBrowserAuth() {
 		return
 	}
+	a.passwordField.Clear()
 	api := a.api
 	a.authorizeURL = ""
 	a.m.Working(i18n.Get("busy.waitingBrowser"))
@@ -541,6 +585,7 @@ func (a *App) signInBrowser(ctx context.Context) {
 	opCtx, cancel := context.WithCancel(ctx)
 	a.cancelInFlight()
 	a.cancelPending = cancel
+	generation := a.operationGeneration
 
 	a.background(func() func() {
 		defer cancel()
@@ -549,6 +594,9 @@ func (a *App) signInBrowser(ctx context.Context) {
 				// This runs on the login flow's goroutine, so it may not touch
 				// the model: it posts to the loop instead.
 				a.post(func() {
+					if generation != a.operationGeneration || a.api != api || a.m.State != StateLogin {
+						return
+					}
 					a.authorizeURL = authorizeURL
 					if notifyErr != nil {
 						a.m.Notice = i18n.Get("login.noBrowserCopy")
@@ -558,6 +606,9 @@ func (a *App) signInBrowser(ctx context.Context) {
 			},
 		})
 		return func() {
+			if generation != a.operationGeneration || a.api != api || a.m.State != StateLogin {
+				return
+			}
 			a.cancelPending = nil
 			a.authorizeURL = ""
 			if err != nil {
@@ -586,6 +637,7 @@ func (a *App) finishLogin(ctx context.Context, token, email string, mustChange b
 	opCtx, cancel := context.WithTimeout(ctx, loginTimeout)
 	a.cancelInFlight()
 	a.cancelPending = cancel
+	generation := a.operationGeneration
 	a.background(func() func() {
 		defer cancel()
 		identity, err := api.Me(opCtx)
@@ -599,7 +651,7 @@ func (a *App) finishLogin(ctx context.Context, token, email string, mustChange b
 		}
 		opErr := opCtx.Err()
 		return func() {
-			if a.api != api || api.Token() != initialToken || a.m.State != StateLogin {
+			if generation != a.operationGeneration || a.api != api || api.Token() != initialToken || a.m.State != StateLogin {
 				return
 			}
 			a.cancelPending = nil
@@ -638,12 +690,13 @@ func (a *App) saveLogin(ctx context.Context, token, email string, mustChange, de
 	api := a.api
 	opCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	a.cancelPending = cancel
+	generation := a.operationGeneration
 	a.background(func() func() {
 		defer cancel()
 		identity, err := api.Me(opCtx)
 		cancelled := opCtx.Err() != nil
 		return func() {
-			if a.api != api || api.Token() != token || a.m.State != StateLogin {
+			if generation != a.operationGeneration || a.api != api || api.Token() != token || a.m.State != StateLogin {
 				return
 			}
 			a.cancelPending = nil
@@ -1567,12 +1620,13 @@ const (
 	idInsecure ui.FocusID = "insecure"
 	idConnect  ui.FocusID = "connect"
 
-	idEmail    ui.FocusID = "email"
-	idPassword ui.FocusID = "password"
-	idSignIn   ui.FocusID = "sign-in"
-	idBrowser  ui.FocusID = "sign-in-browser"
-	idCancel   ui.FocusID = "cancel"
-	idBack     ui.FocusID = "back"
+	idEmail     ui.FocusID = "email"
+	idPassword  ui.FocusID = "password"
+	idSignIn    ui.FocusID = "sign-in"
+	idBrowser   ui.FocusID = "sign-in-browser"
+	idRetryAuth ui.FocusID = "retry-auth"
+	idCancel    ui.FocusID = "cancel"
+	idBack      ui.FocusID = "back"
 
 	idFilter        ui.FocusID = "filter"
 	idList          ui.FocusID = "workspaces"

@@ -76,6 +76,10 @@ func TestSwitchProfileMovesInstances(t *testing.T) {
 func TestSwitchProfileWithoutTokenAsksToSignIn(t *testing.T) {
 	r := profilesRig(t)
 	r.store.tokens = map[string]string{}
+	// The first endpoint advertises only SSO; the next one supports local
+	// accounts. A profile switch must discard the first discovery snapshot.
+	r.app.m.Auth = &kwclient.AuthConfig{Enabled: true, Methods: []string{"oidc"}}
+	r.app.m.Native = true
 
 	r.app.act(context.Background(), intent{kind: intentSwitchProfile, profile: "other.example.com"})
 	r.settle()
@@ -85,6 +89,9 @@ func TestSwitchProfileWithoutTokenAsksToSignIn(t *testing.T) {
 	}
 	if r.app.m.Server != "https://other.example.com" {
 		t.Errorf("model server = %q, want other.example.com", r.app.m.Server)
+	}
+	if !r.app.m.CanUseLocalAuth() || r.app.m.CanUseBrowserAuth() || r.app.m.Identity != nil {
+		t.Fatal("profile switch retained the previous endpoint's identity or sign-in methods")
 	}
 }
 

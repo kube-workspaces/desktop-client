@@ -554,12 +554,12 @@ func (m *Model) SelectedWorkspace() (kwclient.Workspace, bool) {
 
 // CanUseLocalAuth reports whether the instance accepts email and password.
 func (m *Model) CanUseLocalAuth() bool {
-	return m.Auth != nil && m.Auth.Enabled && m.Auth.LocalAuth.Enabled
+	return m.Auth.SupportsMethod("local")
 }
 
 // CanUseBrowserAuth reports whether the RFC 8252 browser flow is available.
 func (m *Model) CanUseBrowserAuth() bool {
-	return m.Auth != nil && m.Auth.Enabled && m.Native
+	return m.Auth.SupportsMethod("oidc") && m.Native
 }
 
 // AuthDisabled reports that the instance does not authenticate at all, so the

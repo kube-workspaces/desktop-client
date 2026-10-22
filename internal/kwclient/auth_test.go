@@ -40,6 +40,11 @@ func TestAuthConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "explicit empty methods override legacy flags",
+			body: `{"enabled":true,"methods":[],"localAuth":{"enabled":true},"issuerURL":"https://idp.example.com"}`,
+			want: AuthConfig{Enabled: true, Methods: []string{}, LocalAuth: LocalAuthConfig{Enabled: true}, IssuerURL: "https://idp.example.com"},
+		},
+		{
 			// When auth is off the server sends the short shape only.
 			name: "disabled",
 			body: `{"enabled":false}`,

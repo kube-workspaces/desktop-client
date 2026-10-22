@@ -192,6 +192,9 @@ func (a *App) drawLoginScreen(bounds ui.Rect) intent {
 	if back.Layout(ctx, backRect) {
 		out = intent{kind: intentChangeServer}
 	}
+	if a.m.Busy && !waiting && ctx.Input.KeyPressed(keysym.KeyEscape) {
+		out = intent{kind: intentCancel}
+	}
 	return out
 }
 
@@ -208,9 +211,17 @@ func (a *App) drawCredentials(body *ui.Stack) intent {
 			a.drawBusy(body.Next(th.ControlHeight), a.m.BusyText)
 			return out
 		}
+		message := i18n.Get("login.noMethod")
+		if a.m.Auth == nil {
+			message = i18n.Get("login.discoveryFailed")
+		}
 		ui.Label(ctx, body.Next(ui.LineHeight(th.Body, th.Font)*3),
-			i18n.Get("login.noMethod"),
+			message,
 			ui.LabelStyle{Color: th.TextMuted, Wrap: true})
+		retry := ui.Button{ID: idRetryAuth, Text: i18n.Get("login.retry"), Variant: ui.ButtonPrimary}
+		if retry.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)[0]) {
+			out = intent{kind: intentRetryAuth}
+		}
 		return out
 	}
 
@@ -234,6 +245,10 @@ func (a *App) drawCredentials(body *ui.Stack) intent {
 		}
 		if a.m.Busy {
 			a.drawBusy(row[1], a.m.BusyText)
+			cancel := ui.Button{ID: idCancel, Text: i18n.Get("login.cancel"), Variant: ui.ButtonSecondary}
+			if cancel.Layout(ctx, ui.Row(body.Next(th.ControlHeight), th.Gap, 160, 0)[0]) {
+				out = intent{kind: intentCancel}
+			}
 		}
 	}
 

@@ -48,6 +48,7 @@ func TestStateMachineHappyPath(t *testing.T) {
 
 	m.ServerReady("https://kw.example.com", false, &kwclient.AuthConfig{
 		Enabled:   true,
+		IssuerURL: "https://idp.example.com",
 		LocalAuth: kwclient.LocalAuthConfig{Enabled: true},
 	}, true)
 	if m.State != StateLogin {

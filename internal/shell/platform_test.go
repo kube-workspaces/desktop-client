@@ -25,6 +25,7 @@ func TestRestoredSessionDiscoversSignInMethodsWhenReturningToLogin(t *testing.T)
 				r.api.set(func(f *fakeAPI) {
 					f.authConfig = &kwclient.AuthConfig{Enabled: true, LocalAuth: kwclient.LocalAuthConfig{Enabled: !browser}}
 					if browser {
+						f.authConfig.IssuerURL = "https://idp.example.com"
 						f.native = &kwclient.NativeAuthConfig{Enabled: true, Methods: []string{"loopback-pkce"}}
 					}
 				})

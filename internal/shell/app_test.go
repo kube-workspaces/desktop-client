@@ -289,7 +289,7 @@ func TestBrowserSignInCanBeCancelled(t *testing.T) {
 	gate := make(chan struct{})
 	defer close(gate)
 	r.api.set(func(f *fakeAPI) {
-		f.authConfig = &kwclient.AuthConfig{Enabled: true}
+		f.authConfig = &kwclient.AuthConfig{Enabled: true, IssuerURL: "https://idp.example.com"}
 		f.native = &kwclient.NativeAuthConfig{Enabled: true}
 		f.browserGate = gate
 	})

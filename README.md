@@ -22,6 +22,26 @@ connect.
 > in each release's notes. Until then, expect warnings until the binaries gain a
 > reputation through repeated downloads.
 
+## Signing in to your instance
+
+Enter your instance URL in the desktop application. The sign-in screen uses the
+endpoint's advertised authentication methods:
+
+- **Local accounts:** enter your platform account email and password directly in
+  the desktop window, then choose **Sign in**. No browser is needed.
+- **OIDC/SSO:** choose **Sign in with browser** and complete your identity
+  provider's login in the system browser.
+- **Both enabled:** both choices appear. Choose the method enabled for your
+  account; a local account does not need an OIDC identity to sign in.
+
+Local accounts are managed by your platform administrator, separate from your
+computer's OS login and workspace guest credentials. Temporary passwords require
+a password change in the native Profile form before workspace access. The client
+stores the resulting credential using its existing token-storage policy, never
+your password. You can cancel a pending sign-in or choose **Use a different
+server**. If sign-in methods cannot be discovered, use **Retry** after checking
+connectivity. An expired or revoked credential requires a fresh sign-in.
+
 ## Start at login
 
 **Settings → Start at login** opts this installation into starting the graphical
