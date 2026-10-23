@@ -49,7 +49,7 @@ func TestScalingPanelOffersLocalObserverControlsWithoutChangingContent(t *testin
 		if layout.Panel.X < 0 || layout.Panel.X+layout.Panel.W > width || layout.Panel.Y+layout.Panel.H > height || layout.Content.Y != layout.Bar.H {
 			t.Fatalf("scaling panel/content out of bounds: %+v", layout)
 		}
-		for _, a := range []connection.Action{connection.ActualPixels, connection.ZoomIn, connection.FillDesktop, connection.PanRight} {
+		for _, a := range []connection.Action{connection.ActualPixels, connection.SnapDesktop, connection.ZoomIn, connection.FillDesktop, connection.PanRight} {
 			h.ctx.Focus().Set(FocusID("toolbar-" + string(a)))
 			h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
 			if requested != a || bar.Menu != "scaling" {

@@ -126,3 +126,84 @@ func TestPresentationZoomIsBoundedAndFitResetsPan(t *testing.T) {
 		t.Fatalf("fit retained crop state: %+v", p)
 	}
 }
+
+func TestSnapFitsWindowWithoutResizingGuestInEitherViewer(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		view          presentation
+		width, height int
+	}{
+		{"fit", presentation{}, 800, 450},
+		{"actual", presentation{mode: "zoom", zoom: 100, panX: 100}, 1920, 1080},
+		{"zoom", presentation{mode: "zoom", zoom: 50}, 960, 540},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			v := &Viewer{be: newFakeBackend(800, 600), winW: 800, winH: 600, haveFrame: true, frameW: 1920, frameH: 1080, view: test.view, resizePending: true}
+			w := &tier1Window{be: newFakeBackend(800, 600), inp: &recordInput{}, winW: 800, winH: 600, haveFrame: true, texW: 1920, texH: 1080, view: test.view, resizePending: true}
+			v.cfg.applyDefaults()
+			w.opts.applyDefaults()
+			if err := v.connectionAction(connection.SnapDesktop); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.connectionAction(connection.SnapDesktop); err != nil {
+				t.Fatal(err)
+			}
+			want := Rect{W: test.width, H: test.height}
+			if v.present != want || w.present != want || v.winW != want.W || v.winH != want.H || w.winW != want.W || w.winH != want.H {
+				t.Fatalf("snap: rfb=%v premium=%v want=%v", v.present, w.present, want)
+			}
+			if !v.resizeDisabled || !w.opts.NoResize || v.resizePending || w.resizePending {
+				t.Fatal("snap left guest resize enabled or pending")
+			}
+			if v.view.mode != test.view.mode || v.view.zoom != test.view.zoom || v.view.panX != 0 || w.view != v.view {
+				t.Fatalf("snap changed scale or retained pan: %+v %+v", v.view, w.view)
+			}
+		})
+	}
+}
+
+func TestSnapFromFillIsStableDespiteOutwardPixelRounding(t *testing.T) {
+	be := newFakeBackend(800, 600)
+	p := presentation{mode: "fill"}
+	for range 3 {
+		w, h := be.Size()
+		if err := p.snapWindow(be, 1920, 1080, w, h); err != nil {
+			t.Fatal(err)
+		}
+		w, h = be.Size()
+		if w != 1067 || h != 600 {
+			t.Fatalf("snap fill window=%dx%d", w, h)
+		}
+		r := p.rectangle(1920, 1080, w, h)
+		if r.X != 0 || r.Y != 0 || r.W != w || r.H < h || r.H > h+1 {
+			t.Fatalf("fill retained bars or cropping: %v", r)
+		}
+	}
+}
+
+type snapScaledBackend struct {
+	*fakeBackend
+	scale float64
+}
+
+func (b *snapScaledBackend) ScaleFactor() float64 { return b.scale }
+func (b *snapScaledBackend) SetSize(w, h int) error {
+	return b.fakeBackend.SetSize(int(float64(w)*b.scale), int(float64(h)*b.scale))
+}
+
+func TestSnapConvertsDrawablePixelsToWindowCoordinates(t *testing.T) {
+	for _, scale := range []float64{1, 1.5, 2} {
+		be := &snapScaledBackend{fakeBackend: newFakeBackend(2400, 1800), scale: scale}
+		p := presentation{mode: "zoom", zoom: 100}
+		if err := p.snapWindow(be, 1920, 1080, 2400, 1800); err != nil {
+			t.Fatal(err)
+		}
+		if w, h := be.Size(); w != 1920 || h != 1080 {
+			t.Fatalf("scale=%v: drawable=%dx%d", scale, w, h)
+		}
+	}
+	s := connection.Snapshot{Surface: connection.Desktop, Fullscreen: true}
+	if a := s.Availability(connection.SnapDesktop); !a.Visible || a.Enabled {
+		t.Fatalf("fullscreen snap availability: %+v", a)
+	}
+}

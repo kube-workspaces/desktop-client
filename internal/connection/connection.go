@@ -99,6 +99,7 @@ const (
 	ClipboardSync Action = "clipboard-sync"
 	FitDesktop    Action = "fit-desktop"
 	ActualPixels  Action = "actual-pixels"
+	SnapDesktop   Action = "snap-desktop"
 	FillDesktop   Action = "fill-desktop"
 	ZoomIn        Action = "zoom-in"
 	ZoomOut       Action = "zoom-out"
@@ -146,7 +147,7 @@ func (s Snapshot) Availability(a Action) Availability {
 		supported = desktop
 	case Sessions, WorkspaceList:
 		supported = c.Shell
-	case FitDesktop, ActualPixels, FillDesktop, ZoomIn, ZoomOut, PanLeft, PanRight, PanUp, PanDown, CenterDesktop, HostInput:
+	case FitDesktop, ActualPixels, SnapDesktop, FillDesktop, ZoomIn, ZoomOut, PanLeft, PanRight, PanUp, PanDown, CenterDesktop, HostInput:
 		supported = desktop
 	case SpecialKeys:
 		supported, needsLive, mutatesGuest = desktop && c.SpecialKeys, true, true
@@ -169,6 +170,9 @@ func (s Snapshot) Availability(a Action) Availability {
 	}
 	if !supported {
 		return Availability{}
+	}
+	if a == SnapDesktop && s.Fullscreen {
+		return Availability{Visible: true, Reason: "windowedOnly"}
 	}
 	if mutatesGuest && s.Role == Observer {
 		return Availability{Visible: true, Reason: "viewOnly"}

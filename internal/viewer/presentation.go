@@ -3,7 +3,39 @@
 
 package viewer
 
-import "github.com/kube-workspaces/desktop-client/internal/connection"
+import (
+	"math"
+
+	"github.com/kube-workspaces/desktop-client/internal/connection"
+)
+
+// snapWindow shrinks or expands the content viewport to the whole displayed
+// desktop, retaining the current scale and leaving the guest resolution alone.
+// SetSize takes window coordinates; presentation rectangles use drawable pixels.
+// Chrome adds its own height after that conversion.
+func (p *presentation) snapWindow(be Backend, srcW, srcH, dstW, dstH int) error {
+	r := p.rectangle(srcW, srcH, dstW, dstH)
+	if r.Empty() || be.Fullscreen() {
+		return nil
+	}
+	// Fill rounds outward; an already snug viewport may therefore differ by
+	// one pixel. Do not grow it by that rounding pixel on every Snap click.
+	if p.modeName() == "fill" && r.W-dstW <= 1 && r.H-dstH <= 1 {
+		p.panX, p.panY = 0, 0
+		return nil
+	}
+	scale := be.ScaleFactor()
+	if scale <= 0 {
+		scale = 1
+	}
+	w := max(1, int(math.Round(float64(r.W)/scale)))
+	h := max(1, int(math.Round(float64(r.H)/scale)))
+	if err := be.SetSize(w, h); err != nil {
+		return err
+	}
+	p.panX, p.panY = 0, 0
+	return nil
+}
 
 // presentation is client-only geometry in drawable pixels. The exact same
 // rectangle drives rendering and MapToSource, including cropped/negative edges.

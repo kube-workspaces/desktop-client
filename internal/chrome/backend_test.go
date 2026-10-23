@@ -4,6 +4,7 @@
 package chrome
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -11,6 +12,32 @@ import (
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
+
+type scaledSurface struct {
+	surface
+	scale float64
+}
+
+func (s *scaledSurface) ScaleFactor() float64 { return s.scale }
+func (s *scaledSurface) SetSize(w, h int) error {
+	s.w, s.h = int(math.Round(float64(w)*s.scale)), int(math.Round(float64(h)*s.scale))
+	return nil
+}
+
+func TestSetSizePreservesContentAndToolbarAtDisplayScale(t *testing.T) {
+	for _, scale := range []float64{1, 1.5, 2} {
+		s := &scaledSurface{surface: surface{w: 2400, h: 1800}, scale: scale}
+		b := New(s)
+		b.render(time.Now(), nil)
+		if err := b.SetSize(int(1920/scale), int(1080/scale)); err != nil {
+			t.Fatal(err)
+		}
+		w, h := b.Size()
+		if w != 1920 || h < 1079 || h > 1081 {
+			t.Fatalf("scale=%v: content=%dx%d toolbar=%d", scale, w, h, b.layout.Content.Y)
+		}
+	}
+}
 
 type surface struct {
 	viewer.Backend

@@ -767,8 +767,8 @@ func (b *SDLBackend) ScaleFactor() float64 {
 	return float64(b.outW) / float64(b.winW)
 }
 
-// SetSize resizes the window, which the viewer does once, when the first
-// connection reveals the guest's resolution.
+// SetSize resizes the window in window coordinates, on initial connection or
+// an explicit Snap request.
 func (b *SDLBackend) SetSize(w, h int) error {
 	if b.window == nil || w <= 0 || h <= 0 {
 		return nil

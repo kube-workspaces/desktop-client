@@ -69,6 +69,8 @@ var english = map[string]string{
 	"toolbar.scaleCurrent":          "Current view",
 	"toolbar.localScaleHint":        "Local scaling; keeps guest resolution",
 	"toolbar.actual-pixels":         "Actual pixels (100%)",
+	"toolbar.snap-desktop":          "Snap window to desktop",
+	"toolbar.windowedOnly":          "Windowed mode only",
 	"toolbar.fill-desktop":          "Fill (crop)",
 	"toolbar.zoom-in":               "Zoom in (+25%)",
 	"toolbar.zoom-out":              "Zoom out (−25%)",

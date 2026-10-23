@@ -8,6 +8,7 @@ package chrome
 import (
 	"fmt"
 	"image"
+	"math"
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/connection"
@@ -276,7 +277,11 @@ func (b *Backend) Size() (int, int) {
 
 func (b *Backend) SetSize(w, h int) error {
 	if !b.Fullscreen() {
-		h += b.layout.Content.Y
+		scale := b.ScaleFactor()
+		if scale <= 0 {
+			scale = 1
+		}
+		h += int(math.Round(float64(b.layout.Content.Y) / scale))
 	}
 	err := b.Backend.SetSize(w, h)
 	b.render(time.Now(), nil)

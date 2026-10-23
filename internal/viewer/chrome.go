@@ -223,6 +223,16 @@ func (v *Viewer) connectionAction(a connection.Action) error {
 		return nil
 	}
 	srcW, srcH := v.sourceSize()
+	if a == connection.SnapDesktop {
+		v.resizeDisabled, v.resizePending = true, false
+		if err := v.view.snapWindow(v.be, srcW, srcH, v.winW, v.winH); err != nil {
+			return err
+		}
+		v.winW, v.winH = v.be.Size()
+		v.updatePresent()
+		v.markPresent()
+		return nil
+	}
 	if v.view.action(a, srcW, srcH, v.winW, v.winH) {
 		if selectsPresentation(a) {
 			v.resizeDisabled, v.resizePending = true, false
@@ -392,6 +402,15 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 
 func (w *tier1Window) connectionAction(a connection.Action) error {
 	if !w.connectionSnapshot().Availability(a).Enabled {
+		return nil
+	}
+	if a == connection.SnapDesktop {
+		w.opts.NoResize, w.resizePending = true, false
+		if err := w.view.snapWindow(w.be, w.texW, w.texH, w.winW, w.winH); err != nil {
+			return err
+		}
+		w.winW, w.winH = w.be.Size()
+		w.present = w.view.rectangle(w.texW, w.texH, w.winW, w.winH)
 		return nil
 	}
 	if w.view.action(a, w.texW, w.texH, w.winW, w.winH) {

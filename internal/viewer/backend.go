@@ -354,9 +354,9 @@ type Backend interface {
 	// is sufficient; there is no separate scale event to watch.
 	ScaleFactor() float64
 
-	// SetSize resizes the window.
+	// SetSize resizes the window in window coordinates, like WindowOptions.
 	//
-	// The viewer calls it at most once per session: the window now opens
+	// The viewer calls it on Snap and when the first guest connects: the window opens
 	// before the first connection exists — so that a session waiting for a
 	// busy display is visible and closable — and the guest's resolution is
 	// only learned when that connection arrives. A backend whose size is not

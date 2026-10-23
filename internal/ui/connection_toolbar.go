@@ -279,7 +279,7 @@ func toolbarScale(s connection.Snapshot) string {
 // from the guest-resize switch and remain usable on short/narrow windows.
 func (t *ConnectionToolbar) scalingPanel(ctx *Context, bar, bounds Rect, s connection.Snapshot) (Rect, connection.Action) {
 	th := ctx.Theme
-	actions := []connection.Action{connection.FitDesktop, connection.ActualPixels, connection.ZoomOut, connection.ZoomIn, connection.FillDesktop, connection.CenterDesktop, connection.PanLeft, connection.PanRight, connection.PanUp, connection.PanDown}
+	actions := []connection.Action{connection.FitDesktop, connection.ActualPixels, connection.ZoomOut, connection.ZoomIn, connection.FillDesktop, connection.SnapDesktop, connection.CenterDesktop, connection.PanLeft, connection.PanRight, connection.PanUp, connection.PanDown}
 	lineH := LineHeight(th.Small, th.Font)
 	panel, rowH := scalingPanelGeometry(ctx, bar, bounds)
 	ctx.Canvas.FillRounded(panel, th.Radius, th.Surface)
@@ -299,7 +299,7 @@ func (t *ConnectionToolbar) scalingPanel(ctx *Context, bar, bounds Rect, s conne
 			requested = a
 		}
 	}
-	Label(ctx, Rect{X: inner.X, Y: inner.Y + 5*(rowH+th.Gap), W: inner.W, H: lineH}, i18n.Get("toolbar.scaleCurrent")+": "+toolbarScale(s), LabelStyle{Scale: th.Small})
+	Label(ctx, Rect{X: inner.X, Y: inner.Y + 6*(rowH+th.Gap), W: inner.W, H: lineH}, i18n.Get("toolbar.scaleCurrent")+": "+toolbarScale(s), LabelStyle{Scale: th.Small})
 	return panel, requested
 }
 
@@ -307,8 +307,8 @@ func scalingPanelGeometry(ctx *Context, bar, bounds Rect) (Rect, int) {
 	th := ctx.Theme
 	w := min(bar.W, 14*th.ControlHeight)
 	lineH := LineHeight(th.Small, th.Font)
-	rowH := min(th.ControlHeight, max(lineH+2, (bounds.H-2*th.Pad-2*lineH)/5-th.Gap))
-	panelH := 5*(rowH+th.Gap) + 2*th.Pad + 2*lineH
+	rowH := min(th.ControlHeight, max(lineH+2, (bounds.H-2*th.Pad-2*lineH)/6-th.Gap))
+	panelH := 6*(rowH+th.Gap) + 2*th.Pad + 2*lineH
 	y := max(bounds.Y, min(bar.Y+bar.H+th.Gap, bounds.Y+bounds.H-panelH))
 	return Rect{X: bar.X + bar.W - w, Y: y, W: w, H: panelH}, rowH
 }
