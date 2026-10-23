@@ -4,11 +4,35 @@ import (
 	"context"
 	"errors"
 	"image"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/agent"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 )
+
+func TestAgentResizeResultPairingRejectionAndTimeout(t *testing.T) {
+	in := &agentInput{resizeID: "new", resizeDeadline: time.Now().Add(42 * time.Second), resizeStatus: "requesting"}
+	in.resizeResult("old", map[string]any{"reason": "stale"})
+	if busy, note := in.ResizeState(); !busy || note != "requesting" {
+		t.Fatal("stale result completed new request")
+	}
+	in.resizeResult("new", map[string]any{"reason": "display-mode-unsupported:-2"})
+	if busy, note := in.ResizeState(); busy || !strings.Contains(note, "display-mode-unsupported:-2") {
+		t.Fatalf("rejection hidden: %v %s", busy, note)
+	}
+	in.resizeID = "timeout"
+	in.resizeDeadline = time.Now().Add(-time.Second)
+	if busy, note := in.ResizeState(); busy || !strings.Contains(note, "timed out") {
+		t.Fatalf("timeout kept queue blocked: %v %s", busy, note)
+	}
+	in.resizeID = "actual"
+	in.resizeResult("actual", map[string]any{"actual": map[string]any{"width": float64(1920), "height": float64(1080)}})
+	if busy, note := in.ResizeState(); busy || !strings.Contains(note, "1920×1080") {
+		t.Fatalf("readback lost: %v %s", busy, note)
+	}
+}
 
 func TestMapAgentResultClasses(t *testing.T) {
 	if err := MapAgentResult(context.Background(), nil); err != nil {

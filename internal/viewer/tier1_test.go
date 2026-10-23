@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/rfb"
 )
@@ -983,7 +984,7 @@ func TestTier1SinkGuestSizeRoundtrip(t *testing.T) {
 	}
 }
 
-func TestTier1WindowFollowsGuestActual(t *testing.T) {
+func TestAgentResizeKeepsHostWindowAndRecordsGuestActual(t *testing.T) {
 	be := newFakeBackend(1146, 736)
 	inp := &recordInput{}
 	sink := &Tier1Sink{}
@@ -991,13 +992,13 @@ func TestTier1WindowFollowsGuestActual(t *testing.T) {
 		haveFrame: true, opts: Tier1Config{Transport: "Agent"}}
 	w.opts.applyDefaults()
 	now := time.Now()
-	// Guest lands smaller; the next step shrinks the window to it.
+	// A guest mode change must not resize the host and feed back into Auto.
 	sink.GuestSize(800, 600)
 	if err := w.step(now); err != nil {
 		t.Fatal(err)
 	}
-	if w.winW != 800 || w.winH != 600 {
-		t.Fatalf("window = %dx%d, want fitted 800x600", w.winW, w.winH)
+	if w.winW != 1146 || w.winH != 736 {
+		t.Fatalf("window = %dx%d, want preserved 1146x736", w.winW, w.winH)
 	}
 	if w.ackedW != 800 || w.ackedH != 600 {
 		t.Fatalf("acked = %dx%d, want 800x600", w.ackedW, w.ackedH)
@@ -1021,6 +1022,52 @@ func TestTier1WindowFollowsGuestActual(t *testing.T) {
 	}
 	if len(inp.resizes) != 1 || inp.resizes[0] != (resizeCall{1920, 1080}) {
 		t.Fatalf("guest resize calls = %v, want one 1920x1080", inp.resizes)
+	}
+}
+
+type busyModesInput struct {
+	modesInput
+	busy bool
+}
+
+func (in *busyModesInput) ResizeState() (bool, string) { return in.busy, "" }
+
+func TestAgentFixedResolutionSurvivesWindowChangesAndQueuesNewest(t *testing.T) {
+	in := &busyModesInput{modesInput: modesInput{modes: [][2]int{{1280, 720}, {1920, 1080}}}}
+	w := &tier1Window{be: newFakeBackend(1280, 800), inp: in, sink: &Tier1Sink{}, winW: 1280, winH: 800, texW: 1280, texH: 720, haveFrame: true, opts: Tier1Config{Transport: "Agent"}}
+	w.opts.applyDefaults()
+	// An off-list fixed request is exact; it is not silently snapped to 1080p.
+	manual := connection.DisplayMode{Width: 1440, Height: 900}
+	if err := w.connectionAction(connection.ResolutionAction(manual)); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := w.handleEvent(now, EventResize{W: 900, H: 600}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.applyGuestResize(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.resizes) != 1 || in.resizes[0] != (resizeCall{1440, 900}) {
+		t.Fatalf("fixed mode changed: %v", in.resizes)
+	}
+	in.busy = true
+	if err := w.connectionAction(connection.ResolutionAuto); err != nil {
+		t.Fatal(err)
+	}
+	w.scheduleGuestResize(now, 1920, 980)
+	if err := w.applyGuestResize(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.resizes) != 1 || !w.resizePending {
+		t.Fatal("interrupted in-flight switch")
+	}
+	in.busy = false
+	if err := w.applyGuestResize(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.resizes) != 2 || in.resizes[1] != (resizeCall{1920, 1080}) {
+		t.Fatalf("latest Auto size lost: %v", in.resizes)
 	}
 }
 

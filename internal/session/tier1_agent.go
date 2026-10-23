@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kube-workspaces/desktop-client/internal/agent"
+	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
@@ -112,6 +113,9 @@ type agentInput struct {
 	x, y                    int
 	videoWidth, videoHeight int
 	modes                   [][2]int
+	resizeID                string
+	resizeDeadline          time.Time
+	resizeStatus            string
 	// deskRequired/deskReason hold the latest input-desktop classification the
 	// guest reported, so the premium window can explain blocked input (a
 	// higher-integrity foreground window the agent cannot inject into).
@@ -127,6 +131,7 @@ func (in *agentInput) attach(session *agent.Session) {
 	in.videoWidth, in.videoHeight = 0, 0
 	in.modes = nil
 	in.deskRequired, in.deskReason = false, ""
+	in.resizeID, in.resizeStatus = "", ""
 	if session != nil {
 		in.videoWidth, in.videoHeight = session.CaptureSize()
 		in.modes = session.DisplayModes()
@@ -481,6 +486,7 @@ func produceAgentMode(ctx context.Context, client *kwclient.Client, ns, name, pa
 			}
 		},
 		OnResizeResult: func(id string, payload map[string]any) {
+			input.resizeResult(id, payload)
 			if actual, ok := payload["actual"].(map[string]any); ok && payload["codecReconfigured"] == true && payload["idrSent"] == true {
 				if width, height := agent.Dimensions(actual); width != 0 && height != 0 {
 					input.mu.Lock()
@@ -650,13 +656,54 @@ func WatchAgentDesktop(ctx context.Context, client *kwclient.Client, ns, name st
 // Resize asks the guest to adopt the window size; the ACK pairs by id.
 func (in *agentInput) Resize(w, h int) error {
 	in.mu.Lock()
+	defer in.mu.Unlock()
 	session := in.session
-	in.mu.Unlock()
 	if session == nil {
 		return ErrAgentInputPending
 	}
 	if !session.ResizeAvailable() {
 		return ErrAgentInputPending
 	}
-	return session.RequestResize(fmt.Sprintf("resize-%dx%d-%d", w, h, time.Now().UnixMilli()), w, h)
+	id := fmt.Sprintf("resize-%dx%d-%d", w, h, time.Now().UnixMilli())
+	if err := session.RequestResize(id, w, h); err != nil {
+		return err
+	}
+	in.resizeID, in.resizeDeadline = id, time.Now().Add(42*time.Second)
+	in.resizeStatus = fmt.Sprintf(i18n.Get("toolbar.resolutionRequest"), connection.DisplayMode{Width: w, Height: h})
+	return nil
+}
+
+// ResizeState serializes mode switches within the guest's full warmup budget.
+// A timeout releases the queue without claiming that the requested mode landed.
+func (in *agentInput) ResizeState() (bool, string) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.resizeID != "" && time.Now().After(in.resizeDeadline) {
+		in.resizeID = ""
+		in.resizeStatus = i18n.Get("toolbar.resolutionTimeout")
+	}
+	return in.resizeID != "", in.resizeStatus
+}
+
+func (in *agentInput) resizeResult(id string, payload map[string]any) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if id != in.resizeID {
+		return
+	}
+	in.resizeID = ""
+	actual, _ := payload["actual"].(map[string]any)
+	w, h := agent.Dimensions(actual)
+	reason, _ := payload["reason"].(string)
+	if w > 0 && h > 0 {
+		in.resizeStatus = fmt.Sprintf(i18n.Get("toolbar.resolutionActual"), connection.DisplayMode{Width: w, Height: h})
+		if reason != "" {
+			in.resizeStatus += " (" + reason + ")"
+		}
+	} else {
+		if reason == "" {
+			reason = "no guest readback"
+		}
+		in.resizeStatus = fmt.Sprintf(i18n.Get("toolbar.resolutionRejected"), reason)
+	}
 }

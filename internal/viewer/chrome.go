@@ -379,6 +379,14 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 		AudioLive:    w.audioLive(),
 		Capabilities: connection.Capabilities{SpecialKeys: specialKeys, ClipboardSync: clipboardSync, GuestResize: guestResize, Audio: w.audioPresent(), TransportToggle: w.opts.CanSwitchTransport}}
 	if transport == "Agent" {
+		snap.Capabilities.ResolutionSelection = true
+		snap.Resolution = w.resolution
+		if modes, ok := w.inp.(interface{ DisplayModes() [][2]int }); ok {
+			snap.ResolutionChoices = connection.ResolutionChoices(modes.DisplayModes())
+		}
+		if state, ok := w.inp.(interface{ ResizeState() (bool, string) }); ok {
+			_, snap.ResolutionStatus = state.ResizeState()
+		}
 		if dbg, ok := w.inp.(agentDebugger); ok && dbg != nil {
 			if counters, live := dbg.DebugCounters(); live {
 				snap.BytesIn, snap.BytesOut = counters.MediaBytes, counters.ControlBytes
@@ -402,6 +410,13 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 
 func (w *tier1Window) connectionAction(a connection.Action) error {
 	if !w.connectionSnapshot().Availability(a).Enabled {
+		return nil
+	}
+	if mode, fixed := connection.ParseResolution(a); fixed || a == connection.ResolutionAuto {
+		w.resolution = mode
+		w.opts.NoResize = false
+		w.initialResizeDone = true
+		w.scheduleGuestResize(time.Now(), w.winW, w.winH)
 		return nil
 	}
 	if a == connection.SnapDesktop {

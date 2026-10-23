@@ -5,7 +5,10 @@
 // on a windowing toolkit, workspace API or transport implementation.
 package connection
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // Surface is the connection view, independent of the workspace's CR type.
 type Surface string
@@ -50,7 +53,8 @@ type Capabilities struct {
 	// VM session offers beside the premium agent transport: the toolbar button
 	// swaps between the agent (view, lower latency) and the authenticated RFB
 	// console (interactive on the secure desktop and elevated windows).
-	TransportToggle bool
+	TransportToggle     bool
+	ResolutionSelection bool
 }
 
 // Snapshot is an immutable copy of the state the toolbar draws this frame.
@@ -66,22 +70,25 @@ type Snapshot struct {
 	Role      Role
 	Transport string
 	// ProtectedDesktop keeps the console selected while Windows owns secure UI.
-	ProtectedDesktop bool
-	Tier             string // "Tier 0" or "Tier 1", classified by the adapter
-	Proto            string // wire detail, e.g. "RFB over WebSocket"
-	Capabilities     Capabilities
-	Fullscreen       bool
-	Clipboard        bool
-	ResizeGuest      bool
-	ScaleMode        string // fit, zoom (including actual pixels), or fill
-	ZoomPercent      int
-	Muted            bool
-	AudioLive        bool // negotiated/open and unmuted
-	FPS, Kbps        float64
-	HasMetrics       bool
-	BytesIn          uint64
-	BytesOut         uint64
-	HasActivity      bool
+	ProtectedDesktop  bool
+	Tier              string // "Tier 0" or "Tier 1", classified by the adapter
+	Proto             string // wire detail, e.g. "RFB over WebSocket"
+	Capabilities      Capabilities
+	Fullscreen        bool
+	Clipboard         bool
+	ResizeGuest       bool
+	ScaleMode         string // fit, zoom (including actual pixels), or fill
+	ZoomPercent       int
+	Resolution        DisplayMode // zero means Auto; independent of local scale
+	ResolutionChoices []ResolutionChoice
+	ResolutionStatus  string
+	Muted             bool
+	AudioLive         bool // negotiated/open and unmuted
+	FPS, Kbps         float64
+	HasMetrics        bool
+	BytesIn           uint64
+	BytesOut          uint64
+	HasActivity       bool
 	// Extra holds adapter detail rows (label, value) in display order,
 	// e.g. framebuffer size, encoding mix, agent video/audio counters.
 	Extra [][2]string
@@ -91,26 +98,27 @@ type Snapshot struct {
 type Action string
 
 const (
-	Fullscreen    Action = "fullscreen"
-	Sessions      Action = "sessions"
-	WorkspaceList Action = "workspace-list"
-	Disconnect    Action = "disconnect"
-	SpecialKeys   Action = "special-keys"
-	ClipboardSync Action = "clipboard-sync"
-	FitDesktop    Action = "fit-desktop"
-	ActualPixels  Action = "actual-pixels"
-	SnapDesktop   Action = "snap-desktop"
-	FillDesktop   Action = "fill-desktop"
-	ZoomIn        Action = "zoom-in"
-	ZoomOut       Action = "zoom-out"
-	PanLeft       Action = "pan-left"
-	PanRight      Action = "pan-right"
-	PanUp         Action = "pan-up"
-	PanDown       Action = "pan-down"
-	CenterDesktop Action = "center-desktop"
-	GuestResize   Action = "guest-resize"
-	Audio         Action = "audio"
-	SharedControl Action = "shared-control"
+	Fullscreen      Action = "fullscreen"
+	Sessions        Action = "sessions"
+	WorkspaceList   Action = "workspace-list"
+	Disconnect      Action = "disconnect"
+	SpecialKeys     Action = "special-keys"
+	ClipboardSync   Action = "clipboard-sync"
+	FitDesktop      Action = "fit-desktop"
+	ActualPixels    Action = "actual-pixels"
+	SnapDesktop     Action = "snap-desktop"
+	FillDesktop     Action = "fill-desktop"
+	ZoomIn          Action = "zoom-in"
+	ZoomOut         Action = "zoom-out"
+	PanLeft         Action = "pan-left"
+	PanRight        Action = "pan-right"
+	PanUp           Action = "pan-up"
+	PanDown         Action = "pan-down"
+	CenterDesktop   Action = "center-desktop"
+	GuestResize     Action = "guest-resize"
+	GuestResolution Action = "guest-resolution"
+	Audio           Action = "audio"
+	SharedControl   Action = "shared-control"
 	// ToggleTransport swaps a Windows VM session between the premium agent
 	// transport and the authenticated RFB console in place.
 	ToggleTransport Action = "toggle-transport"
@@ -155,6 +163,8 @@ func (s Snapshot) Availability(a Action) Availability {
 		supported, needsLive, mutatesGuest = desktop && c.ClipboardSync, true, true
 	case GuestResize:
 		supported, needsLive, mutatesGuest = desktop && c.GuestResize, true, true
+	case GuestResolution, ResolutionAuto:
+		supported, needsLive, mutatesGuest = desktop && c.GuestResize && c.ResolutionSelection, true, true
 	case Audio:
 		supported, needsLive = desktop && c.Audio, true
 	case SharedControl:
@@ -167,6 +177,10 @@ func (s Snapshot) Availability(a Action) Availability {
 		supported, needsLive, mutatesGuest = desktop && c.TypeClipboard, true, true
 	case CopySelection:
 		supported = terminal && c.CopySelection
+	default:
+		if _, ok := ParseResolution(a); ok {
+			supported, needsLive, mutatesGuest = desktop && c.GuestResize && c.ResolutionSelection, true, true
+		}
 	}
 	if !supported {
 		return Availability{}
@@ -210,7 +224,8 @@ func (s Snapshot) Equal(o Snapshot) bool {
 		s.AudioLive != o.AudioLive || s.FPS != o.FPS || s.Kbps != o.Kbps ||
 		s.HasMetrics != o.HasMetrics || s.BytesIn != o.BytesIn ||
 		s.BytesOut != o.BytesOut || s.HasActivity != o.HasActivity ||
-		len(s.Extra) != len(o.Extra) {
+		s.Resolution != o.Resolution || s.ResolutionStatus != o.ResolutionStatus ||
+		!slices.Equal(s.ResolutionChoices, o.ResolutionChoices) || len(s.Extra) != len(o.Extra) {
 		return false
 	}
 	for i := range s.Extra {

@@ -695,6 +695,7 @@ type tier1Window struct {
 	resizeW, resizeH int
 	resizeDue        time.Time
 	resizePending    bool
+	resolution       connection.DisplayMode
 	// initialResizeDone records the one-shot first-frame guest steer, so a
 	// fresh window asks once and later frames never re-ask.
 	initialResizeDone bool
@@ -912,7 +913,7 @@ func (w *tier1Window) onGuestSize(gw, gh int) {
 		return
 	}
 	w.ackedW, w.ackedH = gw, gh
-	if w.pinned || w.be.Fullscreen() {
+	if w.pinned || w.be.Fullscreen() || w.opts.Transport == "Agent" {
 		return
 	}
 	if gw == w.winW && gh == w.winH {
@@ -1227,7 +1228,11 @@ func (w *tier1Window) scheduleGuestResize(now time.Time, width, height int) {
 	if w.opts.NoResize {
 		return
 	}
-	width, height = width&^1, height&^1
+	if w.resolution.Valid() {
+		width, height = w.resolution.Width, w.resolution.Height
+	} else {
+		width, height = width&^1, height&^1
+	}
 	if width <= 0 || height <= 0 {
 		return
 	}
@@ -1247,18 +1252,29 @@ func (w *tier1Window) applyGuestResize(now time.Time) error {
 	if !w.resizePending || now.Before(w.resizeDue) {
 		return nil
 	}
+	// A mode switch can take forty seconds on Windows. Keep only the newest
+	// desired size while that transaction is in flight instead of interrupting it.
+	if state, ok := w.inp.(interface{ ResizeState() (bool, string) }); ok {
+		if busy, _ := state.ResizeState(); busy {
+			w.resizeDue = now.Add(100 * time.Millisecond)
+			return nil
+		}
+	}
 	// Snap the debounced size to the nearest advertised mode that fits:
 	// odd window-chrome sizes (e.g. 1282x808) then follow the guest's real
 	// 1280x800 instead of NACKing. Guests that advertise nothing keep the
 	// requested size exactly as before.
-	if modes, ok := w.inp.(interface{ DisplayModes() [][2]int }); ok {
-		if nw, nh, found := nearestMode(modes.DisplayModes(), w.resizeW, w.resizeH, false); found {
+	if modes, ok := w.inp.(interface{ DisplayModes() [][2]int }); ok && !w.resolution.Valid() {
+		if mode, found := connection.ClosestMode(modes.DisplayModes(), w.resizeW, w.resizeH); found {
+			nw, nh := mode.Width, mode.Height
 			if nw != w.resizeW || nh != w.resizeH {
 				w.opts.logf("snapping guest resize %dx%d to advertised %dx%d", w.resizeW, w.resizeH, nw, nh)
 			}
 			w.resizeW, w.resizeH = nw, nh
 		}
 	}
+	w.resizeW = max(320, min(8192, w.resizeW))
+	w.resizeH = max(200, min(8192, w.resizeH))
 	// The guest already shows this size: our own programmatic resize echo,
 	// or a reconnect re-ask of a kept mode. Asking again would only flicker
 	// it through another mode cycle plus IDR.

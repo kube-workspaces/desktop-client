@@ -4,11 +4,45 @@
 package ui
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/keysym"
 )
+
+func TestResolutionPanelDispatchesFixedGuestPixelsAndGatesObservers(t *testing.T) {
+	for _, size := range [][2]int{{640, 480}, {1280, 720}} {
+		h := newHarness(size[0], size[1])
+		bar := &ConnectionToolbar{Menu: "resolution"}
+		s := connection.Snapshot{Surface: connection.Desktop, State: connection.Connected, ResizeGuest: true, Capabilities: connection.Capabilities{GuestResize: true, ResolutionSelection: true}, ResolutionChoices: connection.ResolutionChoices([][2]int{{1920, 1080}})}
+		var layout ToolbarLayout
+		var requested connection.Action
+		body := func(ctx *Context) { layout, requested = bar.Layout(ctx, Rect{W: size[0], H: size[1]}, s) }
+		h.frame(nil, body)
+		if layout.Panel.Y < 0 || layout.Panel.Y+layout.Panel.H > size[1] {
+			t.Fatalf("panel out of bounds: %+v", layout)
+		}
+		index := 0
+		for i, choice := range s.ResolutionChoices {
+			if choice.Width == 1920 && choice.Height == 1080 {
+				index = i + 1
+			}
+		}
+		h.ctx.Focus().Set(FocusID("toolbar-resolution-" + strconv.Itoa(index)))
+		h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+		if requested != connection.ResolutionAction(connection.DisplayMode{Width: 1920, Height: 1080}) {
+			t.Fatalf("fixed selection lost: %s", requested)
+		}
+		s.Role = connection.Observer
+		h.frame(nil, body)
+		h.ctx.Focus().Set("toolbar-resolution-0")
+		h.frame([]Event{keyDown(keysym.KeyReturn, keysym.ModNone)}, body)
+		if requested != "" {
+			t.Fatalf("observer dispatched %s", requested)
+		}
+	}
+}
 
 func TestConnectionToolbarFullscreenDoesNotResizeContent(t *testing.T) {
 	for _, mode := range []Mode{ModeDark, ModeLight, ModeHighContrast} {

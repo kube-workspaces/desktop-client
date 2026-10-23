@@ -5,6 +5,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/i18n"
@@ -42,6 +43,9 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	}
 	if s.Surface == connection.Desktop {
 		wideItems = append(wideItems, toolbarItem{menu: "scaling"})
+	}
+	if s.Availability(connection.GuestResolution).Visible {
+		wideItems = append(wideItems, toolbarItem{menu: "resolution"})
 	}
 	wideItems = append(wideItems, toolbarItem{action: connection.Fullscreen}, toolbarItem{menu: "tools"}, toolbarItem{menu: "connection"})
 	if s.Availability(connection.Debug).Visible {
@@ -115,8 +119,11 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	}
 	var requested connection.Action
 	input := ctx.Input
-	if t.Menu == "scaling" {
+	if t.Menu == "scaling" || t.Menu == "resolution" {
 		panel, _ := scalingPanelGeometry(ctx, bar, bounds)
+		if t.Menu == "resolution" {
+			panel, _ = resolutionPanelGeometry(ctx, bar, bounds, len(s.ResolutionChoices)+1)
+		}
 		if input.HasMouse && panel.Contains(input.Mouse.X, input.Mouse.Y) {
 			// An upward-floating panel owns its pixels even where it overlaps
 			// toolbar buttons. Never dispatch a covered disconnect/fullscreen.
@@ -147,6 +154,10 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		out.Panel, requested = t.scalingPanel(ctx, bar, bounds, s)
 		return out, requested
 	}
+	if t.Menu == "resolution" {
+		out.Panel, requested = t.resolutionPanel(ctx, bar, bounds, s)
+		return out, requested
+	}
 
 	panelItems := []toolbarItem{}
 	if t.Menu == "tools" {
@@ -154,6 +165,9 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 			panelItems = append(panelItems, toolbarItem{menu: "connection"})
 			if s.Surface == connection.Desktop {
 				panelItems = append(panelItems, toolbarItem{menu: "scaling"})
+			}
+			if s.Availability(connection.GuestResolution).Visible {
+				panelItems = append(panelItems, toolbarItem{menu: "resolution"})
 			}
 			if s.Fullscreen {
 				panelItems = append(panelItems, toolbarItem{menu: "pin"})
@@ -225,6 +239,13 @@ func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scal
 	if item.menu == "scaling" {
 		label += ": " + toolbarScale(s)
 	}
+	if item.menu == "resolution" {
+		policy := i18n.Get("toolbar.resolutionAuto")
+		if s.Resolution.Valid() {
+			policy = s.Resolution.String()
+		}
+		label += ": " + policy
+	}
 	switch item.action {
 	case connection.Fullscreen:
 		if s.Fullscreen {
@@ -262,6 +283,52 @@ func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scal
 		b.Variant = ButtonDanger
 	}
 	return b
+}
+
+func resolutionPanelGeometry(ctx *Context, bar, bounds Rect, count int) (Rect, int) {
+	th := ctx.Theme
+	rows := (count + 2) / 3
+	lineH := LineHeight(th.Small, th.Font)
+	rowH := min(th.ControlHeight, max(lineH+2, (bounds.H-2*th.Pad-3*lineH)/max(1, rows)-th.Gap))
+	panelH := rows*(rowH+th.Gap) + 2*th.Pad + 3*lineH
+	w := min(bar.W, 20*th.ControlHeight)
+	y := max(bounds.Y, min(bar.Y+bar.H+th.Gap, bounds.Y+bounds.H-panelH))
+	return Rect{X: bar.X + bar.W - w, Y: y, W: w, H: panelH}, rowH
+}
+
+func (t *ConnectionToolbar) resolutionPanel(ctx *Context, bar, bounds Rect, s connection.Snapshot) (Rect, connection.Action) {
+	th := ctx.Theme
+	panel, rowH := resolutionPanelGeometry(ctx, bar, bounds, len(s.ResolutionChoices)+1)
+	ctx.Canvas.FillRounded(panel, th.Radius, th.Surface)
+	ctx.Canvas.StrokeRounded(panel, th.Radius, th.BorderWidth, th.Border)
+	inner := Inset(panel, th.Pad)
+	lineH := LineHeight(th.Small, th.Font)
+	Label(ctx, Rect{X: inner.X, Y: inner.Y, W: inner.W, H: lineH}, i18n.Get("toolbar.resolutionHint"), LabelStyle{Scale: th.Small})
+	inner.Y += lineH
+	w := (inner.W - 2*th.Gap) / 3
+	var requested connection.Action
+	for i := 0; i <= len(s.ResolutionChoices); i++ {
+		a, label, selected := connection.ResolutionAuto, i18n.Get("toolbar.resolutionAuto"), !s.Resolution.Valid() && s.ResizeGuest
+		if i > 0 {
+			choice := s.ResolutionChoices[i-1]
+			a, label, selected = connection.ResolutionAction(choice.DisplayMode), choice.String(), s.Resolution == choice.DisplayMode
+			if choice.Advertised {
+				label += " *"
+			}
+		}
+		b := Button{ID: FocusID("toolbar-resolution-" + strconv.Itoa(i)), Text: label, Scale: th.Small, Variant: ButtonSecondary, Disabled: !s.Availability(a).Enabled}
+		if selected {
+			b.Variant = ButtonPrimary
+		}
+		r := Rect{X: inner.X + (i%3)*(w+th.Gap), Y: inner.Y + (i/3)*(rowH+th.Gap), W: w, H: rowH}
+		if b.Layout(ctx, r) {
+			requested = a
+		}
+	}
+	y := inner.Y + ((len(s.ResolutionChoices)+3)/3)*(rowH+th.Gap)
+	Label(ctx, Rect{X: inner.X, Y: y, W: inner.W, H: lineH}, i18n.Get("toolbar.resolutionAdvertised"), LabelStyle{Scale: th.Small})
+	Label(ctx, Rect{X: inner.X, Y: y + lineH, W: inner.W, H: lineH}, s.ResolutionStatus, LabelStyle{Scale: th.Small})
+	return panel, requested
 }
 
 func toolbarScale(s connection.Snapshot) string {
