@@ -163,6 +163,7 @@ func (in *agentInput) DebugCounters() (viewer.AgentCounters, bool) {
 	counters := in.session.Counters()
 	captureW, captureH := in.session.CaptureSize()
 	return viewer.AgentCounters{
+		Video:         viewer.AgentVideoDetails(in.session.VideoDetails()),
 		CaptureW:      captureW,
 		CaptureH:      captureH,
 		ControlFrames: counters.ControlFrames,

@@ -139,6 +139,8 @@ func DecodeTicket(signed string) (string, Ticket, error) {
 // It owns no UI and no decoders; media bytes are counted here and handed to
 // the presenter layer by the caller.
 type Session struct {
+	videoMu       sync.Mutex
+	video         VideoDetails
 	conn          *wsio.Conn
 	session       string
 	sequence      uint64
@@ -306,6 +308,7 @@ func attachMode(conn *wsio.Conn, signed string, controlOnly, observer bool) (*Se
 		return nil, fmt.Errorf("agent: unexpected greeting %q", hello.Type)
 	}
 	session.session = hello.SessionID
+	session.updateVideo(hello.Payload)
 	session.clipboard, _ = hello.Payload["clipboardText"].(bool)
 	session.telemetry, _ = hello.Payload["telemetryAvailable"].(bool)
 	session.input, _ = hello.Payload["inputAvailable"].(bool)
@@ -511,6 +514,7 @@ func (s *Session) Run(callbacks Callbacks, deadline time.Time) error {
 			}
 			s.mutateCounters(func(c *Counters) { c.ControlFrames++ })
 			if message.Type == "telemetry" {
+				s.updateVideo(message.Payload)
 				if callbacks.OnTelemetry != nil {
 					callbacks.OnTelemetry(message.Payload)
 				}

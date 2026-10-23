@@ -99,6 +99,7 @@ type ContentClipper interface {
 // them without an import cycle: the window owns the presenter, the session
 // owns the transport.
 type AgentCounters struct {
+	Video              AgentVideoDetails
 	CaptureW, CaptureH int
 	ControlFrames      uint64
 	ControlBytes       uint64
@@ -110,6 +111,41 @@ type AgentCounters struct {
 	ResizeACKs         uint64
 	Keyframes          uint64
 	DisplayModes       int
+}
+
+// Active guest backends; separate from unobserved application rendering use.
+type AgentVideoDetails struct {
+	CaptureBackend, Output, Adapter string
+	VendorID, DeviceID              uint32
+	CaptureKnown, Software          bool
+	Encoder, Codec                  string
+	EncoderKnown, HardwareEncoder   bool
+}
+
+func agentVideoRows(v AgentVideoDetails) [][2]string {
+	backend, output, gpu, encoder := "Not reported by guest", "Not reported by guest", "Not reported by guest", "Not reported by guest"
+	if v.CaptureKnown {
+		backend, output = v.CaptureBackend, v.Output
+		kind := "hardware"
+		if v.Software {
+			kind = "software"
+		}
+		gpu = fmt.Sprintf("%s (%04x:%04x) · %s", v.Adapter, v.VendorID, v.DeviceID, kind)
+	}
+	if v.EncoderKnown {
+		kind := "software"
+		if v.HardwareEncoder {
+			kind = "hardware"
+		}
+		encoder = fmt.Sprintf("%s · %s · %s", v.Encoder, v.Codec, kind)
+	}
+	return [][2]string{
+		{"Capture backend", backend},
+		{"Capture output", output},
+		{"Capture GPU", gpu},
+		{"Video encoder", encoder},
+		{"Application 3D", "Not observed (capture adapter is not app GPU usage)"},
+	}
 }
 
 // agentDebugger is implemented by the session-owned agent input when the
@@ -339,12 +375,15 @@ func (w *tier1Window) connectionSnapshot() connection.Snapshot {
 				snap.HasActivity = true
 				snap.Extra = [][2]string{
 					{"Capture", formatFramebuffer(counters.CaptureW, counters.CaptureH)},
+				}
+				snap.Extra = append(snap.Extra, agentVideoRows(counters.Video)...)
+				snap.Extra = append(snap.Extra, [][2]string{
 					{"Video", formatAgentMedia(counters.VideoFrames, counters.VideoBytes)},
 					{"Audio", formatAgentMedia(counters.AudioFrames, counters.AudioBytes)},
 					{"Resize ACKs / keyframes", formatCountPair(counters.ResizeACKs, counters.Keyframes)},
 					{"Control frames", formatCount(counters.ControlFrames)},
 					{"Guest modes", formatCount(uint64(counters.DisplayModes))},
-				}
+				}...)
 			}
 		}
 	}

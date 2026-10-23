@@ -73,6 +73,20 @@ or AppImage, turn startup off and back on from its new location. Windows/macOS
 runtime acceptance for startup registration is still pending; all six shell
 targets are cross-build checked.
 
+## Desktop Debug video details
+
+In an agent/Tier 1 desktop, open **Debug** on the connection toolbar to see the
+capture backend, selected Windows output, capture GPU (including PCI IDs and
+hardware/software status), actual video encoder, capture dimensions and media
+counters. These fields update from the guest's hello/telemetry; older guests
+show **Not reported by guest**. Install a guest agent with video-backend telemetry
+to populate them.
+
+Capture GPU and encoder are separate: a hardware-backed display can still use
+software H.264 encoding. **Application 3D: Not observed** means the client has
+not measured which GPU a particular application uses; it does not infer that
+from the display adapter.
+
 ## Updates
 
 Release builds check GitHub Releases after the first shell frame, at most once
