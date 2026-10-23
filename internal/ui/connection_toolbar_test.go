@@ -44,6 +44,37 @@ func TestResolutionPanelDispatchesFixedGuestPixelsAndGatesObservers(t *testing.T
 	}
 }
 
+// Compact toolbars hide icon labels, so every icon-only control must explain
+// itself on hover. The owner also uses Tooltip to widen its chrome clip; a
+// hint drawn below the bar would otherwise be discarded with the glyph layer.
+func TestConnectionToolbarShowsTooltipForCompactIcons(t *testing.T) {
+	h := newHarness(1000, 240)
+	bar := &ConnectionToolbar{}
+	s := connection.Snapshot{
+		Workspace: "team/linux", Surface: connection.Desktop, State: connection.Connected,
+		Transport: "Agent", Clipboard: true, ResizeGuest: true, ScaleMode: "fit",
+		Resolution:   connection.DisplayMode{Width: 1280, Height: 720},
+		Capabilities: connection.Capabilities{Shell: true, SpecialKeys: true, ClipboardSync: true, GuestResize: true, Audio: true, TransportToggle: true, ResolutionSelection: true},
+	}
+	var layout ToolbarLayout
+	draw := func(ctx *Context) { layout, _ = bar.Layout(ctx, Rect{W: 1000, H: 240}, s) }
+	h.frame(nil, draw)
+	if layout.Tooltip.W != 0 {
+		t.Fatalf("tooltip rendered without a hover: %+v", layout.Tooltip)
+	}
+	y := layout.Bar.Y + layout.Bar.H/2
+	for x := layout.Bar.X + 1; x < layout.Bar.X+layout.Bar.W; x++ {
+		h.frame([]Event{pointer(x, y, false)}, draw)
+		if layout.Tooltip.W > 0 {
+			if layout.Tooltip.Y < layout.Bar.Y+layout.Bar.H || layout.Tooltip.Y+layout.Tooltip.H > 240 {
+				t.Fatalf("tooltip escaped the bounds: %+v", layout.Tooltip)
+			}
+			return
+		}
+	}
+	t.Fatal("hovering the compact icon bar produced no tooltip")
+}
+
 func TestConnectionToolbarFullscreenDoesNotResizeContent(t *testing.T) {
 	for _, mode := range []Mode{ModeDark, ModeLight, ModeHighContrast} {
 		h := newHarness(1280, 720)

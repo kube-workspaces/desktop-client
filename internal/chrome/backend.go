@@ -114,10 +114,13 @@ func (b *Backend) render(now time.Time, events []viewer.Event) connection.Action
 		r := ui.Rect{X: b.layout.Bar.X + b.layout.Bar.W/2 - 70*th.Small, Y: 0, W: 140 * th.Small, H: max(12, th.ControlHeight/2)}
 		b.ctx.Canvas.FillRounded(r, th.Radius, th.Surface)
 		ui.Label(b.ctx, r, "Tools", ui.LabelStyle{Scale: th.Small, Align: ui.AlignCenter, Middle: true})
-		b.layout.Bar, b.layout.Panel, b.layout.Grip = r, ui.Rect{}, ui.Rect{}
+		b.layout.Bar, b.layout.Panel, b.layout.Grip, b.layout.Tooltip = r, ui.Rect{}, ui.Rect{}, ui.Rect{}
 	}
 	r := b.layout.Bar
-	if p := b.layout.Panel; p.W > 0 {
+	for _, p := range [...]ui.Rect{b.layout.Panel, b.layout.Tooltip} {
+		if p.W <= 0 || p.H <= 0 {
+			continue
+		}
 		x, y := min(r.X, p.X), min(r.Y, p.Y)
 		r = ui.Rect{X: x, Y: y, W: max(r.X+r.W, p.X+p.W) - x, H: max(r.Y+r.H, p.Y+p.H) - y}
 	}

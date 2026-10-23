@@ -121,6 +121,35 @@ func TestToolbarClickNeverReachesGuestAndDispatchesDisconnect(t *testing.T) {
 	}
 }
 
+func TestChromeClipIncludesCompactHoverTooltip(t *testing.T) {
+	s := &surface{w: 1000, h: 500}
+	b := New(s)
+	if err := b.Open(viewer.WindowOptions{Width: 1000, Height: 500}); err != nil {
+		t.Fatal(err)
+	}
+	b.UpdateConnection(connection.Snapshot{
+		Workspace: "team/vm", Surface: connection.Desktop, State: connection.Connected,
+		Transport: "Agent", Clipboard: true, ResizeGuest: true, ScaleMode: "fit",
+		Capabilities: connection.Capabilities{Shell: true, SpecialKeys: true, ClipboardSync: true,
+			GuestResize: true, Audio: true, TransportToggle: true, ResolutionSelection: true},
+	})
+	now := time.Now()
+	b.FilterConnectionEvents(now, nil)
+	r := b.layout.Bar
+	x, y := r.X+r.W-b.ctx.Theme.Pad-10, r.Y+b.ctx.Theme.Pad+10
+	b.FilterConnectionEvents(now, []viewer.Event{viewer.EventPointer{X: x, Y: y}})
+	tip := b.layout.Tooltip
+	if tip.W == 0 || tip.H == 0 {
+		t.Fatal("compact toolbar hover produced no tooltip")
+	}
+	if err := b.Present(viewer.Rect{}, viewer.Overlay{}); err != nil {
+		t.Fatal(err)
+	}
+	if s.chrome.X > tip.X || s.chrome.Y > tip.Y || s.chrome.X+s.chrome.W < tip.X+tip.W || s.chrome.Y+s.chrome.H < tip.Y+tip.H {
+		t.Fatalf("chrome clip %+v excludes tooltip %+v", s.chrome, tip)
+	}
+}
+
 func TestGuestDragCrossingToolbarKeepsItsRelease(t *testing.T) {
 	b, _, now := rig(t, false)
 	y := b.layout.Content.Y

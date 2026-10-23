@@ -5,6 +5,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"strconv"
 
 	"github.com/kube-workspaces/desktop-client/internal/connection"
@@ -25,6 +26,15 @@ type ConnectionToolbar struct {
 // Fullscreen chrome floats, so showing it never changes Content.
 type ToolbarLayout struct {
 	Bar, Panel, Content, Grip Rect
+	// Tooltip is the transient hint under the bar while an icon-only
+	// control is hovered. Owners that upload only chrome pixels must
+	// include it or the hint never reaches the screen.
+	Tooltip Rect
+}
+
+type toolbarHint struct {
+	r    Rect
+	text string
 }
 
 // Layout draws the toolbar and returns at most one requested session action.
@@ -55,12 +65,23 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		wideItems = append(wideItems, toolbarItem{menu: "pin"})
 	}
 	wideItems = append(wideItems, toolbarItem{action: connection.Disconnect})
-	wideWidth := 2*th.Pad + TextWidth("namespace/workspace", th.Small, th.Font)
-	for _, item := range wideItems {
-		b := t.button(item, s, th.Small)
-		wideWidth += b.Width(ctx) + th.Gap
+	baseWidth := 2*th.Pad + statusDotSize(th) + th.Gap/2 + TextWidth("namespace/workspace", th.Small, th.Font)
+	widthFor := func(compact bool) int {
+		width := baseWidth
+		for _, item := range wideItems {
+			b := t.button(item, s, th.Small, compact)
+			width += b.Width(ctx) + th.Gap
+		}
+		return width
 	}
-	narrow := bounds.W < wideWidth
+	iconWidth, labelWidth := widthFor(true), widthFor(false)
+	narrow := bounds.W < iconWidth
+	labels := !narrow && bounds.W >= labelWidth
+	compact := !labels
+	wideWidth := iconWidth
+	if labels {
+		wideWidth = labelWidth
+	}
 	if narrow {
 		barH += LineHeight(th.Small, th.Font) + th.Gap
 	}
@@ -74,6 +95,7 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		content = bounds
 	}
 	out := ToolbarLayout{Bar: bar, Content: content}
+	ctx.Canvas.FillRounded(Rect{X: bar.X, Y: bar.Y + max(2, th.Body), W: bar.W, H: bar.H}, th.Radius, buttonShadow)
 	ctx.Canvas.FillRounded(bar, th.Radius, th.Surface)
 	ctx.Canvas.StrokeRounded(bar, th.Radius, th.BorderWidth, th.Border)
 	if ctx.Input.KeyPressed(keysym.KeyEscape) {
@@ -92,9 +114,12 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		inner.W -= th.Pad + th.Gap
 	}
 	y := inner.Y
+	dotSize := statusDotSize(th)
 	if narrow {
-		Label(ctx, Rect{X: inner.X, Y: y, W: inner.W, H: LineHeight(th.Small, th.Font)}, identity, LabelStyle{Scale: th.Small})
-		y += LineHeight(th.Small, th.Font) + th.Gap
+		lineH := LineHeight(th.Small, th.Font)
+		ctx.Canvas.FillRounded(Rect{X: inner.X, Y: y + (lineH-dotSize)/2, W: dotSize, H: dotSize}, dotSize/2, statusDotColor(th, s))
+		Label(ctx, Rect{X: inner.X + dotSize + th.Gap/2, Y: y, W: inner.W - dotSize - th.Gap/2, H: lineH}, identity, LabelStyle{Scale: th.Small})
+		y += lineH + th.Gap
 	}
 	items := wideItems
 	if narrow {
@@ -110,14 +135,17 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 
 	width := 0
 	for _, item := range items {
-		b := t.button(item, s, th.Small)
+		b := t.button(item, s, th.Small, compact)
 		width += b.Width(ctx) + th.Gap
 	}
 	x := inner.X + max(0, inner.W-width+th.Gap)
 	if !narrow {
-		Label(ctx, Rect{X: inner.X, Y: y, W: max(0, x-inner.X-th.Pad), H: rowH}, identity, LabelStyle{Scale: th.Small, Middle: true})
+		identityX := inner.X + dotSize + th.Gap/2
+		ctx.Canvas.FillRounded(Rect{X: inner.X, Y: y + (rowH-dotSize)/2, W: dotSize, H: dotSize}, dotSize/2, statusDotColor(th, s))
+		Label(ctx, Rect{X: identityX, Y: y, W: max(0, x-identityX-th.Pad), H: rowH}, identity, LabelStyle{Scale: th.Small, Middle: true})
 	}
 	var requested connection.Action
+	hints := make([]toolbarHint, 0, len(items))
 	input := ctx.Input
 	if t.Menu == "scaling" || t.Menu == "resolution" {
 		panel, _ := scalingPanelGeometry(ctx, bar, bounds)
@@ -131,8 +159,11 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		}
 	}
 	for _, item := range items {
-		b := t.button(item, s, th.Small)
+		b := t.button(item, s, th.Small, compact)
 		r := Rect{X: x, Y: y, W: b.Width(ctx), H: rowH}
+		if compact {
+			hints = append(hints, toolbarHint{r: r, text: t.buttonLabel(item, s)})
+		}
 		if b.Layout(ctx, r) {
 			if item.action != "" {
 				requested = item.action
@@ -144,6 +175,7 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 	}
 	ctx.Input = input
 	if t.Menu == "" {
+		out.Tooltip = t.drawTooltip(ctx, bounds, bar, hints)
 		return out, requested
 	}
 	if t.Menu == "debug" {
@@ -198,7 +230,8 @@ func (t *ConnectionToolbar) Layout(ctx *Context, bounds Rect, s connection.Snaps
 		Label(ctx, Inset(panel, th.Pad), i18n.Get("toolbar.noTools"), LabelStyle{Scale: th.Small})
 	} else {
 		for n, item := range panelItems {
-			b := t.button(item, s, th.Small)
+			b := t.button(item, s, th.Small, false)
+			b.Align = ButtonAlignLeft
 			if b.Disabled {
 				b.Text += " — " + i18n.Get("toolbar."+s.Availability(item.action).Reason)
 			}
@@ -230,7 +263,7 @@ func (t *ConnectionToolbar) toggle(menu string) {
 	}
 }
 
-func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scale int) Button {
+func (t *ConnectionToolbar) buttonLabel(item toolbarItem, s connection.Snapshot) string {
 	key := item.menu
 	if item.action != "" {
 		key = string(item.action)
@@ -275,7 +308,26 @@ func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scal
 	if item.menu == "pin" && t.Pinned {
 		label = i18n.Get("toolbar.unpin")
 	}
-	b := Button{ID: FocusID("toolbar-" + key), Text: label, Variant: ButtonSecondary, Scale: scale}
+	return label
+}
+
+func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scale int, compact bool) Button {
+	key := item.menu
+	if item.action != "" {
+		key = string(item.action)
+	}
+	b := Button{
+		ID:      FocusID("toolbar-" + key),
+		Text:    t.buttonLabel(item, s),
+		Icon:    toolbarIcon(item, s),
+		Variant: ButtonSecondary,
+		Scale:   scale,
+		Smooth:  true,
+	}
+	if compact {
+		b.Text = ""
+		b.Round = true
+	}
 	if item.action != "" {
 		b.Disabled = !s.Availability(item.action).Enabled
 	}
@@ -283,6 +335,119 @@ func (t *ConnectionToolbar) button(item toolbarItem, s connection.Snapshot, scal
 		b.Variant = ButtonDanger
 	}
 	return b
+}
+
+func toolbarIcon(item toolbarItem, s connection.Snapshot) ButtonIcon {
+	switch item.menu {
+	case "scaling":
+		return ButtonIconScale
+	case "resolution":
+		return ButtonIconResolution
+	case "tools":
+		return ButtonIconSliders
+	case "connection":
+		return ButtonIconInfo
+	case "debug":
+		return ButtonIconBug
+	case "pin":
+		return ButtonIconPin
+	}
+	switch item.action {
+	case connection.Fullscreen:
+		if s.Fullscreen {
+			return ButtonIconCollapse
+		}
+		return ButtonIconExpand
+	case connection.ToggleTransport:
+		if s.Transport == "Agent" {
+			return ButtonIconTerminal
+		}
+		return ButtonIconMonitor
+	case connection.WorkspaceList, connection.Sessions:
+		return ButtonIconWindow
+	case connection.HostInput, connection.SpecialKeys, connection.TypeClipboard:
+		return ButtonIconKeyboard
+	case connection.ClipboardSync, connection.Paste, connection.CopySelection:
+		return ButtonIconClipboard
+	case connection.GuestResize:
+		return ButtonIconResize
+	case connection.SharedControl:
+		return ButtonIconPointer
+	case connection.Audio:
+		if s.Muted {
+			return ButtonIconSpeakerMuted
+		}
+		return ButtonIconSpeaker
+	case connection.Disconnect:
+		return ButtonIconPower
+	case connection.FitDesktop:
+		return ButtonIconFit
+	case connection.FillDesktop:
+		return ButtonIconFill
+	case connection.SnapDesktop:
+		return ButtonIconSnap
+	case connection.CenterDesktop:
+		return ButtonIconCenter
+	case connection.ZoomIn:
+		return ButtonIconZoomIn
+	case connection.ZoomOut:
+		return ButtonIconZoomOut
+	case connection.PanLeft:
+		return ButtonIconArrowLeft
+	case connection.PanRight:
+		return ButtonIconArrowRight
+	case connection.PanUp:
+		return ButtonIconArrowUp
+	case connection.PanDown:
+		return ButtonIconArrowDown
+	}
+	return ButtonIconNone
+}
+
+func statusDotSize(th *Theme) int {
+	return max(6, th.ControlHeight/3)
+}
+
+func statusDotColor(th *Theme, s connection.Snapshot) color.RGBA {
+	switch s.State {
+	case connection.Connected, connection.Ready:
+		return th.Success
+	case connection.Busy, connection.Failed:
+		return th.Danger
+	case connection.Connecting, connection.Reconnecting, connection.Loading:
+		return th.Warning
+	}
+	return th.TextMuted
+}
+
+func (t *ConnectionToolbar) drawTooltip(ctx *Context, bounds, bar Rect, hints []toolbarHint) Rect {
+	in := ctx.Input
+	if !in.HasMouse || !bar.Contains(in.Mouse.X, in.Mouse.Y) {
+		return Rect{}
+	}
+	th := ctx.Theme
+	for _, hint := range hints {
+		if hint.text == "" || !hint.r.Contains(in.Mouse.X, in.Mouse.Y) {
+			continue
+		}
+		padX := max(6, th.Pad/2)
+		padY := max(3, th.Body/2)
+		w := TextWidth(hint.text, th.Small, th.Font) + 2*padX
+		h := LineHeight(th.Small, th.Font) + 2*padY
+		x := hint.r.X + hint.r.W/2 - w/2
+		x = max(bounds.X+th.Gap, min(x, bounds.X+bounds.W-w-th.Gap))
+		y := bar.Y + bar.H + th.Gap/2
+		if y+h > bounds.Y+bounds.H-th.Gap {
+			y = bar.Y - h - th.Gap/2
+		}
+		r := Rect{X: x, Y: y, W: w, H: h}
+		ctx.Canvas.FillRounded(Rect{X: r.X, Y: r.Y + max(2, th.Body), W: r.W, H: r.H}, th.Radius, buttonShadow)
+		ctx.Canvas.FillRounded(r, th.Radius, th.Surface)
+		ctx.Canvas.StrokeRounded(r, th.Radius, th.BorderWidth, th.Border)
+		Label(ctx, Rect{X: r.X + padX, Y: r.Y + padY, W: r.W - 2*padX, H: LineHeight(th.Small, th.Font)}, hint.text, LabelStyle{Scale: th.Small})
+		return r
+	}
+	return Rect{}
 }
 
 func resolutionPanelGeometry(ctx *Context, bar, bounds Rect, count int) (Rect, int) {
@@ -357,7 +522,8 @@ func (t *ConnectionToolbar) scalingPanel(ctx *Context, bar, bounds Rect, s conne
 	buttonW := (inner.W - th.Gap) / 2
 	var requested connection.Action
 	for i, a := range actions {
-		b := t.button(toolbarItem{action: a}, s, th.Small)
+		b := t.button(toolbarItem{action: a}, s, th.Small, false)
+		b.Align = ButtonAlignLeft
 		if a == connection.FitDesktop && (s.ScaleMode == "" || s.ScaleMode == "fit") || a == connection.ActualPixels && s.ScaleMode == "zoom" && s.ZoomPercent == 100 || a == connection.FillDesktop && s.ScaleMode == "fill" {
 			b.Variant = ButtonPrimary
 		}
