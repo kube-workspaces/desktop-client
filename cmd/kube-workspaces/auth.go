@@ -23,11 +23,12 @@ func runLogin(ctx context.Context, args []string) error {
 	email := fs.String("email", "", "account email for local authentication")
 	token := fs.String("token", "", "use a pre-issued session token instead of logging in (also reads KUBE_WORKSPACES_TOKEN)")
 	browser := fs.Bool("browser", false, "force the system-browser login (RFC 8252 loopback + PKCE); the default when the instance uses OIDC")
+	method := fs.String("method", "", "explicit login method: local or oidc/sso/browser (forces the corresponding flow)")
 	name := fs.String("name", "", "profile name (defaults to the server hostname)")
 	namespace := fs.String("namespace", "", "pin this profile to a single namespace")
 	insecure := fs.Bool("insecure", false, "skip TLS certificate verification (dev clusters only)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces login --server <url> [--email <email>] [--browser]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: kube-workspaces login --server <url> [--email <email>] [--method local|oidc] [--browser]\n\n")
 		fs.PrintDefaults()
 	}
 	if err := cmdutil.ParseFlags(fs, args); err != nil {
@@ -83,7 +84,7 @@ func runLogin(ctx context.Context, args []string) error {
 
 	interactive := sessionToken == ""
 	if interactive {
-		sessionToken, err = interactiveLogin(ctx, client, profile, *browser)
+		sessionToken, err = interactiveLogin(ctx, client, profile, *browser, *method)
 		if err != nil {
 			return err
 		}
@@ -161,7 +162,7 @@ func runLogin(ctx context.Context, args []string) error {
 // browser and this process only ever sees the resulting session token. Local
 // (email/password) accounts are the platform's own, so prompting for those
 // here is legitimate.
-func interactiveLogin(ctx context.Context, client *kwclient.Client, profile *config.Profile, forceBrowser bool) (string, error) {
+func interactiveLogin(ctx context.Context, client *kwclient.Client, profile *config.Profile, forceBrowser bool, method string) (string, error) {
 	authCfg, err := client.AuthConfig(ctx)
 	if err != nil {
 		return "", fmt.Errorf("query auth configuration: %w", err)
@@ -170,12 +171,36 @@ func interactiveLogin(ctx context.Context, client *kwclient.Client, profile *con
 		return "", errors.New("authentication is disabled on this instance; no token is needed")
 	}
 
-	if forceBrowser || !authCfg.LocalAuth.Enabled {
-		return browserLogin(ctx, client, profile, authCfg)
+	switch m := strings.ToLower(strings.TrimSpace(method)); m {
+	case "":
+		// No explicit choice: keep the historical automatic behaviour.
+	case "local":
+		if forceBrowser {
+			return "", errors.New("--method local cannot be combined with --browser")
+		}
+		if !authCfg.SupportsMethod("local") {
+			return "", errors.New("local authentication is not enabled on this instance")
+		}
+		return localLogin(ctx, client, profile)
+	case "oidc", "sso", "browser":
+		if !authCfg.SupportsMethod("oidc") {
+			return "", fmt.Errorf("OIDC authentication is not enabled on this instance (issuer %q)", authCfg.IssuerURL)
+		}
+		forceBrowser = true
+	default:
+		return "", fmt.Errorf("unknown login method %q (valid methods: local, oidc)", method)
 	}
 
+	if forceBrowser || !authCfg.SupportsMethod("local") {
+		return browserLogin(ctx, client, profile, authCfg)
+	}
+	return localLogin(ctx, client, profile)
+}
+
+func localLogin(ctx context.Context, client *kwclient.Client, profile *config.Profile) (string, error) {
 	email := profile.Email
 	if email == "" {
+		var err error
 		email, err = prompt("Email: ")
 		if err != nil {
 			return "", err

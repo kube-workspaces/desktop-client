@@ -456,7 +456,8 @@ version     Print the client version
 Authenticates and saves a named profile. The system browser (RFC 8252 loopback
 redirect + PKCE) is used automatically when the instance is backed by an
 identity provider; local email/password accounts are prompted for in the
-terminal. `--browser` forces the browser flow either way.
+terminal. `--browser` forces the browser flow either way. Use `--method local`
+or `--method oidc` to choose explicitly instead of relying on discovery.
 
 ```bash
 # OIDC instance: opens your browser, prints the URL as a fallback
@@ -464,6 +465,10 @@ kube-workspaces login --server https://workspaces.example.com
 
 # Local account: prompts for email and password
 kube-workspaces login --server https://workspaces.example.com --email me@example.com
+kube-workspaces login --server https://workspaces.example.com --method local --email me@example.com
+
+# Force the OIDC browser flow on a mixed instance
+kube-workspaces login --server https://workspaces.example.com --method oidc
 
 # Non-interactive: use a session token you already have
 kube-workspaces login --server https://workspaces.example.com --token "$KW_TOKEN"
@@ -473,9 +478,9 @@ KUBE_WORKSPACES_TOKEN="$KW_TOKEN" kube-workspaces login --server https://workspa
 kube-workspaces login --server https://dev.example.com --name dev --insecure
 ```
 
-Flags: `--server`, `--email`, `--token`, `--browser`, `--name`, `--namespace`,
-`--insecure`. `--server` is only required the first time; re-running `login`
-with no `--server` re-authenticates the active profile. `--insecure` skips TLS
+Flags: `--server`, `--email`, `--token`, `--browser`, `--method`, `--name`,
+`--namespace`, `--insecure`. `--server` is only required the first time;
+re-running `login` with no `--server` re-authenticates the active profile. `--insecure` skips TLS
 verification and is for self-signed dev clusters and nothing else.
 
 The token is verified against the server before it is saved, so a bad token
