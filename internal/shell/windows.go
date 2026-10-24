@@ -245,6 +245,9 @@ func (a *App) parkLive(ctx context.Context, key string) {
 	if res != nil {
 		a.closeSession(key)
 		a.m.SessionEnded(res)
+		// Refused agent attaches deliberately terminate the viewer. Bring its
+		// error into view even when the workspace list was minimized or hidden.
+		a.showShell()
 		a.dirty = true
 		return
 	}
@@ -272,6 +275,7 @@ func (a *App) closeLiveFailed(key string, err error) {
 	a.flushDisplayGeometry()
 	a.closeSession(key)
 	a.m.SessionEnded(err)
+	a.showShell()
 	a.dirty = true
 }
 

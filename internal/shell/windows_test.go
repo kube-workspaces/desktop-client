@@ -5,12 +5,34 @@ package shell
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/kube-workspaces/desktop-client/internal/connection"
 	"github.com/kube-workspaces/desktop-client/internal/kwclient"
 	"github.com/kube-workspaces/desktop-client/internal/viewer"
 )
+
+func TestFailedAgentSwitchRevealsShellError(t *testing.T) {
+	r := liveWindowsRig(t)
+	openLive(t, r, "team/vm-a")
+	r.app.hideShellToTray()
+	before := r.be.raises
+	err := errors.New("agent refused: workspace-generation-mismatch")
+	r.app.live["team/vm-a"].window.Close()
+	r.app.live["team/vm-a"].window = &agentLiveWindow{handle: &agentHandle{ws: workspace("team", "vm-a", kwclient.WorkspaceTypeVM, true)}, closed: true, result: err}
+	r.app.parkLive(context.Background(), "team/vm-a")
+	if r.app.shellHidden || r.be.isHidden() || r.be.raises <= before {
+		t.Fatal("terminal agent refusal left its error hidden behind the closed viewer")
+	}
+	if !strings.Contains(strings.ToLower(r.app.m.Err), "workspace-generation-mismatch") {
+		t.Fatalf("missing actionable refusal reason: %q", r.app.m.Err)
+	}
+	if r.app.sessions["team/vm-a"] != nil {
+		t.Fatal("failed attachment retained its session")
+	}
+}
 
 // liveWindowsRig starts a rig with two running VMs.
 func liveWindowsRig(t *testing.T) *rig {
